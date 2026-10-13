@@ -24,6 +24,7 @@ import { navFor } from "./nav";
 import { Avatar } from "@/components/ui/avatar";
 import { ROLE_LABELS } from "@/lib/auth/permissions";
 import { logoutAction } from "@/app/(auth)/actions";
+import { CallReturnWatcher } from "@/components/contacts/call-return-watcher";
 
 const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   "list-checks": ListChecks,
@@ -57,6 +58,7 @@ export function AppShell({
 
   return (
     <div className="min-h-dvh lg:flex">
+      <CallReturnWatcher />
       {/* Desktop sidebar */}
       <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col border-r border-border bg-surface lg:flex">
         <div className="flex h-16 items-center px-5">

@@ -423,6 +423,14 @@ export const DEFAULT_SETTINGS = {
       price: null,
     },
     {
+      // the legacy delegation list is imported tagged "Legacy: Delegation", often with no purchase rows
+      id: "delegation_tag",
+      label: "Delegation alumni (Legacy: Delegation tag)",
+      when: [{ type: "tag_in", values: ["Legacy: Delegation"] }, { type: "not_bought_family", values: ["ai_office"] }],
+      offer: "The AI Office and premium programs",
+      price: null,
+    },
+    {
       id: "ai_office_member",
       label: "The AI Office member",
       when: [{ type: "bought_family", values: ["ai_office"] }],

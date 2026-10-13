@@ -97,3 +97,8 @@ export function pct(n: number | null | undefined, digits = 0): string {
   if (n === null || n === undefined || Number.isNaN(n)) return "—";
   return `${(n * 100).toFixed(digits)}%`;
 }
+
+/** True for a canonical uuid (any version). Ids from forms, URLs and webhooks are checked before they reach SQL. */
+export function isUuid(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}

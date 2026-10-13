@@ -10,7 +10,7 @@ import { users, type Role } from "@/db/schema";
 
 export async function resetDb() {
   const rows = await db.execute<{ tablename: string }>(
-    sql`select tablename from pg_tables where schemaname = 'public' and tablename not like '\_\_%'`,
+    sql`select tablename from pg_tables where schemaname = 'public' and tablename not like '\\_\\_%'`,
   );
   const names = rows.map((r) => `"${r.tablename}"`).join(", ");
   if (names) await db.execute(sql.raw(`truncate table ${names} restart identity cascade`));

@@ -589,6 +589,7 @@ export const notifications = pgTable(
   },
   (t) => [
     index("notifications_user_idx").on(t.userId, t.readAt, t.createdAt),
+    index("notifications_contact_idx").on(t.contactId),
     uniqueIndex("notifications_dedupe_uq").on(t.dedupeKey),
   ],
 );

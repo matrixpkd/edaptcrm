@@ -298,7 +298,10 @@ export async function handoverAllContacts(
  * anyone with a purchase — and Lost contacts never expire. Each release raises one "lead_released" task and
  * an in-app alert for every manager. Returns the released contact ids. Safe to run repeatedly (cron).
  */
-export async function releaseStaleLeads(now: Date, tx: Tx = db): Promise<string[]> {
+export async function releaseStaleLeads(now: Date, tx: Tx = db, opts: { limit?: number } = {}): Promise<string[]> {
+  // opts.limit caps one run (the 15-minute cron), so a big backlog (e.g. after an import assigned thousands of
+  // old leads) is released over several runs instead of one transaction that outlives the function's time limit.
+  const limit = opts.limit && opts.limit > 0 ? Math.floor(opts.limit) : null;
   const { leadReleaseDays } = await getSetting("thresholds", tx);
   const days = Number(leadReleaseDays);
   if (!Number.isFinite(days) || days <= 0) return [];
@@ -332,6 +335,7 @@ export async function releaseStaleLeads(now: Date, tx: Tx = db): Promise<string[
         ),
       )
       .orderBy(contacts.id)
+      .limit(limit ?? Number.MAX_SAFE_INTEGER)
       .for("update", { skipLocked: true });
     if (!stale.length) return [];
 

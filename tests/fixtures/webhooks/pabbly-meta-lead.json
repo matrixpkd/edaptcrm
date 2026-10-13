@@ -1,0 +1,18 @@
+{
+  "lead_id": "1209876543210",
+  "phone": "98470 66666",
+  "dial_code": "91",
+  "name": "Sreejith V",
+  "email": "sreejith@example.com",
+  "campaign": "claude mastery meta ads",
+  "form_name": "Claude Mastery Oct",
+  "ad_name": "Claude carousel 3",
+  "product_interest": "Claude Mastery Workshop",
+  "city": "Thrissur",
+  "consent": "yes",
+  "answers": {
+    "How well do you know Umer?": "Watched a few videos",
+    "How do you use AI today?": "Every week at work",
+    "What do you want to learn?": "Automating reports"
+  }
+}

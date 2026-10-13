@@ -1,0 +1,19 @@
+{
+  "event": "order.updated",
+  "webhookId": "wh_77",
+  "data": {
+    "order": {
+      "_id": "65f0c0ffee1234567890abcd",
+      "status": "paid",
+      "amount": 249,
+      "currency": "aed",
+      "createdAt": 1791849600
+    },
+    "fan": { "name": "Shameer P", "phone": 501234567, "countryCode": "971", "email": "shameer@example.ae" },
+    "mango": { "_id": "mango_office_dxb", "title": "The AI Office Dubai" },
+    "additionalFields": {
+      "How did you first hear about Edapt?": "Instagram ad",
+      "How well do you know Umer?": "2"
+    }
+  }
+}

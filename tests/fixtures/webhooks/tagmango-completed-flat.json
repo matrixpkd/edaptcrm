@@ -1,0 +1,19 @@
+{
+  "orderId": "TM-ORD-1001",
+  "orderStatus": "completed",
+  "name": "Ayesha Rahman",
+  "email": "Ayesha.Rahman@Example.com",
+  "phone": "9847012345",
+  "dialCode": "+91",
+  "amountPaid": 999,
+  "currency": "INR",
+  "mangoName": "Claude Mastery Workshop",
+  "mangoId": "mango_cm_01",
+  "createdAt": "2026-10-12T09:30:00.000Z",
+  "affiliate": { "name": "Rafeeq K", "phone": "9846098460", "dialCode": "91" },
+  "customFields": [
+    { "question": "How did you first hear about Edapt?", "answer": "YouTube" },
+    { "question": "How well do you know Umer?", "answer": "I watch his videos regularly" },
+    { "question": "Your profession", "answer": "Business owner" }
+  ]
+}

@@ -4,6 +4,15 @@
  * overrides the default here. Nothing in this file needs a code change to tune.
  */
 
+import {
+  DEFAULT_INTEGRATION_FIELD_PATHS,
+  DEFAULT_INTEGRATION_OPTIONS,
+  DEFAULT_SELF_RATING_CONFIG,
+  type IntegrationFieldPaths,
+  type IntegrationOptions,
+  type SelfRatingConfig,
+} from "@/lib/webhooks/config";
+
 export type ListItem = { key: string; label: string; active?: boolean };
 
 /** A threshold table: the first row whose condition matches wins. */
@@ -525,6 +534,12 @@ export const DEFAULT_SETTINGS = {
     /** key "<firstFamily>:<purchaseCount>" -> { n, repeated, rate } */
     cohorts: {} as Record<string, { n: number; repeated: number; rate: number }>,
   },
+
+  /** Capture pipes (Settings > Integrations, src/lib/webhooks): admin field paths tried before the built-in ones. */
+  "integrations.fieldPaths": DEFAULT_INTEGRATION_FIELD_PATHS as IntegrationFieldPaths,
+  /** Self-ratings at the door: TagMango custom fields, form answers and WhatsApp button replies. */
+  "integrations.selfRatings": DEFAULT_SELF_RATING_CONFIG as SelfRatingConfig,
+  "integrations.options": DEFAULT_INTEGRATION_OPTIONS as IntegrationOptions,
 };
 
 export type Settings = typeof DEFAULT_SETTINGS;

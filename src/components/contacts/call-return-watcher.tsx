@@ -23,7 +23,8 @@ export function CallReturnWatcher() {
       clearPendingCall();
       if (Date.now() - pending.at > MAX_AGE_MS) return;
       const target = `/contacts/${pending.contactId}/log`;
-      if (!pathname.startsWith(target)) router.push(`${target}?type=call&fromCall=1`);
+      const back = pending.from?.startsWith("/") ? `&return=${encodeURIComponent(pending.from)}` : "";
+      if (!pathname.startsWith(target)) router.push(`${target}?type=call&fromCall=1${back}`);
     }
     document.addEventListener("visibilitychange", check);
     window.addEventListener("focus", check);

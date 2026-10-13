@@ -1,0 +1,12 @@
+Order ID,Customer Name,Email,Dial Code,Phone,Mango,Amount,Currency,Order Date,Affiliate Name,Affiliate Phone,City
+TM-1001,ANIL KUMAR,Anil.Kumar@Example.com,91,9847012345,AI Workshop,₹999,INR,12/10/2025,,,Kochi
+TM-1002,anil kumar,anil.kumar@example.com,91,98470 12345,Applied AI Mastery,"₹24,999",INR,15/11/2025,,,Kochi
+TM-1003,Fathima Rahman,fathima@example.com,971,0501234567,AI Workshop,AED 75,AED,2025-10-20,,,Dubai
+TM-1004,Fathima R,FATHIMA@EXAMPLE.COM,,+971 50 123 4567,AI Agents for Business,AED 450,AED,03/12/2025,,,Dubai
+TM-1005,Joseph Mathew,joseph@example.com,91,9446000111,AI Workshop,999,INR,12 Oct 2025,Anil Kumar,9847012345,Thrissur
+TM-1006,Priya Nair,priya@example.com,91,9895000222,Applied AI Mastery,1.2L,INR,45950,,,Kozhikode
+TM-1007,Priya Nair,,91,9895000222,AI Workshop,699,INR,01/09/2025,,,Kozhikode
+TM-1007,Priya Nair,,91,9895000222,AI Workshop,699,INR,01/09/2025,,,Kozhikode
+TM-1008,No Contact,,,,AI Workshop,699,INR,01/09/2025,,,Kochi
+TM-1009,Rahul Menon,rahul@example.com,91,12345,AI Workshop,999,INR,05/10/2025,,,Kochi
+TM-1010,Sneha Pillai,sneha@example.com,91,9020000333,The AI Office membership,USD 99,USD,2025-12-01,,,Trivandrum

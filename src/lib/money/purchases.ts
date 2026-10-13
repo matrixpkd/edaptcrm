@@ -100,6 +100,11 @@ export type RecordPurchaseInput = {
   source: PurchaseSource;
   rawPayload?: unknown;
   importBatchId?: string | null;
+  /**
+   * Bulk imports only: skip the recompute of the contact and its referrer because the caller recomputes every
+   * affected contact once at the end (recomputeContacts).
+   */
+  skipRecompute?: boolean;
   /** EMI schedule; the instalments must add up to `amount` */
   instalments?: { amount: number; dueAt: Date }[];
   /**
@@ -467,7 +472,7 @@ async function recordPurchaseTx(input: RecordPurchaseInput, actor: Actor | null,
       t,
     );
   }
-  await recomputeWithReferrer(contact.id, t);
+  if (!input.skipRecompute) await recomputeWithReferrer(contact.id, t);
   return { purchaseId, paymentIds: inserted.map((r) => r.id), status };
 }
 

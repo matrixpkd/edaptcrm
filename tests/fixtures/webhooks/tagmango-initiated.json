@@ -1,0 +1,9 @@
+{
+  "order_id": "TM-ORD-2002",
+  "status": "initiated",
+  "customer": { "name": "VINOD kumar", "phone": "+91 98470 22222", "email": "vinod@example.com", "city": "Kochi" },
+  "product": { "name": "Applied AI Mastery", "id": "mango_aam" },
+  "total": "₹14,999.00",
+  "created_at": "2026-10-13 08:15:00",
+  "utm_campaign": "Claude Mastery Meta ads"
+}

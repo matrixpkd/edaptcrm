@@ -308,6 +308,10 @@ export const contacts = pgTable(
     index("contacts_referred_by_idx").on(t.referredById),
     index("contacts_name_idx").on(sql`lower(${t.name})`),
     index("contacts_merged_idx").on(t.mergedIntoId),
+    // people of a B2B account (organisation pages, people counts)
+    index("contacts_org_idx").on(t.organisationId),
+    // recent assignments: the untouched-lead alert (every 15 minutes) and the daily digest's new leads
+    index("contacts_owner_assigned_idx").on(t.ownerAssignedAt),
   ],
 );
 
@@ -564,6 +568,8 @@ export const tasks = pgTable(
     uniqueIndex("tasks_dedupe_uq").on(t.dedupeKey),
     index("tasks_user_status_idx").on(t.userId, t.status, t.dueAt),
     index("tasks_contact_idx").on(t.contactId),
+    // open tasks of one type (alert rules run every 15 minutes: follow-up pings, untouched-lead cleanup)
+    index("tasks_open_type_due_idx").on(t.type, t.dueAt).where(sql`${t.status} = 'open'`),
   ],
 );
 
@@ -591,6 +597,8 @@ export const notifications = pgTable(
     index("notifications_user_idx").on(t.userId, t.readAt, t.createdAt),
     index("notifications_contact_idx").on(t.contactId),
     uniqueIndex("notifications_dedupe_uq").on(t.dedupeKey),
+    // alerts waiting for their email copy (tiny: rows leave it once emailed)
+    index("notifications_email_pending_idx").on(t.createdAt).where(sql`${t.email} and ${t.emailedAt} is null`),
   ],
 );
 
@@ -729,6 +737,9 @@ export const auditLog = pgTable(
   (t) => [
     index("audit_log_row_idx").on(t.tableName, t.rowId),
     index("audit_log_changed_idx").on(t.changedAt),
+    // Settings > Audit log, newest first: "who changed what" and the export log (exports, refused exports)
+    index("audit_log_user_idx").on(t.userId, t.id),
+    index("audit_log_action_idx").on(t.action, t.id),
   ],
 );
 
@@ -747,7 +758,12 @@ export const webhookEvents = pgTable(
     error: text("error"),
     contactId: uuid("contact_id"),
   },
-  (t) => [uniqueIndex("webhook_events_key_uq").on(t.eventKey), index("webhook_events_source_idx").on(t.source, t.receivedAt)],
+  (t) => [
+    uniqueIndex("webhook_events_key_uq").on(t.eventKey),
+    index("webhook_events_source_idx").on(t.source, t.receivedAt),
+    // the newest-first event log in Settings > Integrations
+    index("webhook_events_received_idx").on(t.receivedAt),
+  ],
 );
 
 /** Saved filters on the Contacts list. */

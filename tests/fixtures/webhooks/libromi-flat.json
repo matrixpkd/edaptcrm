@@ -1,0 +1,10 @@
+{
+  "event": "message_received",
+  "messageId": "lb_msg_9001",
+  "mobile": "9847044444",
+  "name": "Arun Das",
+  "message": "Hello, is there a batch in November?",
+  "messageType": "text",
+  "timestamp": "2026-10-13T08:00:00Z",
+  "campaign": "Koduvally AI Literacy Mission"
+}

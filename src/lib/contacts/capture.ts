@@ -88,6 +88,12 @@ export type CaptureInput = {
   importBatchId?: string | null;
   skipAlerts?: boolean;
   skipAssignment?: boolean;
+  /**
+   * Bulk imports only: skip the per-touch recompute because the caller recomputes every affected contact (and
+   * its referrer) once at the end (recomputeContacts). Honoured only together with skipAlerts, since the hot-lead
+   * alert reads the freshly computed grade.
+   */
+  skipRecompute?: boolean;
 };
 
 export type CaptureResult = {
@@ -474,9 +480,11 @@ async function captureInner(
   delete self.notes;
   if (Object.keys(self).length) await applyRating(contact.id, self, "self", null, t, { recompute: false });
 
-  // ---- 7. calculated columns
-  await recomputeContact(contact.id, t);
-  if (referrerId) await recomputeContact(referrerId, t);
+  // ---- 7. calculated columns (a bulk import recomputes once at the end of its chunk instead)
+  if (!(input.skipRecompute && input.skipAlerts)) {
+    await recomputeContact(contact.id, t);
+    if (referrerId) await recomputeContact(referrerId, t);
+  }
 
   // ---- 8. alerts
   const fresh = await getContact(contact.id, t);

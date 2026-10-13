@@ -21,16 +21,18 @@ function digits(e164: string) {
 /** Remembers that a call was started so the Log interaction screen opens when the user comes back. */
 export function rememberCall(contactId: string) {
   try {
-    sessionStorage.setItem(PENDING_CALL_KEY, JSON.stringify({ contactId, at: Date.now() }));
+    // `from`: the page the call started on (e.g. Today), so saving the log goes back there
+    const from = window.location.pathname + window.location.search;
+    sessionStorage.setItem(PENDING_CALL_KEY, JSON.stringify({ contactId, at: Date.now(), from }));
   } catch {
     /* storage unavailable: logging is still one tap away */
   }
 }
 
-export function readPendingCall(): { contactId: string; at: number } | null {
+export function readPendingCall(): { contactId: string; at: number; from?: string } | null {
   try {
     const raw = sessionStorage.getItem(PENDING_CALL_KEY);
-    return raw ? (JSON.parse(raw) as { contactId: string; at: number }) : null;
+    return raw ? (JSON.parse(raw) as { contactId: string; at: number; from?: string }) : null;
   } catch {
     return null;
   }

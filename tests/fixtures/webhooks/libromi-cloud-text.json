@@ -1,0 +1,35 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "1029384756",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": { "display_phone_number": "919000000000", "phone_number_id": "1234567890" },
+            "contacts": [{ "profile": { "name": "Nisha Menon" }, "wa_id": "919847055555" }],
+            "messages": [
+              {
+                "from": "919847055555",
+                "id": "wamid.HBgMOTE5ODQ3MDU1NTU1FQIAEhgUM0E",
+                "timestamp": "1791849600",
+                "type": "text",
+                "text": { "body": "Hi, I want to know about the Claude workshop" },
+                "referral": {
+                  "source_url": "https://fb.me/abc",
+                  "source_id": "120200000000001",
+                  "source_type": "ad",
+                  "headline": "Claude Mastery Meta ads",
+                  "body": "Learn Claude in 3 hours",
+                  "ctwa_clid": "ARAkLkA8rmlFeiCktEJQ"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

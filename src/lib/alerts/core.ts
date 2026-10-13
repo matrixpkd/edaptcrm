@@ -38,6 +38,37 @@ export async function createTask(t: NewTask, tx: Tx = db): Promise<string | null
   return rows[0]?.id ?? null;
 }
 
+/**
+ * Creates many tasks in one statement per 500 rows; rows whose dedupe key already exists are skipped.
+ * Returns the ids of the tasks actually created (in no particular order).
+ */
+export async function createTasks(list: NewTask[], tx: Tx = db): Promise<string[]> {
+  const ids: string[] = [];
+  for (let i = 0; i < list.length; i += 500) {
+    const chunk = list.slice(i, i + 500);
+    const now = new Date();
+    const rows = await tx
+      .insert(tasks)
+      .values(
+        chunk.map((t) => ({
+          contactId: t.contactId ?? null,
+          userId: t.userId,
+          type: t.type,
+          reason: t.reason,
+          dueAt: t.dueAt ?? now,
+          priority: t.priority ?? 0,
+          dedupeKey: t.dedupeKey ?? null,
+          payload: t.payload ?? null,
+          createdById: t.createdById ?? null,
+        })),
+      )
+      .onConflictDoNothing({ target: tasks.dedupeKey })
+      .returning({ id: tasks.id });
+    ids.push(...rows.map((r) => r.id));
+  }
+  return ids;
+}
+
 export type NewNotification = {
   userId: string;
   type: string;

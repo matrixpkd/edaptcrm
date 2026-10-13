@@ -25,6 +25,20 @@ the domain services are documented in [`docs/DOMAIN_API.md`](docs/DOMAIN_API.md)
 The five screens the team uses all day (Today, Quick Add, Contact page, Log interaction, Rate customer) are designed
 for phones first, and the app installs on a phone's home screen.
 
+## Screens
+
+From the demo data (`npm run db:seed -- --demo`): a salesperson's morning on a phone, a manager's desk on a laptop.
+
+<p>
+  <img src="docs/screenshots/phone-today.png" alt="Today on a phone: abandoned checkouts on top, each row with its reason, Call and WhatsApp" width="240">
+  <img src="docs/screenshots/phone-contact.png" alt="Contact page on a phone: grade, scores, owner, Call / WhatsApp / Log, the ladder and next best offer" width="240">
+  <img src="docs/screenshots/phone-rate.png" alt="Rate customer on a phone: anchored scales with a live score preview" width="240">
+</p>
+
+![Dashboard on a laptop: revenue, conversion, forecast, at-risk pool and Beyond-Umer share](docs/screenshots/laptop-dashboard.png)
+
+![Contacts list on a laptop: search, filters by grade, stage, door, campaign, owner and more](docs/screenshots/laptop-contacts.png)
+
 ## Stack
 
 Next.js 15 (App Router, Server Actions) · TypeScript · Tailwind CSS v4 · Postgres via Drizzle ORM (Supabase in
@@ -33,22 +47,28 @@ Storage for payment proofs.
 
 ## Run it locally
 
-Requirements: Node 20+, Postgres 15+.
+Requirements: Node 22.12+ (Vitest 5 needs it), Postgres 15+.
 
 ```bash
 npm install
 cp .env.example .env.local          # then edit DATABASE_URL and ADMIN_* if needed
+createdb -h localhost -U postgres edapt          # the database named in DATABASE_URL (the scripts do not create it)
 npm run db:push                      # create the tables
 npm run db:seed                      # first admin + starter products (add `-- --demo` for demo data)
 npm run dev                          # http://localhost:3000
 ```
 
 Sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` from `.env.local` (defaults: `umer@edapt.in` / `change-me-now` —
-change it in Settings → Users). With an empty database and no seed, `/setup` creates the first admin instead.
+change it in *Your account*, `/account`). With an empty database and no seed, `/login` sends you to `/setup`, which
+creates the first admin instead (it closes once any user exists).
 
 ```bash
 npm run typecheck && npm run lint
-npm test                 # unit + integration tests (needs a Postgres database named in .env.test)
+createdb -h localhost -U postgres edapt_test     # once: the test database named in .env.test
+npm test                 # unit + integration tests; TEST_DATABASE_URL=postgres://… overrides .env.test's database
+npm run build && npm start                       # production build, served on http://localhost:3000
+createdb -h localhost -U postgres edapt_e2e      # once, for the end-to-end tests
+npx playwright install chromium                  # once: the browser Playwright drives
 npm run test:e2e         # Playwright end-to-end tests (about 3.5 minutes)
 ```
 
@@ -67,7 +87,8 @@ npm run db:push && npm run db:seed && npm run db:seed -- --demo    # empty datab
 About 600 contacts and 18 months of history, built only through the domain services (capture, calls, ratings,
 TagMango orders, bank transfers and their verification, refunds, EMIs, merges, transfers, the weekly lead release
 and the nightly job), replayed under a simulated clock, then recomputed and alerted at the real now. It is
-deterministic and refuses to run twice (`npm run db:reset` for a fresh copy). Every login uses the password
+deterministic and refuses to run twice (for a fresh copy: `npm run db:reset && npm run db:seed -- --demo`; the
+reset empties every table of the database in `.env.local`). Every login uses the password
 `change-me-now`:
 
 | Login | Role | Try |
@@ -90,18 +111,24 @@ nightly recompute and the alert rules, timing each phase (about 2.5 minutes loca
 
 1. **Supabase** (Pro, region *South Asia (Mumbai)*): create the project. In *Storage*, create a private bucket named
    `crm-files`. Copy the database connection strings and the service role key.
-2. **Database schema**: from your laptop, apply the migrations to Supabase using the *direct* connection string
-   (port 5432). `db:migrate` first runs `drizzle/custom/*.sql` (the `pg_trgm` extension the contact-search indexes
-   need; Drizzle cannot create extensions), then the generated migrations:
+2. **Database schema**: from your laptop, apply the migrations to Supabase using a *session* connection string on
+   port 5432 (the session pooler shown below, or the direct connection), not the transaction pooler on 6543.
+   `db:migrate` first runs `drizzle/custom/*.sql` (the `pg_trgm` extension the contact-search indexes need; Drizzle
+   cannot create extensions), then the generated migrations. With `DATABASE_URL` set on the command line the scripts
+   ignore `.env.local`, so pass the admin's details too; away from localhost the seed refuses the example password and
+   anything under 10 characters:
    ```bash
    DATABASE_URL="postgres://postgres.<ref>:<password>@aws-0-ap-south-1.pooler.supabase.com:5432/postgres" npm run db:migrate
-   DATABASE_URL="…same…" ADMIN_EMAIL=umer@… ADMIN_PASSWORD='…' npm run db:seed
+   DATABASE_URL="…same…" ADMIN_EMAIL=umer@… ADMIN_NAME='Umer Abdussalam' ADMIN_PASSWORD='…' npm run db:seed
    ```
+   (Or create the admin in the app: on the empty database `/setup` makes the first admin; then run the seed with
+   `ADMIN_EMAIL` set to that admin's email and it only adds the starter products.)
 3. **Vercel** (Pro): import the GitHub repository and set these environment variables:
 
    | Variable | Value |
    | --- | --- |
    | `DATABASE_URL` | Supabase *transaction pooler* URL (port 6543) |
+   | `DATABASE_POOL_MAX` | optional — connections per function instance (default 5) |
    | `APP_URL` | e.g. `https://crm.edapt.in` |
    | `CRON_SECRET` | a long random string (Vercel sends it to the cron routes) |
    | `TAGMANGO_WEBHOOK_SECRET`, `LIBROMI_WEBHOOK_SECRET`, `PABBLY_WEBHOOK_SECRET` | long random strings, one per integration |

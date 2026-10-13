@@ -37,7 +37,9 @@ export default async function RecordPaymentPage({ params }: { params: Promise<{ 
         <div className="rounded-xl border border-border bg-surface p-6 text-sm">
           <p className="font-medium">You can&apos;t record payments for this contact.</p>
           <p className="mt-1 text-muted">
-            Payments are recorded by the contact&apos;s owner or a manager. Ask your manager if this customer should be yours.
+            {user.role === "support"
+              ? "Payments are recorded by the contact's owner or a manager. You can still log a note or support issue."
+              : "Payments are recorded by the contact's owner or a manager. Ask your manager if this customer should be yours."}
           </p>
         </div>
       </div>

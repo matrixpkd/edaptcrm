@@ -19,11 +19,12 @@ The CRM is Edapt's attention allocator: it decides who deserves a human, when, a
 
 ```bash
 service postgresql start          # local Postgres 16 (user postgres / password postgres)
+createdb -h localhost -U postgres edapt        # once each: edapt (dev), edapt_test (npm test), edapt_e2e (e2e)
 npm run dev                       # http://localhost:3000  (admin: umer@edapt.in / change-me-now after db:seed)
 npm run db:push                   # sync src/db/schema.ts into the dev database (.env.local)
 npm run db:seed                   # first admin + starter products  (add `-- --demo` for demo data)
 npm run typecheck && npm run lint
-npm test                          # vitest; global setup pushes the schema into edapt_test
+npm test                          # vitest; global setup pushes the schema into edapt_test (TEST_DATABASE_URL overrides)
 npm run test:e2e                  # playwright
 ```
 
@@ -44,9 +45,9 @@ src/lib/import/           import wizard pipeline
 src/lib/webhooks/         TagMango, Libromi, Pabbly handlers
 src/components/ui/        UI kit (Button, Field, Input, Select, Card, Badge, GradeBadge, StageBadge, Tabs, Table, ChipGroup, StarInput, Sheet, SubmitButton)
 src/components/shell/     AppShell (sidebar on desktop, bottom bar on phones), nav config
-src/app/(auth)/           login, setup (first admin), logout
+src/app/(auth)/           login, setup (first admin); actions.ts has login, logout and setup
 src/app/(app)/            every signed-in screen
-src/app/api/              webhooks/*, cron/*, files/*, export/*
+src/app/api/              webhooks/*, cron/*, files/*, export/*, health
 tests/unit, tests/integration, tests/e2e, tests/support (resetDb, makeUser)
 ```
 

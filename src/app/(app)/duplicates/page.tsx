@@ -5,6 +5,7 @@ import { GradeBadge, StageBadge } from "@/components/ui/badge";
 import { EmptyState, PageHeader } from "@/components/ui/card";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { ActionForm } from "@/components/contacts/action-form";
+import { FlashBanner } from "@/components/contacts/flash-banner";
 import { countryName } from "@/components/contacts/labels";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
@@ -12,7 +13,7 @@ import { listOpenDuplicateReviews, type DuplicateReviewSide } from "@/lib/contac
 import { countPossibleDuplicates } from "@/lib/contacts/queries";
 import { formatPhone } from "@/lib/phone";
 import { getSetting, labelFor, type ListItem } from "@/lib/settings";
-import { cn, formatDate, formatINR } from "@/lib/utils";
+import { cn, formatDate, formatINR, isUuid } from "@/lib/utils";
 import { dismissPairAction, mergePairAction } from "./actions";
 
 export const metadata = { title: "Duplicates" };
@@ -87,8 +88,10 @@ function who(s: DuplicateReviewSide, other: DuplicateReviewSide): string {
     : s.name;
 }
 
-export default async function DuplicatesPage() {
+export default async function DuplicatesPage({ searchParams }: { searchParams: Promise<{ merged?: string }> }) {
   const user = await requireUser();
+  const sp = await searchParams;
+  const mergedInto = typeof sp.merged === "string" && isUuid(sp.merged) ? sp.merged : null;
   if (!can(user, "contacts.merge")) redirect("/today?denied=1");
   const tz = user.timezone || "Asia/Kolkata";
   const [reviews, total, doors] = await Promise.all([
@@ -123,6 +126,20 @@ export default async function DuplicatesPage() {
             : `${total} possible duplicate${total === 1 ? "" : "s"} waiting. Same name in the same city is never merged automatically.`
         }
       />
+      {mergedInto && (
+        <FlashBanner
+          param="merged"
+          message={
+            <>
+              Merged. Nothing was deleted;{" "}
+              <Link href={`/contacts/${mergedInto}?tab=merge`} className="font-medium underline underline-offset-2">
+                open the kept contact
+              </Link>{" "}
+              to check it or undo the merge.
+            </>
+          }
+        />
+      )}
       {reviews.length === 0 ? (
         <div className="rounded-xl border border-border bg-surface">
           <EmptyState

@@ -3,6 +3,7 @@ import {
   bandOf,
   buildQueue,
   contextFor,
+  liveReason,
   rankScore,
   revenueRankScore,
   type QueueContact,
@@ -218,6 +219,18 @@ describe("contextFor (why it is here)", () => {
     ]);
   });
 
+  it("an alert raised before today says how long it has been open; only follow-ups and instalments are overdue", () => {
+    const c = contact({ grade: "C", purchaseCount: 1 });
+    expect(contextFor({ type: "at_risk", dueAt: new Date(NOW.getTime() - 3 * D) }, c, NOW, TZ)).toEqual([
+      "Grade C customer",
+      "Open for 3 days",
+    ]);
+    expect(contextFor({ type: "instalment_due", dueAt: new Date(NOW.getTime() - D) }, c, NOW, TZ)).toEqual([
+      "Grade C customer",
+      "Overdue 1 day",
+    ]);
+  });
+
   it("a task due later today says when", () => {
     const c = contact({ grade: null });
     expect(contextFor({ type: "follow_up", dueAt: new Date("2026-10-13T11:30:00Z") }, c, NOW, TZ)).toEqual([
@@ -262,5 +275,25 @@ describe("derived (synthetic) new-lead rows", () => {
     expect(q.rows).toHaveLength(1);
     expect(q.rows[0].taskIds).toEqual([stored.id]);
     expect(q.rows[0].canDismiss).toBe(true);
+  });
+});
+
+describe("liveReason", () => {
+  it("counts an at-risk task's days past the expected purchase as of now, not as of when it was raised", () => {
+    const c = contact({ purchaseCount: 1, nextExpectedAt: new Date(NOW.getTime() - 227 * D) });
+    const t = { type: "at_risk" as const, reason: "At risk: 36 days past the expected next purchase — offer The AI Office" };
+    expect(liveReason(t, c, NOW)).toBe("At risk: 227 days past the expected next purchase — offer The AI Office");
+    const q = buildQueue([task({ ...t, contact: c, dueAt: new Date(NOW.getTime() - 190 * D) })], { now: NOW, timeZone: TZ, cap: 40 });
+    expect(q.rows[0].reason).toBe("At risk: 227 days past the expected next purchase — offer The AI Office");
+    expect(q.rows[0].context).toContain("Open for 190 days");
+  });
+
+  it("leaves every other reason as stored", () => {
+    const c = contact({ purchaseCount: 1, nextExpectedAt: new Date(NOW.getTime() - 50 * D) });
+    expect(liveReason({ type: "at_risk", reason: "At risk: overdue for a repeat purchase" }, c, NOW)).toBe(
+      "At risk: overdue for a repeat purchase",
+    );
+    expect(liveReason({ type: "next_rung", reason: "Due for the next rung: offer X" }, c, NOW)).toBe("Due for the next rung: offer X");
+    expect(liveReason({ type: "at_risk", reason: "At risk: 36 days past it" }, null, NOW)).toBe("At risk: 36 days past it");
   });
 });

@@ -676,9 +676,41 @@ export async function dueForNextRung(now: Date, tx: Tx = db): Promise<{ created:
 }
 
 /**
+ * Repeat-purchase tasks that no longer fit the customer would otherwise sit on Today for months:
+ * - an at-risk task once the customer has gone dormant, been marked lost or merged away (new ones are never raised
+ *   for them either);
+ * - a next-rung task once the customer is lost or merged away, or has slipped into at risk (the at-risk task
+ *   takes over, or none when they are dormant).
+ * They are dismissed, not done: nobody acted on them.
+ */
+async function dismissStaleRepeatTasks(now: Date, t: Tx): Promise<number> {
+  const rows = await t
+    .update(tasks)
+    .set({ status: "dismissed", completedAt: now })
+    .where(
+      and(
+        inArray(tasks.type, ["at_risk", "next_rung"]),
+        eq(tasks.status, "open"),
+        sql`exists (
+          select 1 from contacts c
+          where c.id = ${tasks.contactId}
+            and (
+              c.stage = 'lost' or c.merged_into_id is not null
+              or (${tasks.type} = 'at_risk' and c.stage = 'dormant')
+              or (${tasks.type} = 'next_rung' and c.at_risk)
+            )
+        )`,
+      ),
+    )
+    .returning({ id: tasks.id });
+  return rows.length;
+}
+
+/**
  * "30 days past the expected next purchase -> owner, Today." Customers flagged at_risk (by the metrics module,
  * thresholds.atRiskDays) get an "at_risk" task with the next best offer, at most once a month and never while an
- * earlier at-risk task for them is still open. Dormant customers are left out (see below).
+ * earlier at-risk task for them is still open. Dormant customers are left out (see below). Repeat-purchase tasks
+ * that no longer fit (dismissStaleRepeatTasks) are dismissed first.
  */
 export async function atRisk(now: Date, tx: Tx = db): Promise<{ created: number }> {
   const w = await wording(tx);
@@ -695,6 +727,7 @@ export async function atRisk(now: Date, tx: Tx = db): Promise<{ created: number 
   );
   let created = 0;
   return inTx(tx, async (t) => {
+    await dismissStaleRepeatTasks(now, t);
     for await (const all of customerPages(where, t)) {
       // never while an earlier at-risk task is still open (indexed lookup per page; see dueForNextRung)
       const open = await contactTaskKeys(all.map((c) => c.id), "at_risk", null, t, { openOnly: true });

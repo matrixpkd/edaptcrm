@@ -1,5 +1,6 @@
 "use server";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { fail, ok, str, type ActionResult } from "@/lib/action";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
@@ -22,7 +23,8 @@ export async function mergePairAction(_prev: ActionResult, fd: FormData): Promis
   revalidatePath("/duplicates");
   revalidatePath("/contacts");
   revalidatePath(`/contacts/${winnerId}`);
-  return ok(undefined, "Merged. Undo is on the kept contact's Merge tab.");
+  // the merged pair leaves the list (and its message with it): say so at the top, with the way back to undo
+  redirect(`/duplicates?merged=${winnerId}`);
 }
 
 /** "Not the same person": the pair is closed and never flagged again. */

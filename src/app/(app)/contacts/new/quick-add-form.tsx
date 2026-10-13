@@ -178,7 +178,15 @@ export function QuickAddForm({
         )}
       </div>
 
-      <form id={FORM_ID} onSubmit={submit} noValidate className="space-y-5" aria-describedby={ids.status}>
+      {/* a number the user cannot open: nothing to fill in, the card above says what to do */}
+      <form
+        id={FORM_ID}
+        onSubmit={submit}
+        noValidate
+        hidden={!!existing && !attachTo}
+        className="space-y-5"
+        aria-describedby={ids.status}
+      >
         {/* Name and first door are kept from the record when the enquiry joins a known contact */}
         <div hidden={!!attachTo}>
           {/* Name */}
@@ -388,6 +396,8 @@ function ExistingContact({
   canRequestTransfer: boolean;
 }) {
   const [asking, setAsking] = useState(false);
+  // once the request is sent the form goes away, so it cannot be sent twice or look unsent
+  const [sent, setSent] = useState(false);
   const stage = STAGE_LABELS[existing.stage as Stage] ?? existing.stage;
   return (
     <div role="alert" className="mt-1 rounded-xl border border-warning/40 bg-warning/5 p-3">
@@ -422,7 +432,7 @@ function ExistingContact({
             </p>
           </>
         ) : canRequestTransfer ? (
-          asking ? null : (
+          asking || sent ? null : (
             <Button variant="outline" onClick={() => setAsking(true)} className="flex-1 sm:flex-none">
               Request transfer
             </Button>
@@ -433,8 +443,18 @@ function ExistingContact({
           </p>
         )}
       </div>
-      {asking && (
-        <ActionForm action={requestTransferAction} className="mt-3 space-y-2" aria-label="Request transfer">
+      {sent && (
+        <p role="status" className="mt-3 rounded-lg bg-success/10 px-3 py-2 text-sm text-success">
+          Your manager has the request. The contact moves to you once they approve it.
+        </p>
+      )}
+      {asking && !sent && (
+        <ActionForm
+          action={requestTransferAction}
+          onSuccess={() => setSent(true)}
+          className="mt-3 space-y-2"
+          aria-label="Request transfer"
+        >
           <input type="hidden" name="contactId" value={existing.id} />
           <Field label="Why do you need this contact?" htmlFor="qa-transfer-reason">
             <Input id="qa-transfer-reason" name="reason" required defaultValue="They contacted me directly" />

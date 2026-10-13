@@ -356,6 +356,33 @@ describe("dueForNextRung and atRisk", () => {
     // still open next-next month: no pile-up
     expect(await atRisk(at(62 * D))).toEqual({ created: 0 });
   });
+
+  it("dismisses an open at-risk task once the customer has gone dormant or lost, and leaves the others open", async () => {
+    const sales = await makeUser({ role: "sales" });
+    const goesQuiet = await customer({ ownerId: sales.id, atRisk: true, nextExpectedAt: at(-45 * D) });
+    const getsLost = await customer({ ownerId: sales.id, atRisk: true, nextExpectedAt: at(-45 * D) });
+    const stays = await customer({ ownerId: sales.id, atRisk: true, nextExpectedAt: at(-45 * D) });
+    expect(await atRisk(NOW)).toEqual({ created: 3 });
+
+    await db.update(contacts).set({ stage: "dormant" }).where(eq(contacts.id, goesQuiet.id));
+    await db.update(contacts).set({ stage: "lost" }).where(eq(contacts.id, getsLost.id));
+    expect(await atRisk(at(D))).toEqual({ created: 0 });
+    const status = Object.fromEntries((await tasksOf("at_risk")).map((t) => [t.contactId, t.status]));
+    expect(status).toEqual({ [goesQuiet.id]: "dismissed", [getsLost.id]: "dismissed", [stays.id]: "open" });
+  });
+
+  it("dismisses an open next-rung task once the customer has slipped into at risk", async () => {
+    const sales = await makeUser({ role: "sales" });
+    const slips = await customer({ ownerId: sales.id, nextExpectedAt: at(3 * D), nextOffer: "The AI Office" });
+    const onTime = await customer({ ownerId: sales.id, nextExpectedAt: at(3 * D) });
+    expect(await dueForNextRung(NOW)).toEqual({ created: 2 });
+
+    await db.update(contacts).set({ atRisk: true }).where(eq(contacts.id, slips.id));
+    expect(await atRisk(at(40 * D))).toEqual({ created: 1 });
+    const status = Object.fromEntries((await tasksOf("next_rung")).map((t) => [t.contactId, t.status]));
+    expect(status).toEqual({ [slips.id]: "dismissed", [onTime.id]: "open" });
+    expect((await tasksOf("at_risk")).map((t) => t.contactId)).toEqual([slips.id]);
+  });
 });
 
 describe("instalmentsDue", () => {

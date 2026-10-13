@@ -162,7 +162,8 @@ function compareRanked(a: Ranked, b: Ranked): number {
  * The "why it is here" context of a row, after the task reason:
  * - leads: "Grade A lead" and "enquired 2h ago";
  * - customers: "Grade B customer", "Expected to buy around 12 Oct" (or "Was expected to buy around ...");
- * - timing of the primary task: "Overdue 2 days" when its due date is before today, "Due 4:00 pm" later today.
+ * - timing of the primary task: "Overdue 2 days" when a follow-up or instalment was due before today ("Open for
+ *   2 days" for an alert raised before today), "Due 4:00 pm" later today.
  */
 export function contextFor(
   task: Pick<QueueTask, "dueAt" | "type" | "synthetic">,
@@ -191,9 +192,27 @@ export function contextFor(
   // a derived new-lead row's "due" time is when it was assigned: not a deadline
   if (task.synthetic) return out;
   const days = localDaysBetween(task.dueAt, now, timeZone);
-  if (days > 0) out.push(`Overdue ${days} day${days === 1 ? "" : "s"}`);
+  const plural = `${days} day${days === 1 ? "" : "s"}`;
+  // only a follow-up or an instalment has a real deadline; an alert's due time is when it was raised
+  if (days > 0) out.push(DEADLINE_TYPES.includes(task.type) ? `Overdue ${plural}` : `Open for ${plural}`);
   else if (task.dueAt.getTime() > now.getTime()) out.push(`Due ${localTime(task.dueAt, timeZone)}`);
   return out;
+}
+
+const DEADLINE_TYPES: TaskType[] = ["follow_up", "instalment_due"];
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const AT_RISK_DAYS = /^At risk: \d+ days past/;
+
+/**
+ * A task's reason as of `now`. The at-risk alert's text counts the days past the expected purchase when it was
+ * raised ("At risk: 36 days past ..."); a task left open for months would show a stale count, so the count is
+ * worked out again from the contact's expected purchase date. Every other reason is shown as stored.
+ */
+export function liveReason(task: Pick<QueueTask, "type" | "reason">, contact: QueueContact | null, now: Date): string {
+  if (task.type !== "at_risk" || !contact?.nextExpectedAt || !AT_RISK_DAYS.test(task.reason)) return task.reason;
+  const days = Math.max(0, Math.floor((now.getTime() - contact.nextExpectedAt.getTime()) / DAY_MS));
+  return task.reason.replace(AT_RISK_DAYS, `At risk: ${days} day${days === 1 ? "" : "s"} past`);
 }
 
 export type BuildQueueOptions = {
@@ -237,7 +256,7 @@ export function buildQueue(tasks: QueueTask[], opts: BuildQueueOptions): BuiltQu
   for (const [key, list] of groups) {
     const top = list[0];
     const { contact, ...primary } = top.task;
-    const reasons = list.map((r) => r.task.reason);
+    const reasons = list.map((r) => liveReason(r.task, r.task.contact, opts.now));
     const stored = list.filter((r) => !r.task.synthetic);
     rows.push({
       key,
@@ -247,8 +266,8 @@ export function buildQueue(tasks: QueueTask[], opts: BuildQueueOptions): BuiltQu
       primary,
       taskIds: stored.map((r) => r.task.id),
       types: [...new Set(list.map((r) => r.task.type))],
-      reason: top.task.reason,
-      alsoReasons: [...new Set(reasons.slice(1).filter((x) => x !== top.task.reason))],
+      reason: reasons[0],
+      alsoReasons: [...new Set(reasons.slice(1).filter((x) => x !== reasons[0]))],
       // filled in below for the rows that survive the cap (date formatting is the slow part of a long queue)
       context: [],
       contact,

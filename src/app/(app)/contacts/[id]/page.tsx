@@ -309,7 +309,7 @@ export default async function ContactPage({
             <p className="mt-0.5 text-xs text-muted">
               {c.purchaseCount === 0
                 ? "No paid purchase yet"
-                : `${c.purchaseCount} purchase${c.purchaseCount === 1 ? "" : "s"}, verified cash`}
+                : `${c.purchaseCount} purchase${c.purchaseCount === 1 ? "" : "s"}, verified payments`}
             </p>
           </div>
           <Link

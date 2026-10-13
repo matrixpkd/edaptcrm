@@ -1055,10 +1055,9 @@ function planBuyer(
   if (r.chance(0.1)) planSupportIssue(w, s, t + r.int(1, 25) * DAY);
 
   // repeat purchases
-  let last = t;
   if (r.chance(0.26)) {
-    last = planRepeat(w, s, last);
-    if (r.chance(0.35)) last = planRepeat(w, s, last);
+    const last = planRepeat(w, s, t);
+    if (r.chance(0.35)) planRepeat(w, s, last);
   }
   // the climb
   const climbP = s.job.industry === "business_owner" ? 0.28 : s.job.industry === "senior_manager" || s.job.industry === "it_professional" ? 0.14 : 0.07;
@@ -1769,7 +1768,6 @@ function planPersonal(w: World, who: MemberKey, list: { city: string; job: Occup
 }
 
 function planB2B(w: World) {
-  const T0 = w.T0;
   // a school in Thrissur buys the School AI program
   const principal = newStory(w, person(w, { city: "Thrissur", community: "malayali_christian", gender: "f" }), { rep: "ravi", langKnown: true });
   principal.job = { industry: "teacher", designation: "Principal", company: "St. Mary's Higher Secondary School" };

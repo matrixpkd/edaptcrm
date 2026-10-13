@@ -10,7 +10,6 @@ export function safeNextPath(raw: string | null | undefined, fallback: string): 
   const v = (raw ?? "").trim();
   if (!v || v.length > 500) return fallback;
   if (!v.startsWith("/") || v.startsWith("//")) return fallback;
-  // eslint-disable-next-line no-control-regex
   if (/[\\\u0000-\u001f\u007f]/.test(v)) return fallback;
   try {
     const base = "https://same-site.invalid";

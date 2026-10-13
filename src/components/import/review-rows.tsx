@@ -45,7 +45,12 @@ function Outcome({ row, batchId, editable }: { row: ReviewRow; batchId: string; 
             )}
           </p>
           <p className="text-xs text-muted">
-            {applied.undoNote ?? (applied.withCreatedContact ? "Undone with the contact this import created" : "Put back as it was by the undo")}
+            {applied.undoNote ??
+              (applied.withCreatedContact
+                ? "Undone with the contact this import created"
+                : Object.keys(applied.before ?? {}).length || Object.keys(applied.after ?? {}).length
+                  ? "Put back as it was by the undo"
+                  : "Its details were not changed; what this row added was removed by the undo")}
           </p>
         </div>
       );

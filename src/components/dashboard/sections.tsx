@@ -332,7 +332,7 @@ export function AtRiskSection({
       </div>
       <p className="mt-3 text-sm text-muted">
         More than {plural(atRiskDays, "day")} past their expected next purchase.{" "}
-        {data.count > 0 && <>They have spent {formatINRCompact(data.ltvInr)} with Edapt so far. Each one is on its owner&apos;s Today list.</>}
+        {data.count > 0 && <>They have spent {formatINRCompact(data.ltvInr)} with Edapt so far. Active ones are on their owner&apos;s Today list; dormant ones are counted here only.</>}
       </p>
     </Section>
   );

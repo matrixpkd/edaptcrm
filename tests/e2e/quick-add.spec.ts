@@ -20,10 +20,15 @@ test("a known number shows the existing contact and its owner before saving, and
   await expect(card.getByRole("link", { name: "Open contact" })).toHaveCount(0);
   await expect(card.getByRole("button", { name: "Request transfer" })).toBeVisible();
 
-  // fill the rest: saving stays blocked
-  await page.getByRole("textbox", { name: /^Name/ }).fill(uniqueName("Again"));
-  const save = page.getByRole("button", { name: "Already in the CRM" });
-  await expect(save).toBeDisabled();
+  // nothing to fill in: the rest of the form is hidden, so it cannot be saved as a second record
+  await expect(page.getByRole("textbox", { name: /^Name/ })).toBeHidden();
+  await expect(page.getByRole("button", { name: /^(Save contact|Already in the CRM)$/ })).toBeHidden();
+
+  // the transfer request replaces itself with a confirmation, so it cannot be sent twice
+  await card.getByRole("button", { name: "Request transfer" }).click();
+  await card.getByRole("button", { name: "Send to manager" }).click();
+  await expect(card.getByRole("status")).toContainText("Your manager has the request");
+  await expect(card.getByRole("button", { name: "Send to manager" })).toHaveCount(0);
   expect(await findContactByPhone(phone.e164)).toMatchObject({ id: existing.id, ownerId: await userId("sales2") });
 });
 

@@ -94,10 +94,11 @@ export function UndoButton({
         className={size === "sm" ? "max-md:h-10" : undefined}
         disabled={pending}
         onClick={() => {
+          const people = (n: number) => `${n.toLocaleString("en-IN")} ${n === 1 ? "contact" : "contacts"}`;
           const msg =
-            `Undo the import of ${fileName}? This deletes the ${created.toLocaleString("en-IN")} contacts it created ` +
+            `Undo the import of ${fileName}? This deletes the ${people(created)} it created ` +
             `(except any with calls, purchases or edits since), removes its purchases and enquiries, and puts back what it ` +
-            `changed on ${updated.toLocaleString("en-IN")} existing contacts.`;
+            `changed on ${people(updated)} already in the CRM.`;
           if (!window.confirm(msg)) return;
           setError(null);
           startTransition(async () => {

@@ -11,6 +11,7 @@ import { requireUser } from "@/lib/auth/session";
 import { aiAvailable } from "@/lib/import/ai";
 import { committedSources, listBatches, uniqueCustomerCount, type BatchListItem } from "@/lib/import/batches";
 import { IMPORT_ORDER, SOURCE_INFO, isImportSource } from "@/lib/import/types";
+import { directUploadAvailable } from "@/lib/storage";
 import { formatDate, formatDateTime } from "@/lib/utils";
 
 export const metadata = { title: "Import" };
@@ -60,7 +61,7 @@ export default async function ImportPage() {
         <Card>
           <CardHeader title="New import" description="Step 1 of 6: where the file comes from, and the file." />
           <CardBody>
-            <UploadForm aiEnabled={aiAvailable()} suggested={suggested} />
+            <UploadForm aiEnabled={aiAvailable()} suggested={suggested} directUpload={directUploadAvailable()} />
           </CardBody>
         </Card>
 

@@ -2,9 +2,13 @@
  * Next best offer (spec "Repeat purchase and revenue forecast" > "Next best offer"). PURE.
  *
  * Rules come from settings `nbo.rules` and are checked in order: the first active rule whose conditions ALL
- * match wins. The offer's price (INR) feeds the 90-day forecast:
- *   rule.price, else the rule's product list price (converted to INR), else the cheapest active product on the
- *   rung above the contact's current rung, else unknown (null).
+ * match wins. The offer's product and price (INR, feeds the 90-day forecast) resolve in this order:
+ *   1. rule.price (the product is still named by 2-4 when one of them finds one)
+ *   2. the rule's productId product (list price converted to INR)
+ *   3. the active product whose name equals rule.productName (case-insensitive)
+ *   4. the cheapest active product in rule.family
+ *   5. the cheapest active product on the rung above the contact's current rung
+ *   else unknown (null). A step whose product cannot be priced (no list price, no rate) passes to the next one.
  */
 import type { NboCondition, NboRule } from "@/lib/settings/defaults";
 import { normalizeCountry } from "./scoring";
@@ -49,6 +53,9 @@ export type NextBestOffer = {
   productId: string | null;
   priceInr: number | null;
 };
+
+/** The product an offer points at: by id, else by exact name, else the cheapest in its family (see the header). */
+export type OfferTarget = Pick<NboRule, "productId" | "productName" | "family">;
 
 export type Region = "gcc" | "india" | "rest_of_world";
 
@@ -115,9 +122,18 @@ function priceOf(p: NboProduct, ctx: NboContext): number | null {
 
 /** Cheapest active, priced product on the given rung (ties: by name). */
 export function cheapestOnRung(rung: number, ctx: NboContext): { product: NboProduct; priceInr: number } | null {
+  return cheapestWhere((p) => p.rung === rung, ctx);
+}
+
+/** Cheapest active, priced product in the given family (ties: by name). */
+export function cheapestInFamily(family: string, ctx: NboContext): { product: NboProduct; priceInr: number } | null {
+  return cheapestWhere((p) => lower(p.family) === lower(family), ctx);
+}
+
+function cheapestWhere(keep: (p: NboProduct) => boolean, ctx: NboContext): { product: NboProduct; priceInr: number } | null {
   let best: { product: NboProduct; priceInr: number } | null = null;
   for (const p of ctx.products) {
-    if (!p.active || p.rung !== rung) continue;
+    if (!p.active || !keep(p)) continue;
     const price = priceOf(p, ctx);
     if (price === null) continue;
     if (!best || price < best.priceInr || (price === best.priceInr && p.name < best.product.name)) best = { product: p, priceInr: price };
@@ -125,24 +141,47 @@ export function cheapestOnRung(rung: number, ctx: NboContext): { product: NboPro
   return best;
 }
 
+/**
+ * The products a rule names, in resolution order (steps 2-4 of the header), each with its INR price or null when
+ * it cannot be priced. An explicit productId is honoured even when the product is inactive.
+ */
+export function offerCandidates(target: OfferTarget, ctx: NboContext): { product: NboProduct; priceInr: number | null }[] {
+  const out: { product: NboProduct; priceInr: number | null }[] = [];
+  const byId = target.productId ? ctx.products.find((p) => p.id === target.productId) : undefined;
+  if (byId) out.push({ product: byId, priceInr: priceOf(byId, ctx) });
+  const name = lower(target.productName);
+  if (name) {
+    const named = ctx.products.filter((p) => p.active && lower(p.name) === name);
+    // several active products with the same name: the cheapest priced one
+    const priced = cheapestWhere((p) => named.includes(p), ctx);
+    const hit = priced ?? (named[0] ? { product: named[0], priceInr: null } : null);
+    if (hit) out.push(hit);
+  }
+  const family = lower(target.family);
+  if (family) {
+    const hit = cheapestInFamily(family, ctx);
+    if (hit) out.push(hit);
+  }
+  return out;
+}
+
 export function nextBestOffer(facts: NboFacts, rules: NboRule[], ctx: NboContext): NextBestOffer | null {
   const rule = rules.find((r) => ruleMatches(r, facts, ctx));
   if (!rule) return null;
   const out: NextBestOffer = { ruleId: rule.id, offer: rule.offer, productId: null, priceInr: null };
 
-  const product = rule.productId ? ctx.products.find((p) => p.id === rule.productId) : undefined;
-  if (product) out.productId = product.id;
+  const candidates = offerCandidates(rule, ctx);
+  // the product the rule names is kept even when a later step gives the price
+  if (candidates[0]) out.productId = candidates[0].product.id;
 
   if (rule.price !== null && rule.price !== undefined && Number.isFinite(Number(rule.price)) && Number(rule.price) >= 0) {
     out.priceInr = Number(rule.price);
     return out;
   }
-  if (product) {
-    const price = priceOf(product, ctx);
-    if (price !== null) {
-      out.priceInr = price;
-      return out;
-    }
+  const priced = candidates.find((c) => c.priceInr !== null);
+  if (priced) {
+    out.priceInr = priced.priceInr;
+    return out;
   }
   const above = cheapestOnRung(facts.currentRung + 1, ctx);
   if (above) {

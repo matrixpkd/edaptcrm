@@ -1,25 +1,25 @@
 "use server";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { count, eq, sql } from "drizzle-orm";
-import { db } from "@/db";
-import { users } from "@/db/schema";
 import { createSession, destroySession } from "@/lib/auth/session";
-import { hashPassword, verifyPassword } from "@/lib/auth/password";
-import { audit } from "@/lib/audit";
+import { authenticate, createFirstAdmin } from "@/lib/auth/login";
+import { clientIp } from "@/lib/auth/login-limit";
+import { safeNextPath } from "@/lib/auth/redirect";
 import { fail, str, type ActionResult } from "@/lib/action";
 
+/** Passwords are read as typed: spaces at either end are part of the password. */
+function rawField(fd: FormData, key: string): string | null {
+  const v = fd.get(key);
+  return typeof v === "string" && v !== "" ? v : null;
+}
+
 export async function loginAction(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
-  const email = str(formData, "email")?.toLowerCase();
-  const password = str(formData, "password");
-  if (!email || !password) return fail("Enter your email and password.");
-  const [user] = await db.select().from(users).where(eq(sql`lower(${users.email})`, email)).limit(1);
-  const okPw = await verifyPassword(password, user?.passwordHash);
-  if (!user || !okPw) return fail("That email and password don't match.");
-  if (!user.active) return fail("This account has been deactivated. Ask your admin.");
-  await createSession(user.id);
-  await audit({ table: "users", rowId: user.id, action: "login", userId: user.id });
-  const next = str(formData, "next");
-  redirect(next && next.startsWith("/") && !next.startsWith("//") ? next : "/today");
+  const ip = clientIp(await headers());
+  const r = await authenticate(str(formData, "email"), rawField(formData, "password"), ip);
+  if (!r.ok) return fail(r.error);
+  await createSession(r.userId);
+  // only a path on this site: never "//evil.com", "/\evil.com" or an absolute URL
+  redirect(safeNextPath(str(formData, "next"), "/today"));
 }
 
 export async function logoutAction(): Promise<void> {
@@ -27,19 +27,14 @@ export async function logoutAction(): Promise<void> {
   redirect("/login");
 }
 
-/** First-run only: creates the first admin when there are no users at all. */
+/** First-run only: creates the first admin when there are no users at all (race-safe, see createFirstAdmin). */
 export async function setupAction(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
-  const [{ n }] = await db.select({ n: count() }).from(users);
-  if (n > 0) return fail("Setup is already complete. Sign in instead.");
-  const name = str(formData, "name");
-  const email = str(formData, "email")?.toLowerCase();
-  const password = str(formData, "password");
-  if (!name || !email || !password) return fail("All fields are required.");
-  if (password.length < 8) return fail("Use at least 8 characters for the password.");
-  const [u] = await db
-    .insert(users)
-    .values({ name, email, passwordHash: await hashPassword(password), role: "admin", team: "kerala" })
-    .returning({ id: users.id });
-  await createSession(u.id);
+  const r = await createFirstAdmin({
+    name: str(formData, "name"),
+    email: str(formData, "email"),
+    password: rawField(formData, "password"),
+  });
+  if (!r.ok) return fail(r.error);
+  await createSession(r.userId);
   redirect("/settings/users");
 }

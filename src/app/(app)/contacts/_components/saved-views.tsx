@@ -53,7 +53,7 @@ export function SavedViews({
             <span
               key={v.id}
               className={cn(
-                "inline-flex h-8 items-center rounded-full border text-sm font-medium",
+                "inline-flex h-9 items-center rounded-full border text-sm font-medium",
                 active ? "border-foreground bg-foreground text-white" : "border-border bg-surface",
               )}
             >
@@ -62,7 +62,7 @@ export function SavedViews({
                 aria-current={active ? "true" : undefined}
                 className={cn(
                   "inline-flex h-full items-center gap-1.5 rounded-full pl-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  v.mine || canDeleteShared ? "pr-1" : "pr-3",
+                  v.mine || canDeleteShared ? "pr-2" : "pr-3",
                   !active && "hover:bg-surface-muted",
                 )}
                 title={v.shared ? `Shared${v.ownerName ? ` by ${v.ownerName}` : ""}` : "Only you see this view"}
@@ -85,7 +85,7 @@ export function SavedViews({
                     type="submit"
                     aria-label={`Delete view ${v.name}`}
                     className={cn(
-                      "mr-1 flex h-6 w-6 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "mr-0.5 flex h-8 w-8 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       active ? "hover:bg-white/20" : "text-muted hover:bg-surface-muted",
                     )}
                   >

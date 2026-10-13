@@ -135,7 +135,10 @@ export async function logInteraction(
     }
 
     if (input.nextFollowUpAt) {
-      const assignee = c.ownerId ?? (actor?.role === "sales" ? actor.id : null);
+      // A support person follows up their own support issue (Today is a support screen too, spec "Screens"); the
+      // task is theirs, the contact's owner never changes (rule 7). Any other follow-up goes to the owner.
+      const supportOwnsIt = actor?.role === "support" && input.type === "support_issue";
+      const assignee = supportOwnsIt ? actor.id : (c.ownerId ?? (actor?.role === "sales" ? actor.id : null));
       const setByName = actor && actor.id !== assignee ? await userName(actor.id, t) : null;
       await createTask(
         {

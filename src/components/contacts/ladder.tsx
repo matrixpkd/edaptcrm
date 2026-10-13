@@ -1,4 +1,5 @@
 import { ArrowRight, TrendingUp } from "lucide-react";
+import { ladderPosition } from "@/lib/metrics/ladder";
 import type { ProductFamily, Rung } from "@/lib/settings/defaults";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatDate, formatINR, pct } from "@/lib/utils";
@@ -6,6 +7,8 @@ import { cn, formatDate, formatINR, pct } from "@/lib/utils";
 /**
  * "A ladder, not a funnel": every contact page shows the current rung, the next rung, the next best offer,
  * the expected 90-day revenue and when the next purchase is expected (or that they are at risk).
+ * The next rung agrees with the next best offer (src/lib/metrics/ladder.ts): delegation alumni offered The AI Office
+ * see The AI Office as their next step, not the workshop rung.
  */
 export function LadderCard({
   currentRung,
@@ -13,6 +16,7 @@ export function LadderCard({
   families,
   bought,
   nextOffer,
+  offerRung = null,
   expected90dInr,
   repeatProb90d,
   nextExpectedAt,
@@ -27,6 +31,8 @@ export function LadderCard({
   families: ProductFamily[];
   bought: string[];
   nextOffer: string | null;
+  /** the rung the next best offer points at (offerRung() in src/lib/metrics/ladder.ts) */
+  offerRung?: number | null;
   expected90dInr: number | null;
   repeatProb90d: number | null;
   nextExpectedAt: Date | null;
@@ -37,9 +43,7 @@ export function LadderCard({
   now?: Date;
 }) {
   const ordered = [...rungs].sort((a, b) => a.rung - b.rung);
-  const current = ordered.find((r) => r.rung === currentRung) ?? null;
-  const next = ordered.find((r) => r.rung > currentRung) ?? null;
-  const sideGroups = families.filter((f) => f.rung == null && bought.includes(f.key));
+  const { current, next, nextFromOffer, alsoBought: sideGroups } = ladderPosition({ currentRung, rungs, families, bought, offerRung });
   const daysToNext = nextExpectedAt
     ? Math.round((new Date(nextExpectedAt).getTime() - now.getTime()) / 86_400_000)
     : null;
@@ -99,6 +103,7 @@ export function LadderCard({
         <div className="min-w-0">
           <dt className="text-xs text-muted">Next rung</dt>
           <dd className="font-semibold">{next ? next.label : "Top rung: renewal and referrals"}</dd>
+          {nextFromOffer && <dd className="text-xs text-muted">Straight there: the next best offer</dd>}
         </div>
       </dl>
       {sideGroups.length > 0 && (

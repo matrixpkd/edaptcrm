@@ -28,6 +28,7 @@ describe("updateContactProfile", () => {
   it("saves whitelisted fields and audits every change", async () => {
     const s = await makeUser({ role: "sales" });
     const c = await lead({ ownerId: s.id, name: "Old Name" });
+    const [acme] = await db.insert(organisations).values({ name: "Acme", kind: "company" }).returning();
     const r = await updateContactProfile(
       c.id,
       {
@@ -42,6 +43,7 @@ describe("updateContactProfile", () => {
         tags: ["VIP", "VIP", " B2B "],
         consent: true,
         type: "business",
+        organisationId: acme.id,
         lastCampaign: "claude_mastery_meta",
       },
       s,
@@ -94,6 +96,24 @@ describe("updateContactProfile", () => {
     await expect(updateContactProfile(c.id, { organisationId: "00000000-0000-0000-0000-000000000000" }, m)).rejects.toThrow(/organisation/);
     const [org] = await db.insert(organisations).values({ name: "Govt School Koduvally", kind: "school" }).returning();
     expect((await updateContactProfile(c.id, { organisationId: org.id }, m)).organisationId).toBe(org.id);
+  });
+
+  it("a business (B2B) contact needs its organisation (spec: Organisation required for B2B)", async () => {
+    const s = await makeUser({ role: "sales" });
+    const c = await lead({ ownerId: s.id });
+    await expect(updateContactProfile(c.id, { type: "business" }, s)).rejects.toThrow(/school, office or company/);
+    const [org] = await db.insert(organisations).values({ name: "Govt School Koduvally", kind: "school" }).returning();
+    const b = await updateContactProfile(c.id, { type: "business", organisationId: org.id }, s);
+    expect(b).toMatchObject({ type: "business", organisationId: org.id });
+    // unlinking the organisation of a business contact is refused; switching back to individual first works
+    await expect(updateContactProfile(c.id, { organisationId: null }, s)).rejects.toBeInstanceOf(ContactValidationError);
+    // re-saving the unchanged type and organisation, or other fields, is never blocked
+    expect((await updateContactProfile(c.id, { type: "business", organisationId: org.id, city: "Kochi" }, s)).city).toBe("Kochi");
+    const i = await updateContactProfile(c.id, { type: "individual", organisationId: null }, s);
+    expect(i).toMatchObject({ type: "individual", organisationId: null });
+    // an older business record without an organisation can still be edited
+    await db.update(contacts).set({ type: "business" }).where(eq(contacts.id, c.id));
+    expect((await updateContactProfile(c.id, { type: "business", organisationId: null, city: "Thrissur" }, s)).city).toBe("Thrissur");
   });
 
   it("first door is immutable except for an admin correction, which is audited", async () => {

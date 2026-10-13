@@ -1,9 +1,9 @@
 /** CSV writing for the invalid-rows download. Pure. */
+import { neutraliseFormula } from "@/lib/admin/csv";
 
 /** A CSV cell; text that a spreadsheet would run as a formula is prefixed with ' so it stays text. */
 export function csvCell(v: unknown): string {
-  let s = v === null || v === undefined ? "" : String(v);
-  if (/^[=+@\t\r]|^-(?!\d)/.test(s)) s = `'${s}`;
+  const s = neutraliseFormula(v === null || v === undefined ? "" : String(v));
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

@@ -10,6 +10,7 @@ import { contacts, enquiries, payments, purchases, tasks, type Contact, type Pur
 import { createTask } from "@/lib/alerts/core";
 import { audit } from "@/lib/audit";
 import { can, type Permission } from "@/lib/auth/permissions";
+import { selectContacts } from "@/lib/contacts/rows";
 import { recomputeContact } from "@/lib/metrics/recompute";
 import { getSetting } from "@/lib/settings";
 import { DAY_MS, isUuid } from "@/lib/utils";
@@ -38,7 +39,7 @@ export async function resolveContact(contactId: string, t: Tx): Promise<Contact 
   if (!isUuid(contactId)) return null;
   let id: string | null = contactId;
   for (let hop = 0; id && hop < 10; hop++) {
-    const [c]: Contact[] = await t.select().from(contacts).where(eq(contacts.id, id)).limit(1);
+    const [c]: Contact[] = await selectContacts(eq(contacts.id, id), t, { limit: 1 });
     if (!c) return null;
     if (!c.mergedIntoId) return c;
     id = c.mergedIntoId;
@@ -122,9 +123,20 @@ export async function assertReferenceFree(
   opts: { ownPurchaseId?: string | null; excludePaymentId?: string | null; actorId?: string | null } = {},
 ): Promise<void> {
   if (!reference) return;
+  // the usual case, a reference nobody holds: one look at both unique indexes instead of four queries
+  if (!(await referenceInUse(reference, t))) return;
   await releaseCancelledReference(reference, t, opts.actorId ?? null);
   const holder = await findReferenceHolder(reference, t, opts);
   if (holder) throw new DuplicateReferenceError({ reference, label, ...holder });
+}
+
+/** True when any purchase or payment (live or cancelled) carries this reference. */
+async function referenceInUse(reference: string, t: Tx): Promise<boolean> {
+  const [r] = await t.execute<{ used: number | string }>(sql`
+    select (exists (select 1 from purchases where reference = ${reference})
+        or exists (select 1 from payments where reference = ${reference}))::int as used
+  `);
+  return Number(r?.used) === 1;
 }
 
 /**
@@ -222,20 +234,24 @@ export async function onVerifiedMoney(
     actorId: string | null;
     /** false for imported history: no "call to thank" for a payment made long ago */
     newAdvocate?: boolean;
+    /** the payments were created in this transaction, so no alert task is about them yet */
+    newPayments?: boolean;
   },
   t: Tx,
 ): Promise<void> {
   const { contactId, paymentIds, purchaseId, actorId } = opts;
   if (!paymentIds.length) return;
-  const [contact] = await t
-    .select({ id: contacts.id, name: contacts.name, referredById: contacts.referredById })
-    .from(contacts)
-    .where(eq(contacts.id, contactId))
-    .limit(1);
-  if (!contact) return;
 
-  // 1. New advocate
-  if (contact.referredById && opts.newAdvocate !== false) {
+  // 1. New advocate (never for imported history, so the contact is not even read then)
+  const [contact] =
+    opts.newAdvocate === false
+      ? [null]
+      : await t
+          .select({ id: contacts.id, name: contacts.name, referredById: contacts.referredById })
+          .from(contacts)
+          .where(eq(contacts.id, contactId))
+          .limit(1);
+  if (contact?.referredById) {
     const [earlier] = await t
       .select({ id: payments.id })
       .from(payments)
@@ -310,7 +326,7 @@ export async function onVerifiedMoney(
   }
 
   // 3. Alerts about these payments
-  await closePaymentTasks(contactId, paymentIds, ["unverified_payment", "instalment_due"], actorId, t);
+  if (!opts.newPayments) await closePaymentTasks(contactId, paymentIds, ["unverified_payment", "instalment_due"], actorId, t);
 }
 
 /**

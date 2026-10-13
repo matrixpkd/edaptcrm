@@ -21,7 +21,7 @@ export function Tabs({
               scroll={false}
               aria-current={t.key === active ? "page" : undefined}
               className={cn(
-                "-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium",
+                "-mb-px inline-flex min-h-11 items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 t.key === active ? "border-foreground text-foreground" : "border-transparent text-muted hover:text-foreground",
               )}
             >

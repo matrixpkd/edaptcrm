@@ -276,6 +276,15 @@ export async function updateContactProfile(
       }
       if (orgId !== c.organisationId) next.organisationId = orgId;
     }
+    // spec "Customer profile": the organisation is required for a B2B (business) contact. Checked when this edit
+    // makes the contact a business or unlinks its organisation, so older records can still be edited otherwise.
+    if (next.type !== undefined || next.organisationId !== undefined) {
+      const type = next.type ?? c.type;
+      const orgId = next.organisationId !== undefined ? next.organisationId : c.organisationId;
+      if (type === "business" && !orgId) {
+        throw new ContactValidationError("Link the school, office or company for a business contact", "organisationId");
+      }
+    }
     for (const f of ["city", "state", "designation", "companyName", "lastCampaign"] as const) {
       if (!has(f)) continue;
       const v = cleanText(patch[f]);

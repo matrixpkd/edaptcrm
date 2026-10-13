@@ -1,4 +1,5 @@
 "use client";
+import { useId } from "react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -33,10 +34,14 @@ export function RadioChips<T extends string>({
   className?: string;
 }) {
   const errorId = error ? `${name}-error` : undefined;
+  // the legend sits in a layout row, not as the fieldset's first child, so it names the group explicitly
+  const legendId = useId();
   return (
-    <fieldset className={className} aria-describedby={errorId}>
+    <fieldset className={className} aria-describedby={errorId} aria-labelledby={legendId}>
       <div className="mb-2 flex items-center justify-between gap-3">
-        <legend className="text-sm font-semibold">{legend}</legend>
+        <legend id={legendId} className="text-sm font-semibold">
+          {legend}
+        </legend>
         {legendExtra}
       </div>
       <div className="flex flex-wrap gap-2">
@@ -105,11 +110,14 @@ export function ScaleRadios({
   clearLabel?: string;
 }) {
   const showClear = canClear ?? value !== null;
+  const legendId = useId();
   return (
-    <fieldset>
+    <fieldset aria-labelledby={legendId}>
       <div className="mb-2 flex items-start justify-between gap-3">
         <div>
-          <legend className="text-sm font-semibold">{legend}</legend>
+          <legend id={legendId} className="text-sm font-semibold">
+            {legend}
+          </legend>
           {hint && <p className="mt-0.5 text-xs text-muted">{hint}</p>}
         </div>
         <div className="flex shrink-0 items-center gap-2">

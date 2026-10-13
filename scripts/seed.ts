@@ -7,28 +7,23 @@ import { count, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { products, users } from "@/db/schema";
 import { hashPassword } from "@/lib/auth/password";
-
-const STARTER_PRODUCTS = [
-  { name: "Entry AI Workshop", family: "workshop", rung: 1, listPrice: 699, currency: "INR" },
-  { name: "AI Workshop", family: "workshop", rung: 1, listPrice: 999, currency: "INR" },
-  { name: "AI Agents for Business", family: "workshop", rung: 1, listPrice: 1999, currency: "INR" },
-  { name: "Applied AI Mastery", family: "applied_ai_mastery", rung: 2, listPrice: 24999, currency: "INR" },
-  { name: "The AI Office membership", family: "ai_office", rung: 3, listPrice: 999, currency: "USD" },
-  { name: "Premium program", family: "premium", rung: 4, listPrice: 150000, currency: "INR" },
-  { name: "Consulting engagement", family: "consulting", rung: 4, listPrice: 50000, currency: "INR" },
-  { name: "School AI program", family: "b2b_program", rung: null, listPrice: 100000, currency: "INR" },
-  { name: "Constituency AI literacy program", family: "constituency_program", rung: null, listPrice: 200000, currency: "INR" },
-  { name: "International delegation", family: "delegation", rung: null, listPrice: 150000, currency: "INR", active: false },
-];
+import { STARTER_PRODUCTS } from "./starter-products";
 
 async function main() {
   const email = (process.env.ADMIN_EMAIL ?? "umer@edapt.in").toLowerCase();
   const [existing] = await db.select().from(users).where(eq(sql`lower(${users.email})`, email)).limit(1);
   if (!existing) {
+    // the documented dev default must never become a real admin password: outside a local database, insist on
+    // a real ADMIN_PASSWORD (docs/SECURITY.md)
+    const password = process.env.ADMIN_PASSWORD ?? "change-me-now";
+    const local = /@(localhost|127\.0\.0\.1|\[::1\])(:\d+)?\//.test(process.env.DATABASE_URL ?? "");
+    if (!local && (password === "change-me-now" || password.length < 10)) {
+      throw new Error("Set ADMIN_PASSWORD (at least 10 characters, not the example value) to seed an admin outside a local database.");
+    }
     await db.insert(users).values({
       name: process.env.ADMIN_NAME ?? "Umer Abdussalam",
       email,
-      passwordHash: await hashPassword(process.env.ADMIN_PASSWORD ?? "change-me-now"),
+      passwordHash: await hashPassword(password),
       role: "admin",
       team: "kerala",
     });

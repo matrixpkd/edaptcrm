@@ -10,6 +10,7 @@ import { PAYMENT_MODES, PURCHASE_SOURCES, PURCHASE_STATUSES, STAGES, contacts, p
 import { recentExports } from "@/lib/admin/export";
 import { requireUser } from "@/lib/auth/session";
 import { activeFilterCount, contactListWhere, GRADES, listContactCountries, listOwnerOptions, parseContactFilters } from "@/lib/contacts/queries";
+import { UNRATED_LABEL } from "@/lib/contacts/rules";
 import { getSettings } from "@/lib/settings";
 import { formatDateTime } from "@/lib/utils";
 import { SettingsHeader } from "../_components/settings-header";
@@ -142,7 +143,7 @@ export default async function ExportPage({ searchParams }: { searchParams: Promi
                 </div>
                 <div className="flex flex-col justify-end gap-1.5">
                   <Checkbox name="risk" value="1" defaultChecked={f.atRisk} label="At risk only" />
-                  <Checkbox name="unrated" value="1" defaultChecked={f.unrated} label="Not rated by sales" />
+                  <Checkbox name="unrated" value="1" defaultChecked={f.unrated} label={UNRATED_LABEL} />
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-3">

@@ -10,15 +10,23 @@ export const DEFAULT_TIME_ZONE = "Asia/Kolkata";
 
 const DAY_MS = 24 * 3600 * 1000;
 
+/** Zones already checked (building an Intl.DateTimeFormat is slow, and the Today queue checks one per row). */
+const checkedZones = new Map<string, string>();
+
 /** The zone itself when the runtime knows it, otherwise India time. */
 export function validTimeZone(tz: string | null | undefined): string {
   if (!tz) return DEFAULT_TIME_ZONE;
+  const known = checkedZones.get(tz);
+  if (known) return known;
+  let out: string;
   try {
     new Intl.DateTimeFormat("en", { timeZone: tz });
-    return tz;
+    out = tz;
   } catch {
-    return DEFAULT_TIME_ZONE;
+    out = DEFAULT_TIME_ZONE;
   }
+  if (checkedZones.size < 500) checkedZones.set(tz, out);
+  return out;
 }
 
 /** 00:00 of `now`'s local calendar day, as a UTC instant. */
@@ -51,31 +59,35 @@ export function greetingFor(now: Date, timeZone: string | null | undefined): str
   return "Good evening";
 }
 
+/** Formatters reused per (shape, zone): building one costs ~70 µs and a Today queue formats a few per row. */
+const formats = new Map<string, Intl.DateTimeFormat>();
+function format(key: string, tz: string, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const k = `${key}|${tz}`;
+  let f = formats.get(k);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-IN", { ...options, timeZone: tz });
+    if (formats.size < 500) formats.set(k, f);
+  }
+  return f;
+}
+
 /** "12 Oct" (adds the year when it is not the current local year). */
 export function shortDate(d: Date, now: Date, timeZone: string | null | undefined): string {
   const tz = validTimeZone(timeZone);
   const sameYear = new TZDate(d.getTime(), tz).getFullYear() === new TZDate(now.getTime(), tz).getFullYear();
-  return new Intl.DateTimeFormat("en-IN", {
-    day: "numeric",
-    month: "short",
-    ...(sameYear ? {} : { year: "numeric" }),
-    timeZone: tz,
-  }).format(d);
+  return sameYear
+    ? format("dayMonth", tz, { day: "numeric", month: "short" }).format(d)
+    : format("dayMonthYear", tz, { day: "numeric", month: "short", year: "numeric" }).format(d);
 }
 
 /** "Tue 14 Oct" */
 export function weekdayDate(d: Date, timeZone: string | null | undefined): string {
-  return new Intl.DateTimeFormat("en-IN", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    timeZone: validTimeZone(timeZone),
-  }).format(d);
+  return format("weekdayDate", validTimeZone(timeZone), { weekday: "short", day: "numeric", month: "short" }).format(d);
 }
 
 /** "4:30 pm" */
 export function localTime(d: Date, timeZone: string | null | undefined): string {
-  return new Intl.DateTimeFormat("en-IN", { hour: "numeric", minute: "2-digit", timeZone: validTimeZone(timeZone) })
+  return format("time", validTimeZone(timeZone), { hour: "numeric", minute: "2-digit" })
     .format(d)
     .replace(/\s?([ap])\.?m\.?$/i, (_, p: string) => ` ${p.toLowerCase()}m`);
 }

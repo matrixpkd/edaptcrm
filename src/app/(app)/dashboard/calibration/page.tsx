@@ -8,7 +8,7 @@ import { StatTile } from "@/components/dashboard/kit";
 import { VIZ } from "@/components/dashboard/palette";
 import { requireUser } from "@/lib/auth/session";
 import { canViewCalibration, canViewDashboard } from "@/lib/dashboard/access";
-import { calibration, type CalibrationCell, type CalibrationTable } from "@/lib/dashboard/calibration";
+import { calibration, VALUE_DIMENSIONS, type CalibrationCell, type CalibrationTable } from "@/lib/dashboard/calibration";
 import { count, plural, share } from "@/lib/dashboard/format";
 import { validTimeZone } from "@/lib/today/time";
 import { cn, DAY_MS, formatDate } from "@/lib/utils";
@@ -178,7 +178,8 @@ function CalibrationTableCard({
               {table.pointsLabel && <Th className="text-right">{table.pointsLabel}</Th>}
               <Th className="text-right">Leads</Th>
               <Th>Paid within {windowDays}d</Th>
-              <Th className="text-right">Customers</Th>
+              {/* the Value inputs are judged per purchase (VALUE_DIMENSIONS), the rest per person */}
+              <Th className="text-right">{(VALUE_DIMENSIONS as readonly string[]).includes(table.dim) ? "Purchases" : "Customers"}</Th>
               <Th>Bought again</Th>
             </tr>
           </thead>

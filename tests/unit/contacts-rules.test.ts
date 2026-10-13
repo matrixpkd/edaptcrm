@@ -9,6 +9,8 @@ import {
   earlierOf,
   excerpt,
   followUpReason,
+  isManualChannel,
+  placeSuggestionList,
   isPhoneFallbackName,
   isUuid,
   laterOf,
@@ -47,6 +49,14 @@ describe("first door", () => {
     expect(decideFirstDoor({ firstDoor: null, channel: "meta_lead_form", hasReferrer: true })).toBe("referral");
     expect(decideFirstDoor({ firstDoor: "  ", channel: "meta_lead_form", hasReferrer: false })).toBe("meta_ad");
     expect(decideFirstDoor({ channel: "carrier_pigeon", hasReferrer: false })).toBe("other");
+  });
+});
+
+describe("manual channels", () => {
+  it("Quick Add never offers the system-only channels (TagMango checkout, Import)", () => {
+    const manual = DEFAULT_SETTINGS["lists.channels"].filter((c) => isManualChannel(c.key)).map((c) => c.key);
+    expect(manual).toEqual(["whatsapp_api", "whatsapp_app", "meta_lead_form", "website_form", "phone_call", "walk_in_event"]);
+    expect(isManualChannel(null)).toBe(false);
   });
 });
 
@@ -191,5 +201,18 @@ describe("errors", () => {
     expect(e.field).toBe("phone");
     expect(e.message).toContain("123");
     expect(new ContactValidationError("x", "name").field).toBe("name");
+  });
+});
+
+describe("placeSuggestionList (city / state search dropdowns)", () => {
+  it("proper-cases the built-in names, adds typed ones, merges spellings that differ only in case or spacing", () => {
+    const list = placeSuggestionList(["kochi", "new delhi", "thiruvananthapuram"], ["KOCHI", " Malappuram ", "New  Delhi", "Perinthalmanna", ""]);
+    expect(list).toEqual(["Kochi", "Malappuram", "New Delhi", "Perinthalmanna", "Thiruvananthapuram"]);
+  });
+
+  it("keeps the built-in spelling over a typed variant, and caps the list", () => {
+    expect(placeSuggestionList(["kochi"], ["kochi."])).toEqual(["Kochi"]);
+    expect(placeSuggestionList(["a", "b", "c"], [], 2)).toEqual(["A", "B"]);
+    expect(placeSuggestionList(DEFAULT_SETTINGS.locations.keralaCities, [])).toContain("Kozhikode");
   });
 });

@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { ChevronLeft } from "lucide-react";
 import { PageHeader } from "@/components/ui/card";
 import { RecordPaymentForm } from "@/components/payments/record-payment-form";
+import { defaultPurchaseOrganisation } from "@/components/payments/rules";
 import { can, canEditContact, canViewContact } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import { resolveSurvivor } from "@/lib/contacts/internal";
@@ -73,7 +74,7 @@ export default async function RecordPaymentPage({ params }: { params: Promise<{ 
         currencies={currencies}
         rates={settings.currency.rates}
         organisations={organisations}
-        defaultOrganisationId={contact.organisationId}
+        defaultOrganisationId={defaultPurchaseOrganisation(contact)}
         today={localIsoDate(new Date(), tz)}
         canVerify={can(user, "payments.verify")}
       />

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { contacts, type Contact, type Role } from "@/db/schema";
+import { contacts, products, type Contact, type Role } from "@/db/schema";
 import { captureEnquiry } from "@/lib/contacts/capture";
 import { ContactConflictError, ContactForbiddenError, ContactValidationError } from "@/lib/contacts/errors";
 import { logInteraction } from "@/lib/contacts/interactions";
@@ -132,6 +132,17 @@ describe("contacts read models", () => {
       await updateContactProfile(c.id, { altPhones: { add: ["9847099999"] } }, admin);
       expect(ids((await list(admin, { q: "7099999" })).rows)).toEqual([c.id]);
     });
+
+    it("matches alternate emails, and contacts that enquired through a campaign later", async () => {
+      const admin = await makeUser({ role: "admin" });
+      const c = await newContact({ name: "Latha" });
+      await newContact({ name: "Someone else" });
+      await updateContactProfile(c.id, { altEmails: { add: ["latha.work@example.org"] } }, admin);
+      expect(ids((await list(admin, { q: "work@example" })).rows)).toEqual([c.id]);
+      // first touch had no campaign; a later enquiry came through one
+      await captureEnquiry({ phone: c.phoneE164, channel: "website_form", campaign: "koduvally_ai_literacy", skipAlerts: true });
+      expect(ids((await list(admin, { campaign: "koduvally_ai_literacy" })).rows)).toEqual([c.id]);
+    });
   });
 
   describe("filters, sort and pagination", () => {
@@ -177,10 +188,41 @@ describe("contacts read models", () => {
       expect(ids((await list(admin, { country: "AE" })).rows)).toEqual([b.id]);
       expect(ids((await list(admin, { family: "workshop" })).rows)).toEqual([c.id]);
       expect(ids((await list(admin, { atRisk: true })).rows)).toEqual([a.id]);
-      // a self-rating does not count as rated
-      expect(ids((await list(admin, { unrated: true })).rows)).toEqual(ids([b, c]));
+      // "unrated" means no rating of any kind: b's self-rating counts as a rating (same rule as the dashboard tile)
+      expect(ids((await list(admin, { unrated: true })).rows)).toEqual([c.id]);
       // filters combine
       expect((await list(admin, { grades: ["A"], tag: "VIP", firstDoor: "youtube" })).total).toBe(0);
+    });
+
+    it("filters by one product bought (spec: Contacts list filters by product), paid or part-paid only", async () => {
+      const admin = await makeUser({ role: "admin" });
+      const [w, aam] = await db
+        .insert(products)
+        .values([
+          { name: "Prompting workshop", family: "workshop", rung: 1, listPrice: 999 },
+          { name: "Applied AI Mastery", family: "applied_ai_mastery", rung: 2, listPrice: 30000 },
+        ])
+        .returning();
+      const a = await newContact();
+      const b = await newContact();
+      const c = await newContact();
+      const buy = (contactId: string, productId: string, verified: boolean, reference: string) =>
+        recordPurchase(
+          { contactId, productId, amount: 999, currency: "INR", mode: "bank_transfer", reference, source: "manual", verified },
+          admin,
+        );
+      await buy(a.id, w.id, true, "UTR-P-1");
+      await buy(b.id, aam.id, true, "UTR-P-2");
+      // an unverified transfer is not a purchase yet
+      await buy(c.id, w.id, false, "UTR-P-3");
+      expect(ids((await list(admin, { product: w.id })).rows)).toEqual([a.id]);
+      expect(ids((await list(admin, { product: aam.id })).rows)).toEqual([b.id]);
+      expect(ids((await list(admin, { product: aam.id, family: "workshop" })).rows)).toEqual([]);
+      const f = parseContactFilters(new URLSearchParams(`product=${w.id}&family=workshop`));
+      expect(f.product).toBe(w.id);
+      expect(activeFilterCount(f)).toBe(2);
+      expect(filtersToQuery(f)).toBe(`family=workshop&product=${w.id}`);
+      expect(parseContactFilters({ product: "not-a-uuid" }).product).toBeNull();
     });
 
     it("sorts by score, LTV, created and name, and pages 50 at a time with a total", async () => {
@@ -373,7 +415,18 @@ describe("contacts read models", () => {
       });
       const refs = await getContactReferrals(referrer.id);
       expect(refs).toHaveLength(1);
-      expect(refs[0]).toMatchObject({ id: friend.id, ltvInr: 999 });
+      expect(refs[0]).toMatchObject({ id: friend.id, ltvInr: 999, name: "Sana", hidden: false });
+      // another salesperson sees the money but not who it is
+      await db.update(contacts).set({ ownerId: sales.id }).where(eq(contacts.id, friend.id));
+      const colleague = await makeUser({ role: "sales", name: "Binu" });
+      expect((await getContactReferrals(referrer.id, colleague))[0]).toMatchObject({
+        id: friend.id,
+        name: "Another salesperson's contact",
+        ownerName: null,
+        ltvInr: 999,
+        hidden: true,
+      });
+      expect((await getContactReferrals(referrer.id, sales))[0]).toMatchObject({ name: "Sana", ownerName: "Asha", hidden: false });
       expect(rh?.networkValueInr).toBe(999);
 
       const x = await newContact({ name: "Twin" });
@@ -444,11 +497,22 @@ describe("contacts read models", () => {
       const purchasesOfOrg = await getOrganisationPurchases(org.id);
       expect(purchasesOfOrg).toHaveLength(2);
       expect(purchasesOfOrg.find((p) => p.productName === "Follow-on")?.netInr).toBe(0);
+      // the signer's colleague sees the deals and their money, not the signer's name
+      const forOther = await getOrganisationPurchases(org.id, other);
+      expect(forOther.map((p) => [p.contactName, p.contactHidden])).toEqual([
+        ["Another salesperson's contact", true],
+        ["Another salesperson's contact", true],
+      ]);
+      expect((await getOrganisationPurchases(org.id, sales)).every((p) => p.contactName === "Signer" && !p.contactHidden)).toBe(true);
 
       const forSales = await getOrganisationPeople(sales, org.id);
-      expect(forSales.people.map((p) => p.name)).toEqual(["Signer"]);
+      expect(forSales.people.map((p) => p.name)).toEqual(["Signer", "Another salesperson's contact"]);
+      expect(forSales.people[1]).toMatchObject({ hidden: true, phoneE164: null, ownerName: null, designation: null });
+      expect(forSales.people[0]).toMatchObject({ hidden: false, ltvInr: 200000 });
       expect(forSales.hidden).toBe(1);
-      expect((await getOrganisationPeople(admin, org.id)).people).toHaveLength(2);
+      const forAdmin = await getOrganisationPeople(admin, org.id);
+      expect(forAdmin.people.map((p) => p.name)).toEqual(["Signer", "Colleague"]);
+      expect(forAdmin.hidden).toBe(0);
 
       const listed = await listOrganisations({ q: "koduvally" });
       expect(listed.total).toBe(2);

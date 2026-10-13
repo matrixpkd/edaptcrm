@@ -2,7 +2,7 @@ import { runJobs } from "../run";
 
 /**
  * Nightly at 02:00 IST (20:30 UTC, vercel.json): recompute every contact (cohorts first), then due for next rung,
- * at risk and VIPs gone quiet.
+ * at risk and VIPs gone quiet, then old processed webhook events are pruned (180 days).
  * Vercel Cron calls it with `Authorization: Bearer $CRON_SECRET`; anything else gets 401.
  */
 export const dynamic = "force-dynamic";

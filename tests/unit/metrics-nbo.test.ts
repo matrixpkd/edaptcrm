@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  cheapestInFamily,
   cheapestOnRung,
   matchesCondition,
   nextBestOffer,
@@ -62,26 +63,30 @@ describe("next best offer: the spec table with the default rules", () => {
     expect(nbo(workshopBuyer({ purchaseCount: 2 }))?.ruleId).toBe("workshop");
   });
 
-  it("One workshop and Fit 60 or more -> Applied AI Mastery, priced at the cheapest active rung-2 product", () => {
+  it("One workshop and Fit 60 or more -> Applied AI Mastery, priced at the product of that name", () => {
     const o = nbo(workshopBuyer({ fit: 60 }));
-    expect(o).toEqual({ ruleId: "workshop_fit", offer: "Applied AI Mastery", productId: "aam-dxb", priceInr: 22700 });
+    expect(o).toEqual({ ruleId: "workshop_fit", offer: "Applied AI Mastery", productId: "aam", priceInr: 25000 });
     expect(nbo(workshopBuyer({ fit: 95 }))?.ruleId).toBe("workshop_fit");
   });
 
   it("Business owner with any workshop -> AI Agents for Business", () => {
     const o = nbo(workshopBuyer({ industry: "business_owner", fit: 80 }));
-    expect(o?.ruleId).toBe("owner");
-    expect(o?.offer).toBe("AI Agents for Business");
+    expect(o).toEqual({ ruleId: "owner", offer: "AI Agents for Business", productId: "agents", priceInr: 4999 });
     expect(nbo(workshopBuyer({ industry: "business_owner", families: ["workshop", "b2b_program"], purchaseCount: 2 }))?.ruleId).toBe("owner");
   });
 
   it("GCC business owner with a workshop -> AI Agents for Business, then The AI Office", () => {
-    expect(nbo(workshopBuyer({ industry: "business_owner", country: "AE", phoneCountry: "AE" }))?.offer).toBe("AI Agents for Business, then The AI Office");
+    expect(nbo(workshopBuyer({ industry: "business_owner", country: "AE", phoneCountry: "AE" }))).toEqual({
+      ruleId: "owner_gcc",
+      offer: "AI Agents for Business, then The AI Office",
+      productId: "agents",
+      priceInr: 4999,
+    });
     expect(nbo(workshopBuyer({ industry: "business_owner", country: null, phoneCountry: "SA" }))?.ruleId).toBe("owner_gcc");
     expect(nbo(workshopBuyer({ industry: "business_owner", country: "IN", phoneCountry: "AE" }))?.ruleId).toBe("owner");
   });
 
-  it("Applied AI Mastery graduate -> The AI Office or advanced workshops (priced at the next rung)", () => {
+  it("Applied AI Mastery graduate -> The AI Office or advanced workshops (the cheapest AI Office product)", () => {
     const o = nbo(lead({ purchaseCount: 2, families: ["workshop", "applied_ai_mastery"], currentRung: 2, industry: "business_owner" }));
     expect(o).toEqual({ ruleId: "aam_graduate", offer: "The AI Office or advanced workshops", productId: "office", priceInr: 41700 });
   });
@@ -90,15 +95,17 @@ describe("next best offer: the spec table with the default rules", () => {
     const o = nbo(lead({ purchaseCount: 3, families: ["workshop", "applied_ai_mastery", "ai_office"], currentRung: 3 }));
     expect(o?.ruleId).toBe("ai_office_member");
     expect(o?.offer).toBe("The AI Office renewal, and ask for referrals");
-    // rung 4 has only an inactive product and an unpriceable currency -> no price
-    expect(o?.priceInr).toBeNull();
-    expect(o?.productId).toBeNull();
+    // a renewal is priced at The AI Office itself, not at whatever sits on rung 4
+    expect(o).toMatchObject({ productId: "office", priceInr: 41700 });
   });
 
   it("Delegation alumni -> The AI Office and premium programs", () => {
     const o = nbo(lead({ purchaseCount: 1, families: ["delegation"], currentRung: 0, tags: ["Legacy: Delegation"], firstDoor: "delegation" }));
     expect(o?.ruleId).toBe("delegation");
     expect(o?.offer).toBe("The AI Office and premium programs");
+    // priced at The AI Office, never at the rung-1 workshop above their "current rung" 0
+    expect(o).toMatchObject({ productId: "office", priceInr: 41700 });
+    expect(nbo(lead({ tags: ["Legacy: Delegation"], firstDoor: "delegation" }))).toMatchObject({ ruleId: "delegation_tag", productId: "office", priceInr: 41700 });
     // once they joined The AI Office, they are members
     expect(nbo(lead({ purchaseCount: 2, families: ["delegation", "ai_office"], currentRung: 3 }))?.ruleId).toBe("ai_office_member");
   });
@@ -137,6 +144,27 @@ describe("next best offer: rules and pricing", () => {
   it("an unknown product or unpriceable currency falls back to the rung above", () => {
     expect(nbo(lead(), [rule({ productId: "missing" })])).toMatchObject({ productId: "w-teachers", priceInr: 699 });
     expect(nbo(workshopBuyer(), [rule({ productId: "eur" })])).toMatchObject({ productId: "eur", priceInr: 22700 });
+  });
+
+  it("then the active product named productName (case-insensitive, the cheapest of several)", () => {
+    expect(nbo(lead(), [rule({ productName: "applied ai mastery" })])).toMatchObject({ productId: "aam", priceInr: 25000 });
+    // an inactive product of that name does not count
+    expect(nbo(lead(), [rule({ productName: "Applied AI Mastery 2024" })])).toMatchObject({ productId: "w-teachers", priceInr: 699 });
+    const twins: NboContext = { ...ctx, products: [...products, { ...products[3], id: "aam-cheap", listPrice: 20000 }] };
+    expect(nextBestOffer(lead(), [rule({ productName: "Applied AI Mastery" })], twins)).toMatchObject({ productId: "aam-cheap", priceInr: 20000 });
+    // productId comes first
+    expect(nbo(lead(), [rule({ productId: "office", productName: "Applied AI Mastery" })])).toMatchObject({ productId: "office", priceInr: 41700 });
+    // rule.price still wins, and the named product is kept
+    expect(nbo(lead(), [rule({ productName: "Applied AI Mastery", price: 100 })])).toMatchObject({ productId: "aam", priceInr: 100 });
+  });
+
+  it("then the cheapest active product in the family, then the rung above", () => {
+    expect(nbo(lead(), [rule({ family: "applied_ai_mastery" })])).toMatchObject({ productId: "aam-dxb", priceInr: 22700 });
+    expect(nbo(lead(), [rule({ productName: "No such thing", family: "ai_office" })])).toMatchObject({ productId: "office", priceInr: 41700 });
+    // a family with nothing active and priced falls through to the rung above
+    expect(nbo(lead({ currentRung: 1 }), [rule({ family: "premium" })])).toMatchObject({ productId: "aam-dxb", priceInr: 22700 });
+    expect(cheapestInFamily("workshop", ctx)?.product.id).toBe("w-teachers");
+    expect(cheapestInFamily("premium", ctx)).toBeNull();
   });
 
   it("otherwise the cheapest active priced product on the rung above; else null", () => {

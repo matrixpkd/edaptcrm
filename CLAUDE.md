@@ -91,7 +91,11 @@ tests/unit, tests/integration, tests/e2e, tests/support (resetDb, makeUser)
   Other screens are laptop-first but must not break on a phone. Use native `<select>` for long lists.
 - **Copy:** plain, short, sentence case. Show *why* (e.g. every Today row shows its reason).
 - **Schema changes:** edit `src/db/schema.ts` (additive only), then `npm run db:push`. Migration SQL is generated at release
-  with `npm run db:generate`; do not hand-write migration files.
+  with `npm run db:generate`; do not hand-write migration files. The one exception is `drizzle/custom/*.sql`: idempotent
+  SQL Drizzle cannot express (e.g. `create extension pg_trgm`), applied by `scripts/db-custom.ts` before every push,
+  migration and test setup.
+- **Performance:** lists are paginated and scoped in SQL, never filtered in JS; aggregates run in SQL. Check new queries
+  against the 50,000-contact scale data with `scripts/perf/bench.ts` (docs/PERFORMANCE.md has the budgets).
 - **Tests:** pure logic gets unit tests in `tests/unit`. Services that touch the DB get integration tests in
   `tests/integration` using `resetDb()` and `makeUser()` from `tests/support/db.ts`. Run `npm test` before finishing.
 - Never weaken a check, skip a test or catch-and-ignore an error to make something pass.

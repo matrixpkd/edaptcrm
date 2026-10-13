@@ -47,6 +47,7 @@ export function EditContactForm({
   industries,
   tags,
   firstDoors,
+  places,
 }: {
   contactId: string;
   values: EditValues;
@@ -58,6 +59,8 @@ export function EditContactForm({
   tags: Option[];
   /** admin only: the first door can be corrected */
   firstDoors: Option[] | null;
+  /** city and state suggestions (search dropdowns; free text still allowed) */
+  places: { cities: string[]; states: string[] };
 }) {
   const [state, dispatch, pending] = useActionState(updateProfileAction, null);
   const fe = state && !state.ok ? (state.fieldErrors ?? {}) : {};
@@ -158,10 +161,20 @@ export function EditContactForm({
 
       <Section title="Location and language">
         <Field label="City" htmlFor="ed-city">
-          <Input id="ed-city" name="city" defaultValue={values.city} autoCapitalize="words" />
+          <Input id="ed-city" name="city" defaultValue={values.city} autoCapitalize="words" list="ed-city-list" autoComplete="off" />
+          <datalist id="ed-city-list">
+            {places.cities.map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
         </Field>
         <Field label="State" htmlFor="ed-state">
-          <Input id="ed-state" name="state" defaultValue={values.state} autoCapitalize="words" />
+          <Input id="ed-state" name="state" defaultValue={values.state} autoCapitalize="words" list="ed-state-list" autoComplete="off" />
+          <datalist id="ed-state-list">
+            {places.states.map((v) => (
+              <option key={v} value={v} />
+            ))}
+          </datalist>
         </Field>
         <Field label="Country" htmlFor="ed-country" error={fe.country}>
           <Select

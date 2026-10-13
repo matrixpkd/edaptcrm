@@ -1,7 +1,7 @@
 "use client";
 import { startTransition, useActionState, useId, useState } from "react";
 import { FileUp, Loader2, Sparkles } from "lucide-react";
-import { uploadImportAction } from "@/app/(app)/import/actions";
+import { prepareImportUploadAction, uploadImportAction } from "@/app/(app)/import/actions";
 import { FormMessage } from "@/components/ui/form";
 import { Button } from "@/components/ui/button";
 import { IMPORT_SOURCES, SOURCE_INFO, type ImportSource } from "@/lib/import/types";
@@ -15,21 +15,77 @@ function size(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+/**
+ * The file goes straight from the browser to Supabase Storage (signed upload URL), then only its key is posted:
+ * a 50,000-row export can be bigger than the ~4.5 MB a Vercel function accepts. Returns the form data to post, or
+ * the reason the upload failed.
+ */
+async function uploadToStorage(fd: FormData, file: File): Promise<{ fd: FormData } | { error: string }> {
+  const prep = await prepareImportUploadAction({ fileName: file.name, size: file.size });
+  if (!prep || !prep.ok) return { error: prep?.error ?? "The upload could not start. Try again." };
+  // no Storage configured after all: post the file itself
+  if (!prep.data) return { fd };
+  let res: Response;
+  try {
+    res = await fetch(prep.data.uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Type": file.type || "application/octet-stream", "x-upsert": "false" },
+      body: file,
+    });
+  } catch {
+    return { error: "The file could not be uploaded. Check your connection and try again." };
+  }
+  if (!res.ok) return { error: `The file could not be uploaded (storage answered ${res.status}). Try again.` };
+  const out = new FormData();
+  for (const [k, v] of fd.entries()) if (k !== "file") out.append(k, v);
+  out.set("storageKey", prep.data.key);
+  out.set("fileName", file.name);
+  out.set("fileType", file.type);
+  return { fd: out };
+}
+
 /** Step 1: where the file comes from, and the file. */
-export function UploadForm({ aiEnabled, suggested }: { aiEnabled: boolean; suggested: ImportSource }) {
+export function UploadForm({
+  aiEnabled,
+  suggested,
+  directUpload = false,
+}: {
+  aiEnabled: boolean;
+  suggested: ImportSource;
+  /** Supabase Storage is configured: upload the file from the browser straight to Storage */
+  directUpload?: boolean;
+}) {
   const [state, action, pending] = useActionState(uploadImportAction, null);
   const [source, setSource] = useState<ImportSource>(suggested);
   const [file, setFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileId = useId();
   const fieldErrors = state && !state.ok ? state.fieldErrors : undefined;
+  const busy = pending || uploading;
 
   return (
     <form
       className="space-y-5"
-      onSubmit={(e) => {
+      onSubmit={async (e) => {
         // dispatched by hand: a refused upload keeps the chosen file and source (a form action resets the form)
         e.preventDefault();
-        const fd = new FormData(e.currentTarget);
+        if (busy) return;
+        let fd = new FormData(e.currentTarget);
+        setUploadError(null);
+        if (directUpload && file) {
+          setUploading(true);
+          try {
+            const r = await uploadToStorage(fd, file);
+            if ("error" in r) {
+              setUploadError(r.error);
+              return;
+            }
+            fd = r.fd;
+          } finally {
+            setUploading(false);
+          }
+        }
         startTransition(() => action(fd));
       }}
     >
@@ -108,10 +164,10 @@ export function UploadForm({ aiEnabled, suggested }: { aiEnabled: boolean; sugge
           : "No Anthropic API key is set, so keyword rules propose the column mapping. You check it in the next step."}
       </p>
 
-      <FormMessage state={state && !state.ok ? state : null} />
-      <Button type="submit" size="lg" className="w-full sm:w-auto" disabled={pending} aria-busy={pending}>
-        {pending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
-        {pending ? "Reading the file…" : "Upload and map columns"}
+      <FormMessage state={uploadError ? { ok: false, error: uploadError } : state && !state.ok ? state : null} />
+      <Button type="submit" size="lg" className="w-full sm:w-auto" disabled={busy} aria-busy={busy}>
+        {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+        {uploading ? "Uploading the file…" : pending ? "Reading the file…" : "Upload and map columns"}
       </Button>
     </form>
   );

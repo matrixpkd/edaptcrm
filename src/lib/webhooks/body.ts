@@ -110,17 +110,52 @@ function finish(payload: unknown): BodyResult {
   return { ok: true, payload: stripNul(payload) };
 }
 
-/** Reads and parses a webhook request body. */
-export async function readWebhookBody(req: Request, maxBytes = MAX_WEBHOOK_BYTES): Promise<BodyResult> {
+/**
+ * Reads at most `maxBytes` of a request body. The declared Content-Length is checked first, and the stream is cut
+ * off as soon as it passes the cap, so a chunked or lying sender can never make the server buffer more than that.
+ * Null when the body is too large.
+ */
+export async function readBodyBytes(req: Request, maxBytes: number): Promise<Uint8Array | null> {
   const declared = Number(req.headers.get("content-length") ?? "");
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    return { ok: false, status: 413, error: "The request body is too large." };
+  if (Number.isFinite(declared) && declared > maxBytes) return null;
+  if (!req.body) return new Uint8Array(0);
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
   }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
+  }
+  return out;
+}
+
+/** Reads and parses a webhook request body (at most `maxBytes`, else 413). */
+export async function readWebhookBody(req: Request, maxBytes = MAX_WEBHOOK_BYTES): Promise<BodyResult> {
+  let bytes: Uint8Array | null;
+  try {
+    bytes = await readBodyBytes(req, maxBytes);
+  } catch {
+    return { ok: false, status: 400, error: "The request body could not be read." };
+  }
+  if (!bytes) return { ok: false, status: 413, error: "The request body is too large." };
   const ct = req.headers.get("content-type");
   if ((ct ?? "").toLowerCase().includes("multipart/form-data")) {
     let form: FormData;
     try {
-      form = await req.formData();
+      // parsed from the bytes already read (and capped), never from the raw stream
+      form = await new Response(bytes as BodyInit, { headers: { "content-type": ct ?? "" } }).formData();
     } catch {
       return { ok: false, status: 400, error: "The form data could not be read." };
     }
@@ -129,12 +164,5 @@ export async function readWebhookBody(req: Request, maxBytes = MAX_WEBHOOK_BYTES
     if (!entries.length) return { ok: false, status: 400, error: "The request body is empty." };
     return finish(formEntriesToObject(entries));
   }
-  let text: string;
-  try {
-    text = await req.text();
-  } catch {
-    return { ok: false, status: 400, error: "The request body could not be read." };
-  }
-  if (text.length > maxBytes) return { ok: false, status: 413, error: "The request body is too large." };
-  return parseWebhookText(text, ct);
+  return parseWebhookText(new TextDecoder().decode(bytes), ct);
 }

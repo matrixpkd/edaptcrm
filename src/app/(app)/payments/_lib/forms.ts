@@ -14,12 +14,13 @@ import {
   UnknownCurrencyError,
   ValidationError,
 } from "@/lib/money/errors";
-import { saveFile } from "@/lib/storage";
+import { PROOF_FOLDER, saveFile } from "@/lib/storage";
 import { localDateAt, localIsoDate } from "@/lib/today/time";
-import { proofExtension, proofProblem } from "@/components/payments/rules";
+import { sniffFileType } from "@/lib/file-types";
+import { proofProblem } from "@/components/payments/rules";
 
-/** Folder proofs are stored under (see src/lib/storage.ts). */
-export const PROOF_FOLDER = "proofs";
+/** Folder proofs are stored under (see src/lib/storage.ts: only people who can view the contact may open them). */
+export { PROOF_FOLDER };
 
 /**
  * A date typed on a form ("YYYY-MM-DD", the user's local calendar) as the moment money moved:
@@ -56,19 +57,22 @@ export function readProof(fd: FormData, key = "proof"): ProofRead {
 }
 
 /**
- * Saves a checked proof under "proofs/" and returns its URL (/api/files/...). The stored name always ends
- * in the extension of its real type, so the file server sends the right Content-Type.
+ * Saves a checked proof under "proofs/" and returns its URL (/api/files/...). The file's first bytes decide what
+ * it is (sniffFileType): anything that is not really a picture or a PDF is refused whatever its name or MIME type
+ * claim, and the stored name ends in the extension of its real type, so the file server sends the right
+ * Content-Type.
  */
 export async function storeProof(file: File): Promise<string> {
-  const ext = proofExtension(file) ?? "bin";
+  const data = new Uint8Array(await file.arrayBuffer());
+  const real = sniffFileType(data);
+  if (!real) throw new ValidationError("That file is not a picture or a PDF. Attach the screenshot, photo or PDF itself.", "proof");
   const base =
     (file.name || "proof")
       .replace(/\.[^.]*$/, "")
       .replace(/[^a-zA-Z0-9_-]+/g, "-")
       .replace(/^-+|-+$/g, "")
       .slice(0, 50) || "proof";
-  const data = new Uint8Array(await file.arrayBuffer());
-  return saveFile({ name: `${base}.${ext}`, type: file.type || "application/octet-stream", data }, PROOF_FOLDER);
+  return saveFile({ name: `${base}.${real.ext}`, type: real.mime, data }, PROOF_FOLDER);
 }
 
 /**

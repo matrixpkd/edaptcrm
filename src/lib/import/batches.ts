@@ -20,7 +20,7 @@ import {
 import { audit } from "@/lib/audit";
 import { cleanText, looseKey } from "@/lib/contacts/rules";
 import { getSettings } from "@/lib/settings";
-import { readStoredFile, saveFile } from "@/lib/storage";
+import { IMPORT_FOLDER, createSignedUpload, fileUrlForKey, isNewStorageKey, readStoredBytes, saveFile } from "@/lib/storage";
 import { isUuid } from "@/lib/utils";
 import { aiAvailable, proposeMappingWithClaude } from "./ai";
 import { applyMapping, cellText, cleanRow, type CleanContext } from "./clean";
@@ -38,7 +38,7 @@ import {
   setProgress,
   type Actor,
 } from "./internal";
-import { parseImportFile, type ParsedFile } from "./parse";
+import { MAX_FILE_BYTES, parseImportFile, type ParsedFile } from "./parse";
 import { lockedForSource, presetDefaults } from "./presets";
 import {
   isImportSource,
@@ -114,9 +114,14 @@ async function insertRows(batchId: string, rows: ParsedFile["rows"], t: Tx): Pro
 /**
  * Step 1: stores the file (folder "imports"), reads it, stores every row's raw values (never modified) and
  * proposes the column mapping. Returns the new batch id. The batch waits in "uploaded" for step 2.
+ *
+ * The file arrives either as `bytes` (posted through the server action: local dev, or no Supabase) or as
+ * `storedKey`: the browser already uploaded it straight to Supabase Storage with a signed upload URL
+ * (prepareImportUpload), because a big export does not fit in a serverless request body. The key is checked to be
+ * one of ours under "imports/", then downloaded and parsed here.
  */
 export async function createImportBatch(
-  input: { fileName: string; fileType: string; bytes: Uint8Array; source: string },
+  input: { fileName: string; fileType: string; source: string } & ({ bytes: Uint8Array } | { storedKey: string }),
   actor: Actor,
 ): Promise<string> {
   assertCanImport(actor);
@@ -124,8 +129,19 @@ export async function createImportBatch(
   const source = input.source;
   const fileName = cleanText(input.fileName) ?? "import";
   const defaults = presetDefaults(source);
-  const parsed = await parseImportFile(input.bytes, fileName, { defaultCountry: defaults.defaultCountry, useAi: aiAvailable() });
-  const fileUrl = await saveFile({ name: fileName, type: input.fileType || "application/octet-stream", data: input.bytes }, "imports");
+  let bytes: Uint8Array;
+  let fileUrl: string | null = null;
+  if ("storedKey" in input) {
+    if (!isNewStorageKey(IMPORT_FOLDER, input.storedKey)) throw new ImportError("That upload is not an import file. Upload it again.");
+    const stored = await readStoredBytes(input.storedKey);
+    if (!stored) throw new ImportError("The uploaded file could not be found. Upload it again.");
+    bytes = stored;
+    fileUrl = fileUrlForKey(input.storedKey);
+  } else {
+    bytes = input.bytes;
+  }
+  const parsed = await parseImportFile(bytes, fileName, { defaultCountry: defaults.defaultCountry, useAi: aiAvailable() });
+  fileUrl ??= await saveFile({ name: fileName, type: input.fileType || "application/octet-stream", data: bytes }, IMPORT_FOLDER);
   const proposal = await proposeMapping(source, parsed);
   const settings: BatchSettings = {
     ...defaults,
@@ -136,7 +152,7 @@ export async function createImportBatch(
       sheets: parsed.sheets,
       sheet: parsed.sheet ?? null,
       extractedBy: parsed.extractedBy ?? null,
-      size: input.bytes.length,
+      size: bytes.length,
       type: input.fileType,
     },
     mappingBy: proposal.by,
@@ -175,12 +191,23 @@ export async function createImportBatch(
 /** The stored upload's bytes (local ./uploads or Supabase Storage). */
 async function storedBytes(fileUrl: string | null): Promise<Uint8Array> {
   const key = fileUrl?.replace(/^\/api\/files\//, "");
-  const file = key ? await readStoredFile(key) : null;
-  if (!file) throw new ImportError("The uploaded file could not be found. Upload it again.");
-  if ("bytes" in file) return file.bytes;
-  const res = await fetch(file.redirect);
-  if (!res.ok) throw new ImportError("The uploaded file could not be read. Upload it again.");
-  return new Uint8Array(await res.arrayBuffer());
+  const bytes = key ? await readStoredBytes(key) : null;
+  if (!bytes) throw new ImportError("The uploaded file could not be found or read. Upload it again.");
+  return bytes;
+}
+
+/**
+ * Before a direct upload (Supabase Storage configured): a signed upload URL for a new import file. Null when files
+ * are stored locally, and the browser then posts the file to the server action as before.
+ */
+export async function prepareImportUpload(
+  input: { fileName: string; size: number },
+  actor: Actor,
+): Promise<{ key: string; uploadUrl: string } | null> {
+  assertCanImport(actor);
+  if (!(input.size > 0)) throw new ImportError("Choose a file to upload.");
+  if (input.size > MAX_FILE_BYTES) throw new ImportError("The file is larger than 24 MB. Split it into smaller files.");
+  return createSignedUpload(IMPORT_FOLDER, cleanText(input.fileName) ?? "import");
 }
 
 /** Step 2 (Excel): read another sheet of the same workbook. Replaces the rows and proposes a new mapping. */

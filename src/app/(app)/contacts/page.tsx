@@ -19,12 +19,14 @@ import {
   listContactCountries,
   listContacts,
   listOwnerOptions,
+  listProductOptions,
   listSavedViews,
   parseContactFilters,
   parsePage,
   type ContactFilters,
   type ContactListRow,
 } from "@/lib/contacts/queries";
+import { UNRATED_LABEL } from "@/lib/contacts/rules";
 import { formatPhone } from "@/lib/phone";
 import { activeItems, getSettings, labelFor } from "@/lib/settings";
 import { cn, formatINR, formatRelative } from "@/lib/utils";
@@ -98,7 +100,7 @@ export default async function ContactsPage({ searchParams }: { searchParams: Pro
   const canReassign = can(user, "contacts.reassign");
   const tz = user.timezone || "Asia/Kolkata";
 
-  const [result, settings, views, countries, owners, assignable] = await Promise.all([
+  const [result, settings, views, countries, owners, assignable, productOptions] = await Promise.all([
     listContacts(user, filters, { page }),
     getSettings([
       "lists.channels",
@@ -112,6 +114,7 @@ export default async function ContactsPage({ searchParams }: { searchParams: Pro
     listContactCountries(user),
     viewAll ? listOwnerOptions() : Promise.resolve([]),
     canReassign ? listAssignableUsers() : Promise.resolve([]),
+    listProductOptions(),
   ]);
   const opt = (key: "lists.channels" | "lists.firstDoors" | "lists.campaigns" | "lists.languages" | "lists.tags") =>
     activeItems(settings[key]).map((i) => ({ value: i.key, label: i.label }));
@@ -188,7 +191,7 @@ export default async function ContactsPage({ searchParams }: { searchParams: Pro
             defaultChecked={filters.unrated}
             className="h-4 w-4 accent-black"
           />
-          Unrated
+          {UNRATED_LABEL}
         </label>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -203,11 +206,12 @@ export default async function ContactsPage({ searchParams }: { searchParams: Pro
         <FilterSelect label="Campaign" name="campaign" value={filters.campaign} options={opt("lists.campaigns")} />
         <FilterSelect label="Channel" name="channel" value={filters.channel} options={opt("lists.channels")} />
         <FilterSelect
-          label="Product bought"
+          label="Product family bought"
           name="family"
           value={filters.family}
           options={settings["ladder.families"].map((f) => ({ value: f.key, label: f.label }))}
         />
+        <FilterSelect label="Product bought" name="product" value={filters.product} options={productOptions} />
         <FilterSelect
           label="Country"
           name="country"

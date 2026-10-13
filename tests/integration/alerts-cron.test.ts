@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { notifications } from "@/db/schema";
+import { notifications, webhookEvents } from "@/db/schema";
 import { GET as frequent } from "@/app/api/cron/frequent/route";
 import { GET as nightly } from "@/app/api/cron/nightly/route";
 import { GET as weekly } from "@/app/api/cron/weekly/route";
+import { pruneWebhookEvents } from "@/lib/webhooks/retention";
 import { makeUser, resetDb } from "../support/db";
 
 const mail = vi.hoisted(() => ({ fail: false }));
@@ -57,12 +58,33 @@ describe("cron routes", () => {
     expect(body.steps.abandonedCheckouts).toMatchObject({ ok: true, result: { abandoned: 0, tasks: 0 } });
   });
 
-  it("nightly recomputes, then raises the repeat-purchase alerts", async () => {
+  it("nightly recomputes, then raises the repeat-purchase alerts, then prunes old webhook events", async () => {
+    const day = 24 * 3600 * 1000;
+    const ago = (days: number) => new Date(Date.now() - days * day);
+    await db.insert(webhookEvents).values([
+      { source: "tagmango", eventKey: "old-ok", payload: {}, receivedAt: ago(200), processedAt: ago(200) },
+      { source: "tagmango", eventKey: "old-failed", payload: {}, receivedAt: ago(200), processedAt: ago(200), error: "No phone number" },
+      { source: "tagmango", eventKey: "old-skipped", payload: {}, receivedAt: ago(200), processedAt: ago(200), error: "Skipped: a status update" },
+      { source: "tagmango", eventKey: "old-in-flight", payload: {}, receivedAt: ago(200) },
+      { source: "tagmango", eventKey: "recent-ok", payload: {}, receivedAt: ago(179), processedAt: ago(179) },
+    ]);
     const res = await call(nightly, "/api/cron/nightly", `Bearer ${SECRET}`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(Object.keys(body.steps)).toEqual(["recomputeAll", "closeRepurchasedTasks", "dueForNextRung", "atRisk", "vipGoneQuiet"]);
+    expect(Object.keys(body.steps)).toEqual(["recomputeAll", "closeRepurchasedTasks", "dueForNextRung", "atRisk", "vipGoneQuiet", "pruneWebhookEvents", "pruneLoginAttempts", "pruneExpiredSessions"]);
     expect(body.steps.recomputeAll.result).toEqual({ contacts: 0 });
+    expect(body.steps.pruneWebhookEvents.result.deleted).toBe(1);
+    const left = (await db.select({ k: webhookEvents.eventKey }).from(webhookEvents)).map((r) => r.k).sort();
+    expect(left).toEqual(["old-failed", "old-in-flight", "old-skipped", "recent-ok"]);
+  });
+
+  it("pruning works in batches", async () => {
+    const old = new Date(Date.now() - 365 * 24 * 3600 * 1000);
+    await db.insert(webhookEvents).values(
+      Array.from({ length: 7 }, (_, i) => ({ source: "libromi", eventKey: `b-${i}`, payload: {}, receivedAt: old, processedAt: old })),
+    );
+    expect(await pruneWebhookEvents(new Date(), db, { batchSize: 3 })).toMatchObject({ deleted: 7 });
+    expect(await pruneWebhookEvents(new Date(), db, { batchSize: 3 })).toMatchObject({ deleted: 0 });
   });
 
   it("weekly sends the summary", async () => {

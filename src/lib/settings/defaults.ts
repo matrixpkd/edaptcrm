@@ -79,8 +79,10 @@ export type Rung = { rung: number; label: string; description?: string };
 
 /**
  * Next best offer rules, checked in order; the first match wins.
- * `when` conditions are ANDed. `offer` is shown on the contact page and the Today queue;
- * `productId` (optional) gives the price used by the 90-day forecast, otherwise `price`.
+ * `when` conditions are ANDed. `offer` is shown on the contact page and the Today queue.
+ * The price used by the 90-day forecast resolves as: `price`, else the `productId` product, else the active
+ * product named `productName`, else the cheapest active product in `family`, else the cheapest active product
+ * on the rung above (src/lib/metrics/nbo.ts).
  */
 export type NboCondition =
   | { type: "no_purchases" }
@@ -104,6 +106,10 @@ export type NboRule = {
   when: NboCondition[];
   offer: string;
   productId?: string | null;
+  /** an active product's exact name (case-insensitive), e.g. "AI Agents for Business" */
+  productName?: string;
+  /** a product family key (ladder.families): the cheapest active product in it */
+  family?: string;
   price?: number | null;
   active?: boolean;
 };
@@ -429,6 +435,7 @@ export const DEFAULT_SETTINGS = {
       label: "Delegation alumni",
       when: [{ type: "bought_family", values: ["delegation"] }, { type: "not_bought_family", values: ["ai_office"] }],
       offer: "The AI Office and premium programs",
+      family: "ai_office",
       price: null,
     },
     {
@@ -437,6 +444,7 @@ export const DEFAULT_SETTINGS = {
       label: "Delegation alumni (Legacy: Delegation tag)",
       when: [{ type: "tag_in", values: ["Legacy: Delegation"] }, { type: "not_bought_family", values: ["ai_office"] }],
       offer: "The AI Office and premium programs",
+      family: "ai_office",
       price: null,
     },
     {
@@ -444,6 +452,7 @@ export const DEFAULT_SETTINGS = {
       label: "The AI Office member",
       when: [{ type: "bought_family", values: ["ai_office"] }],
       offer: "The AI Office renewal, and ask for referrals",
+      family: "ai_office",
       price: null,
     },
     {
@@ -451,6 +460,7 @@ export const DEFAULT_SETTINGS = {
       label: "Applied AI Mastery graduate",
       when: [{ type: "bought_family", values: ["applied_ai_mastery"] }],
       offer: "The AI Office or advanced workshops",
+      family: "ai_office",
       price: null,
     },
     {
@@ -462,6 +472,7 @@ export const DEFAULT_SETTINGS = {
         { type: "region_is", value: "gcc" },
       ],
       offer: "AI Agents for Business, then The AI Office",
+      productName: "AI Agents for Business",
       price: null,
     },
     {
@@ -469,6 +480,7 @@ export const DEFAULT_SETTINGS = {
       label: "Business owner with a workshop",
       when: [{ type: "industry_in", values: ["business_owner"] }, { type: "bought_family", values: ["workshop"] }],
       offer: "AI Agents for Business",
+      productName: "AI Agents for Business",
       price: null,
     },
     {
@@ -476,6 +488,7 @@ export const DEFAULT_SETTINGS = {
       label: "One workshop, Fit 60 or more",
       when: [{ type: "only_families", values: ["workshop"] }, { type: "fit_gte", value: 60 }],
       offer: "Applied AI Mastery",
+      productName: "Applied AI Mastery",
       price: null,
     },
     {

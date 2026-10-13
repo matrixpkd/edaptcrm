@@ -30,6 +30,15 @@ export function referenceFieldLabel(mode: PaymentMode | null | undefined): strin
   return "Reference";
 }
 
+/**
+ * The B2B organisation the Record payment form starts with: the contact's organisation only when the contact is a
+ * business. A personal purchase by someone linked to a school stays an individual purchase unless the person
+ * recording it picks the organisation.
+ */
+export function defaultPurchaseOrganisation(contact: { type: string | null; organisationId: string | null }): string | null {
+  return contact.type === "business" ? contact.organisationId : null;
+}
+
 // ---------------------------------------------------------------------------
 // Form errors
 // ---------------------------------------------------------------------------
@@ -49,7 +58,11 @@ export function unshownFailure(state: ActionResult, shownFields: readonly string
 // Proof files
 // ---------------------------------------------------------------------------
 
-export const MAX_PROOF_MB = 10;
+/**
+ * Proofs are posted with the payment form, and Vercel refuses request bodies over about 4.5 MB, so a proof is
+ * capped at 4 MB (a phone screenshot is well under 1 MB; a large photo can be cropped or saved as JPEG).
+ */
+export const MAX_PROOF_MB = 4;
 export const MAX_PROOF_BYTES = MAX_PROOF_MB * 1024 * 1024;
 /** for <input type="file" accept> */
 export const PROOF_ACCEPT = "image/png,image/jpeg,image/webp,image/gif,image/heic,image/heif,application/pdf,.heic,.heif";
@@ -80,10 +93,10 @@ export function proofExtension(file: { type: string; name: string }): string | n
   return ext === "jpeg" ? "jpg" : ext;
 }
 
-/** What is wrong with a proof file, or null when it is fine (image or PDF, up to 10 MB). */
+/** What is wrong with a proof file, or null when it is fine (image or PDF, up to MAX_PROOF_MB). */
 export function proofProblem(file: { size: number; type: string; name: string }): string | null {
   if (!file.size) return "That file is empty. Attach the screenshot again.";
-  if (file.size > MAX_PROOF_BYTES) return `The proof must be ${MAX_PROOF_MB} MB or smaller.`;
+  if (file.size > MAX_PROOF_BYTES) return `The proof must be ${MAX_PROOF_MB} MB or smaller. Crop the screenshot or save the photo as a JPEG.`;
   if (!proofExtension(file)) return "Attach a screenshot, a photo or a PDF.";
   return null;
 }

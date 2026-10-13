@@ -5,6 +5,7 @@ import { contacts, duplicateReviews, users, type Contact, type Role, type Stage 
 import { canViewContact } from "@/lib/auth/permissions";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
 import { resolveSurvivor } from "./internal";
+import { selectContacts } from "./rows";
 import { looseKey, orderedPair } from "./rules";
 
 /**
@@ -36,16 +37,10 @@ export async function lookupByPhone(
   tx: Tx = db,
 ): Promise<{ contact: Contact; matchedBy: "phone" | "alt_phone" } | null> {
   if (!e164) return null;
-  const rows = await tx
-    .select()
-    .from(contacts)
-    .where(or(eq(contacts.phoneE164, e164), sql`${contacts.altPhones} @> array[${e164}]::text[]`))
-    .orderBy(
-      sql`(${contacts.mergedIntoId} is null) desc`,
-      sql`(${contacts.phoneE164} = ${e164}) desc`,
-      contacts.createdAt,
-    )
-    .limit(5);
+  const rows = await selectContacts(or(eq(contacts.phoneE164, e164), sql`${contacts.altPhones} @> array[${e164}]::text[]`)!, tx, {
+    orderBy: sql`(${contacts.mergedIntoId} is null) desc, (${contacts.phoneE164} = ${e164}) desc, ${contacts.createdAt}`,
+    limit: 5,
+  });
   const survivor = await resolveSurvivor(rows[0], tx);
   if (!survivor) return null;
   return { contact: survivor, matchedBy: survivor.phoneE164 === e164 ? "phone" : "alt_phone" };
@@ -58,22 +53,18 @@ export async function lookupByEmail(
 ): Promise<{ contact: Contact; matchedBy: "email" | "alt_email" } | null> {
   const email = normalizeEmail(rawEmail) ?? rawEmail?.trim().toLowerCase();
   if (!email) return null;
-  const rows = await tx
-    .select()
-    .from(contacts)
-    .where(
-      or(
-        sql`lower(${contacts.email}) = ${email}`,
-        // alternates are always stored lower-case by this module
-        sql`${contacts.altEmails} @> array[${email}]::text[]`,
-      ),
-    )
-    .orderBy(
-      sql`(${contacts.mergedIntoId} is null) desc`,
-      sql`(lower(${contacts.email}) = ${email}) desc nulls last`,
-      contacts.createdAt,
-    )
-    .limit(5);
+  const rows = await selectContacts(
+    or(
+      sql`lower(${contacts.email}) = ${email}`,
+      // alternates are always stored lower-case by this module
+      sql`${contacts.altEmails} @> array[${email}]::text[]`,
+    )!,
+    tx,
+    {
+      orderBy: sql`(${contacts.mergedIntoId} is null) desc, (lower(${contacts.email}) = ${email}) desc nulls last, ${contacts.createdAt}`,
+      limit: 5,
+    },
+  );
   const survivor = await resolveSurvivor(rows[0], tx);
   if (!survivor) return null;
   return {
@@ -102,20 +93,17 @@ export async function findSameNameSameCity(
   const n = looseKey(name);
   const c = looseKey(city);
   if (!n || !c) return [];
-  return tx
-    .select()
-    .from(contacts)
-    .where(
-      and(
-        isNull(contacts.mergedIntoId),
-        // names are stored trimmed with single spaces, so the lower(name) index applies
-        sql`lower(${contacts.name}) = ${n}`,
-        sql`lower(regexp_replace(trim(${contacts.city}), '\\s+', ' ', 'g')) = ${c}`,
-        excludeId ? ne(contacts.id, excludeId) : undefined,
-      ),
-    )
-    .orderBy(contacts.createdAt)
-    .limit(20);
+  return selectContacts(
+    and(
+      isNull(contacts.mergedIntoId),
+      // names are stored trimmed with single spaces, so the lower(name) index applies
+      sql`lower(${contacts.name}) = ${n}`,
+      sql`lower(regexp_replace(trim(${contacts.city}), '\\s+', ' ', 'g')) = ${c}`,
+      excludeId ? ne(contacts.id, excludeId) : undefined,
+    )!,
+    tx,
+    { orderBy: sql`${contacts.createdAt}`, limit: 20 },
+  );
 }
 
 /**

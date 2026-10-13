@@ -18,6 +18,7 @@ import { cn, formatINR } from "@/lib/utils";
 import { FormAlert, ProofInput, useFormAction, type FormAction } from "./form-kit";
 import {
   MAX_INSTALMENTS,
+  MAX_PROOF_MB,
   MIN_INSTALMENTS,
   MODE_ORDER,
   addMonthsYmd,
@@ -582,7 +583,7 @@ export function RecordPaymentForm(props: RecordPaymentFormProps) {
                   aria-required={referenceRequired(mode)}
                 />
               </Field>
-              <ProofInput id="rp-proof" error={fe.proof} hint="The bank or UPI screenshot, or a PDF receipt. Image or PDF, up to 10 MB." />
+              <ProofInput id="rp-proof" error={fe.proof} hint={`The bank or UPI screenshot, or a PDF receipt. Image or PDF, up to ${MAX_PROOF_MB} MB.`} />
             </div>
           ) : (
             <p className="flex items-start gap-2 rounded-lg bg-surface-muted px-3 py-2 text-sm text-muted">

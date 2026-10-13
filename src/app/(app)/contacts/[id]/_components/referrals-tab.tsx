@@ -1,23 +1,21 @@
 import Link from "next/link";
-import type { ReferralRow } from "@/lib/contacts/queries";
+import { HIDDEN_CONTACT_LABEL, type ReferralRow } from "@/lib/contacts/queries";
 import { GradeBadge, StageBadge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/card";
-import { formatDate, formatINR } from "@/lib/utils";
+import { cn, formatDate, formatINR } from "@/lib/utils";
 
 export function ReferralsTab({
   referrer,
   referrerVisible,
   referred,
-  visibleIds,
   networkValueInr,
   referralCount,
   tz,
 }: {
   referrer: { id: string; name: string } | null;
   referrerVisible: boolean;
+  /** contacts the viewer may not open come redacted (hidden: true) from getContactReferrals */
   referred: ReferralRow[];
-  /** referred contacts this viewer may open */
-  visibleIds: Set<string>;
   networkValueInr: number;
   referralCount: number;
   tz: string;
@@ -33,7 +31,7 @@ export function ReferralsTab({
                 {referrer.name}
               </Link>
             ) : (
-              referrer.name
+              <span className="text-muted">{HIDDEN_CONTACT_LABEL}</span>
             )
           ) : (
             <span className="font-normal text-muted">Nobody recorded</span>
@@ -65,18 +63,18 @@ export function ReferralsTab({
             <li key={r.id} className="flex items-center gap-3 px-4 py-3">
               <GradeBadge grade={r.grade} size="sm" />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">
-                  {visibleIds.has(r.id) ? (
+                <p className={cn("truncate text-sm", r.hidden ? "text-muted" : "font-medium")}>
+                  {r.hidden ? (
+                    r.name
+                  ) : (
                     <Link href={`/contacts/${r.id}`} className="underline-offset-2 hover:underline">
                       {r.name}
                     </Link>
-                  ) : (
-                    r.name
                   )}
                 </p>
                 <p className="text-xs text-muted">
                   Joined {formatDate(r.createdAt, tz)}
-                  {r.ownerName ? ` · ${r.ownerName}` : " · pool"}
+                  {r.hidden ? "" : r.ownerName ? ` · ${r.ownerName}` : " · pool"}
                 </p>
               </div>
               <div className="hidden sm:block">

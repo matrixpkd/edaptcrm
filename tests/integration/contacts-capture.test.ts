@@ -536,6 +536,24 @@ describe("captureEnquiry", () => {
       expect(await count(notifications, eq(notifications.type, "hot_lead"))).toBe(4);
     });
 
+    it("Hot lead: never alerts the person who entered the lead, even a manager", async () => {
+      const s = await makeUser({ role: "sales", team: "kerala" });
+      const m = await makeUser({ role: "manager" });
+      const m2 = await makeUser({ role: "manager" });
+      const local = inPhone();
+      const first = await captureEnquiry({ phone: local, channel: "phone_call", profile: { city: "Kochi" }, skipAlerts: true });
+      await applyRating(first.contact.id, { spendingBand: 4, industry: "business_owner", ageBand: "35-44", umerLevel: 3, aiLevel: 2 }, "sales", s.id);
+      // the manager types in a new enquiry for this grade A lead
+      await captureEnquiry({ phone: local, channel: "walk_in_event", createdById: m.id });
+      let hot = await db.select().from(notifications).where(eq(notifications.type, "hot_lead"));
+      expect(hot.map((h) => h.userId).sort()).toEqual([s.id, m2.id].sort());
+      // the owner entering it themselves: only the managers hear about it
+      await db.delete(notifications);
+      await captureEnquiry({ phone: local, channel: "walk_in_event", createdById: s.id });
+      hot = await db.select().from(notifications).where(eq(notifications.type, "hot_lead"));
+      expect(hot.map((h) => h.userId).sort()).toEqual([m.id, m2.id].sort());
+    });
+
     it("no hot lead alert below grade A, for customers, and none at all with skipAlerts", async () => {
       const s = await makeUser({ role: "sales", team: "kerala" });
       await makeUser({ role: "manager" });

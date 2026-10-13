@@ -348,48 +348,15 @@ async function recordPurchaseTx(input: RecordPurchaseInput, actor: Actor | null,
     assisted = creditedUserId !== null;
     creditAdjustedById = actor.id;
   } else {
-    ({ creditedUserId, assisted } = await computeSalesCredit(contact.id, purchasedAt, t));
+    ({ creditedUserId, assisted } = await computeSalesCredit(contact.id, purchasedAt, t, { ownerId: contact.ownerId }));
   }
 
-  const [row] = await t
-    .insert(purchases)
-    .values({
-      contactId: contact.id,
-      organisationId: input.organisationId ?? null,
-      productId,
-      productName,
-      family,
-      listPrice,
-      discount,
-      amount,
-      currency,
-      fxRate,
-      amountInr,
-      purchasedAt,
-      mode: input.mode,
-      reference: purchaseRef,
-      status: "pending",
-      creditedUserId,
-      assisted,
-      creditAdjustedById,
-      source: input.source,
-      hasInstalments,
-      proofUrl: input.proofUrl ?? null,
-      notes: input.notes?.trim() || null,
-      campaign: input.campaign ?? null,
-      rawPayload: input.rawPayload ?? null,
-      importBatchId: input.importBatchId ?? null,
-      createdById: actor?.id ?? null,
-    })
-    .returning({ id: purchases.id });
-  const purchaseId = row.id;
-
-  // Payment rows
+  // Payment rows (built first: the purchase is saved with the status they give it; purchaseId is set on insert)
   const paidStatus: PaymentStatus = verified ? "verified" : "unverified";
   const paidRow = (seq: number, dueAt: Date | null): typeof payments.$inferInsert => {
     const rate = rateFromTable(rates, currency, paidAt);
     return {
-      purchaseId,
+      purchaseId: "",
       contactId: contact.id,
       kind: "payment",
       seq,
@@ -419,7 +386,7 @@ async function recordPurchaseTx(input: RecordPurchaseInput, actor: Actor | null,
       }
       const rate = rateFromTable(rates, currency, inst.dueAt);
       values.push({
-        purchaseId,
+        purchaseId: "",
         contactId: contact.id,
         kind: "payment",
         seq: inst.seq,
@@ -434,12 +401,53 @@ async function recordPurchaseTx(input: RecordPurchaseInput, actor: Actor | null,
       });
     });
   }
+  // the status follows from these rows (what refreshPurchaseStatus would read back)
+  const status = derivePurchaseStatus(
+    { amount, currency, fxRate, status: "pending" },
+    values.map((v) => ({ kind: v.kind ?? "payment", status: v.status ?? "scheduled", amount: Number(v.amount), currency: v.currency ?? currency, amountInr: Number(v.amountInr) })),
+  );
+
+  const [row] = await t
+    .insert(purchases)
+    .values({
+      contactId: contact.id,
+      organisationId: input.organisationId ?? null,
+      productId,
+      productName,
+      family,
+      listPrice,
+      discount,
+      amount,
+      currency,
+      fxRate,
+      amountInr,
+      purchasedAt,
+      mode: input.mode,
+      reference: purchaseRef,
+      status,
+      creditedUserId,
+      assisted,
+      creditAdjustedById,
+      source: input.source,
+      hasInstalments,
+      proofUrl: input.proofUrl ?? null,
+      notes: input.notes?.trim() || null,
+      campaign: input.campaign ?? null,
+      rawPayload: input.rawPayload ?? null,
+      importBatchId: input.importBatchId ?? null,
+      createdById: actor?.id ?? null,
+    })
+    .returning({ id: purchases.id });
+  const purchaseId = row.id;
+
   const inserted = values.length
-    ? await t.insert(payments).values(values).returning({ id: payments.id, seq: payments.seq, status: payments.status })
+    ? await t
+        .insert(payments)
+        .values(values.map((v) => ({ ...v, purchaseId })))
+        .returning({ id: payments.id, seq: payments.seq, status: payments.status })
     : [];
   inserted.sort((a, b) => a.seq - b.seq);
 
-  const status = await refreshPurchaseStatus(purchaseId, t);
   await audit(
     {
       table: "purchases",
@@ -468,7 +476,16 @@ async function recordPurchaseTx(input: RecordPurchaseInput, actor: Actor | null,
   const verifiedIds = inserted.filter((r) => r.status === "verified").map((r) => r.id);
   if (verifiedIds.length) {
     await onVerifiedMoney(
-      { contactId: contact.id, paymentIds: verifiedIds, purchaseId, paidAt, actorId: actor?.id ?? null, newAdvocate: input.source !== "import" },
+      {
+        contactId: contact.id,
+        paymentIds: verifiedIds,
+        purchaseId,
+        paidAt,
+        actorId: actor?.id ?? null,
+        newAdvocate: input.source !== "import",
+        // payments created just now: no alert task can name them yet
+        newPayments: true,
+      },
       t,
     );
   }

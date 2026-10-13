@@ -81,10 +81,22 @@ describe("logInteraction", () => {
       const s = await makeUser({ role: "sales" });
       const support = await makeUser({ role: "support", name: "Sam" });
       const c = await lead(s.id);
-      await logInteraction(c.id, { type: "support_issue", outcome: "resolved", nextFollowUpAt: new Date() }, support);
+      await logInteraction(c.id, { type: "note", outcome: "resolved", nextFollowUpAt: new Date() }, support);
       const [t] = await db.select().from(tasks).where(eq(tasks.type, "follow_up"));
       expect(t.userId).toBe(s.id);
-      expect(t.reason).toBe("Follow-up set by Sam after a support issue: Resolved");
+      expect(t.reason).toBe("Follow-up set by Sam after a note: Resolved");
+    });
+
+    it("a support person's follow-up on their support issue is theirs (support's Today), and the owner stays", async () => {
+      const s = await makeUser({ role: "sales" });
+      const support = await makeUser({ role: "support", name: "Sam" });
+      const c = await lead(s.id);
+      await logInteraction(c.id, { type: "support_issue", outcome: "resolved", nextFollowUpAt: new Date() }, support);
+      const [t] = await db.select().from(tasks).where(eq(tasks.type, "follow_up"));
+      expect(t.userId).toBe(support.id);
+      expect(t.reason).toBe("Follow-up you set after a support issue: Resolved");
+      const [after] = await db.select().from(contacts).where(eq(contacts.id, c.id));
+      expect(after.ownerId).toBe(s.id);
     });
 
     it("in the pool, a salesperson's follow-up is theirs; anyone else's goes to the pool", async () => {

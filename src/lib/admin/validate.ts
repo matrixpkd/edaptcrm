@@ -535,7 +535,10 @@ function condition(input: unknown, where: string): NboCondition {
 }
 
 /** Ordered rules (first match wins). Ids are unique and kept; a rule needs a label and an offer. */
-export function validateNboRules(input: unknown, ctx: { productIds: string[] }): Validated<NboRule[]> {
+export function validateNboRules(
+  input: unknown,
+  ctx: { productIds: string[]; activeProductNames?: string[]; families?: string[] },
+): Validated<NboRule[]> {
   return run((warn) => {
     const rows = arr(input, "Rules");
     const ids = new Set<string>();
@@ -550,7 +553,15 @@ export function validateNboRules(input: unknown, ctx: { productIds: string[] }):
       const productId = typeof o.productId === "string" && o.productId ? o.productId : null;
       if (productId && !ctx.productIds.includes(productId)) throw new Invalid(`"${label}": that product no longer exists`);
       const price = o.price === null || o.price === undefined || o.price === "" ? null : numIn(o.price, `Price of "${label}"`, 0, 1e9);
+      const productName = text(o.productName, `Product name of "${label}"`, 200, { optional: true });
+      const family = text(o.family, `Family of "${label}"`, 60, { optional: true });
+      if (family && ctx.families && !ctx.families.includes(family)) throw new Invalid(`"${label}": "${family}" is not a product family`);
+      if (productName && ctx.activeProductNames && !ctx.activeProductNames.some((n) => n.trim().toLowerCase() === productName.toLowerCase())) {
+        warn(`"${label}": no active product is named "${productName}", so its price comes from the next step.`);
+      }
       const rule: NboRule = { id, label, when, offer, productId, price };
+      if (productName) rule.productName = productName;
+      if (family) rule.family = family;
       if (o.active === false) rule.active = false;
       return rule;
     });

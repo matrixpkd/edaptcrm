@@ -4,6 +4,7 @@ import {
   addMonthsYmd,
   buildSchedule,
   convertPrice,
+  defaultPurchaseOrganisation,
   discountFromFinal,
   dueState,
   finalFromDiscount,
@@ -120,11 +121,12 @@ describe("payments rules: references and proofs", () => {
     expect(referenceFieldLabel("tagmango")).toBe("TagMango order id");
   });
 
-  it("accepts images and PDFs up to 10 MB, never SVG or HTML", () => {
+  it("accepts images and PDFs up to 4 MB (Vercel's request limit), never SVG or HTML", () => {
     expect(proofProblem({ size: 1000, type: "image/png", name: "a.png" })).toBeNull();
     expect(proofProblem({ size: 1000, type: "application/pdf", name: "receipt.pdf" })).toBeNull();
     expect(proofProblem({ size: 1000, type: "", name: "IMG_1.HEIC" })).toBeNull();
-    expect(proofProblem({ size: 11 * 1024 * 1024, type: "image/jpeg", name: "big.jpg" })).toMatch(/10 MB/);
+    expect(proofProblem({ size: 4 * 1024 * 1024, type: "image/jpeg", name: "ok.jpg" })).toBeNull();
+    expect(proofProblem({ size: 4 * 1024 * 1024 + 1, type: "image/jpeg", name: "big.jpg" })).toMatch(/4 MB/);
     expect(proofProblem({ size: 0, type: "image/png", name: "empty.png" })).toMatch(/empty/);
     expect(proofProblem({ size: 10, type: "image/svg+xml", name: "x.svg" })).toMatch(/screenshot/);
     expect(proofProblem({ size: 10, type: "text/html", name: "x.png" })).toMatch(/screenshot/);
@@ -242,5 +244,15 @@ describe("payments rules: form errors", () => {
     expect(unshownFailure(onField, ["amount", "reference"])).toBeNull();
     const elsewhere = { ok: false as const, error: "No INR rate is set for AED.", fieldErrors: { currency: "No INR rate is set for AED." } };
     expect(unshownFailure(elsewhere, ["amount", "reference"])).toBe(elsewhere);
+  });
+});
+
+describe("defaultPurchaseOrganisation", () => {
+  it("preselects the organisation only for a business contact", () => {
+    expect(defaultPurchaseOrganisation({ type: "business", organisationId: "org-1" })).toBe("org-1");
+    // a teacher linked to a school buying a workshop for themselves is not a B2B deal by default
+    expect(defaultPurchaseOrganisation({ type: "individual", organisationId: "org-1" })).toBeNull();
+    expect(defaultPurchaseOrganisation({ type: null, organisationId: "org-1" })).toBeNull();
+    expect(defaultPurchaseOrganisation({ type: "business", organisationId: null })).toBeNull();
   });
 });

@@ -4,6 +4,8 @@ import { PageHeader } from "@/components/ui/card";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import { channelUsage, listAssignableUsers } from "@/lib/contacts/queries";
+import { builtInCities } from "@/lib/contacts/places";
+import { isManualChannel, placeSuggestionList } from "@/lib/contacts/rules";
 import { activeItems, getSettings, type ListItem } from "@/lib/settings";
 import { QuickAddForm } from "./quick-add-form";
 
@@ -44,11 +46,15 @@ export default async function QuickAddPage({
 
   const isManager = user.role === "manager" || user.role === "admin";
   const [lists, usage, owners] = await Promise.all([
-    getSettings(["lists.channels", "lists.firstDoors", "lists.campaigns", "lists.languages", "lists.tags"]),
+    getSettings(["lists.channels", "lists.firstDoors", "lists.campaigns", "lists.languages", "lists.tags", "locations"]),
     channelUsage(),
     isManager ? listAssignableUsers() : Promise.resolve([]),
   ]);
-  const { common, other } = rankChannels(activeItems(lists["lists.channels"]), usage);
+  // TagMango checkouts and imports are recorded by the system only, never typed in
+  const { common, other } = rankChannels(
+    activeItems(lists["lists.channels"]).filter((c) => isManualChannel(c.key)),
+    usage,
+  );
   const opt = (items: ListItem[]) => activeItems(items).map((i) => ({ value: i.key, label: i.label }));
 
   return (
@@ -80,6 +86,7 @@ export default async function QuickAddPage({
           }
           canRequestTransfer={can(user, "contacts.requestTransfer")}
           defaultPhone={defaultPhone}
+          cities={placeSuggestionList(builtInCities(lists.locations), [])}
         />
       </div>
     </div>

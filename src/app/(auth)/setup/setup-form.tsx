@@ -14,8 +14,8 @@ export function SetupForm() {
       <Field label="Email" htmlFor="email">
         <Input id="email" name="email" type="email" required />
       </Field>
-      <Field label="Password" htmlFor="password" hint="At least 8 characters">
-        <Input id="password" name="password" type="password" minLength={8} required />
+      <Field label="Password" htmlFor="password" hint="At least 10 characters">
+        <Input id="password" name="password" type="password" minLength={10} maxLength={200} autoComplete="new-password" required />
       </Field>
       <FormMessage state={state} />
       <SubmitButton className="w-full" size="lg" pendingText="Creating…">

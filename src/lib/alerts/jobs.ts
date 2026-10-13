@@ -4,14 +4,18 @@ import "server-only";
  *
  * - frequent (every 15 minutes): abandoned checkouts, untouched leads, lead release, follow-up pings,
  *   instalments due, unverified payments, alert emails, daily digests (each user at their own local 8:30).
- * - nightly (02:00 IST): recompute every contact (rebuilds cohorts first), then next rung, at risk, VIPs gone quiet.
+ * - nightly (02:00 IST): recompute every contact (rebuilds cohorts first), then next rung, at risk, VIPs gone quiet,
+ *   then prune webhook_events older than 180 days that were processed without an error, sign-in attempts older
+ *   than a day and expired sessions.
  * - weekly (Monday 09:00 IST): the weekly summary.
  *
  * Steps run one after another; a failing step is logged and reported (the route answers 500) but does not stop
  * the steps after it, so one bad rule never silences every other alert.
  */
 import { db, type Tx } from "@/db";
+import { pruneExpiredSessions, pruneLoginAttempts } from "@/lib/auth/login-limit";
 import { recomputeAll } from "@/lib/metrics/recompute";
+import { pruneWebhookEvents } from "@/lib/webhooks/retention";
 import { sendDailyDigests, sendWeeklySummary } from "./digest";
 import { sendPendingNotificationEmails } from "./mailer";
 import {
@@ -87,6 +91,9 @@ export function runNightlyJobs(now: Date = new Date()): Promise<JobReport> {
     ["dueForNextRung", () => dueForNextRung(now)],
     ["atRisk", () => atRisk(now)],
     ["vipGoneQuiet", () => vipGoneQuiet(now)],
+    ["pruneWebhookEvents", () => pruneWebhookEvents(now)],
+    ["pruneLoginAttempts", () => pruneLoginAttempts(now)],
+    ["pruneExpiredSessions", () => pruneExpiredSessions(now)],
   ]);
 }
 

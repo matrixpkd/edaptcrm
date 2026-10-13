@@ -49,9 +49,46 @@ describe("calibration tables", () => {
       "location",
       "umer_level",
       "ai_level",
+      "recent_interest",
       "gut_stars",
       "first_door",
+      "value_money",
+      "value_frequency",
+      "value_breadth",
+      "value_referrals",
+      "value_recency",
     ]);
+  });
+
+  it("Value inputs bucket by today's weights: frequency 4 to 5, 6 or more; money bands; no referrals", () => {
+    const f = tableOf([raw("value_frequency", "5", 0, 0, 10, 4), raw("value_frequency", "4", 0, 0, 10, 2), raw("value_frequency", "9", 0, 0, 3, 1)], "value_frequency");
+    expect(f.rows.map((r) => [r.key, r.label, r.points, r.customers, r.repeated])).toEqual([
+      ["4", "4 to 5 purchases", 17, 20, 6],
+      ["6", "6 purchases or more", 20, 3, 1],
+    ]);
+    const m = tableOf([raw("value_money", "top", 0, 0, 2, 1), raw("value_money", "2", 0, 0, 4, 1), raw("value_money", "0", 0, 0, 5, 0)], "value_money");
+    expect(m.rows.map((r) => [r.label, r.points])).toEqual([
+      ["Under ₹1,000", 5],
+      ["₹5,000 to ₹20,000", 15],
+      ["₹50,000 or more", 25],
+    ]);
+    const r = tableOf([raw("value_referrals", "0", 0, 0, 7, 1), raw("value_referrals", "4", 0, 0, 1, 1)], "value_referrals");
+    expect(r.rows.map((x) => [x.label, x.points])).toEqual([
+      ["No paying referrals", 0],
+      ["3 paying referrals or more", 20],
+    ]);
+    expect(tableOf([raw("value_breadth", "2", 0, 0, 1, 0)], "value_breadth").rows[0]).toMatchObject({ label: "2 families", points: 13, conversion: null });
+  });
+
+  it("time inputs bucket days with today's windows; no date counts as older", () => {
+    const t = tableOf([raw("recent_interest", "0", 4, 2), raw("recent_interest", "7", 1, 0), raw("recent_interest", "8", 2, 1), raw("recent_interest", "", 3, 0), raw("recent_interest", "400", 1, 0)], "recent_interest");
+    expect(t.rows.map((r) => [r.key, r.label, r.points, r.leads, r.converted])).toEqual([
+      ["7", "Within 7 days", 30, 5, 2],
+      ["30", "8 to 30 days", 20, 2, 1],
+      ["older", "Older than 90 days", 0, 4, 0],
+    ]);
+    const v = tableOf([raw("value_recency", "200", 0, 0, 3, 1), raw("value_recency", "365", 0, 0, 1, 0)], "value_recency");
+    expect(v.rows.map((r) => [r.label, r.points, r.customers])).toEqual([["181 to 365 days", 5, 4]]);
   });
 
   it("grades A to D with thresholds from settings, unknown last", () => {

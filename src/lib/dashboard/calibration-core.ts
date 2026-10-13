@@ -5,7 +5,7 @@
  * scores today, and flags cells with too few people to trust.
  */
 import { classifyLocation, type LocationClass } from "@/lib/metrics/scoring";
-import type { ListItem, LocationConfig, ScoringConfig } from "@/lib/settings/defaults";
+import type { ListItem, LocationConfig, MinRow, ScoringConfig, WithinDaysRow } from "@/lib/settings/defaults";
 import { AI_KNOWLEDGE_SCALE, SPENDING_POWER_SCALE, UMER_FAMILIARITY_SCALE } from "@/lib/today/rating-scales";
 
 export const CALIBRATION_DIMENSIONS = [
@@ -17,9 +17,32 @@ export const CALIBRATION_DIMENSIONS = [
   "location",
   "umer_level",
   "ai_level",
+  "recent_interest",
   "gut_stars",
   "first_door",
+  "value_money",
+  "value_frequency",
+  "value_breadth",
+  "value_referrals",
+  "value_recency",
 ] as const;
+
+/**
+ * The Value inputs are judged at each purchase, not on today's totals (a customer who already repeated has a
+ * higher frequency today, so grouping by today's value would only measure itself). For every paid purchase at
+ * least `windowDays` old, the customer's money, purchases, product families and paying referrals AT THAT
+ * PURCHASE are one row in "customers", and "repeated" means they bought again within `windowDays` of it.
+ */
+export const VALUE_DIMENSIONS = ["value_money", "value_frequency", "value_breadth", "value_referrals"] as const;
+
+/**
+ * The two time inputs are judged at a snapshot `windowDays` ago (they are always "now" at the moment of a purchase
+ * or an enquiry): Readiness "recent interest" for the people who were leads then (days since their last enquiry or
+ * chat -> paid within `windowDays` after the snapshot?) and Value "recency" for the people who were customers then
+ * (days since their last purchase -> bought again within `windowDays` after it?). The raw key is the number of days
+ * ("" when nothing was ever recorded), bucketed here with today's windows.
+ */
+export const SNAPSHOT_DIMENSIONS = ["recent_interest", "value_recency"] as const;
 export type CalibrationDimension = (typeof CALIBRATION_DIMENSIONS)[number];
 
 /** One grouped row from SQL. `key` is "" for unknown; for location it is "country|state|city|phoneCountry". */
@@ -176,6 +199,47 @@ function describe(dim: CalibrationDimension, key: string, ctx: CalibrationContex
         ? { key, label: `${a.value} · ${a.text}`, points: lookup(s.readiness.aiLevel, key), order: a.value }
         : { key, label: "Not rated", points: lookup(s.readiness.aiLevel, "unknown"), order: unknownLast };
     }
+    case "value_money": {
+      // key: index of the first `below` threshold the money stays under (sorted ascending), or "top"
+      const rows = [...s.value.ltv].sort((a, b) => a.below - b.below);
+      const i = key === "top" ? rows.length : Number(key);
+      if (!Number.isInteger(i) || i < 0 || i > rows.length) return { key, label: key, points: null, order: unknownLast };
+      const inr = (n: number) => `₹${n.toLocaleString("en-IN")}`;
+      const label =
+        i === rows.length
+          ? `${inr(rows[rows.length - 1]?.below ?? 0)} or more`
+          : i === 0
+            ? `Under ${inr(rows[0].below)}`
+            : `${inr(rows[i - 1].below)} to ${inr(rows[i].below)}`;
+      return { key, label, points: i === rows.length ? s.value.ltvTop : rows[i].points, order: i };
+    }
+    case "value_frequency":
+    case "value_breadth":
+    case "value_referrals": {
+      const rows = [...minRowsFor(dim, s)].sort((a, b) => a.min - b.min);
+      const min = Number(key);
+      const i = rows.findIndex((r) => r.min === min);
+      const noun = dim === "value_frequency" ? ["purchase", "purchases"] : dim === "value_breadth" ? ["family", "families"] : ["paying referral", "paying referrals"];
+      const word = (n: number) => `${n} ${n === 1 ? noun[0] : noun[1]}`;
+      if (i === -1) return { key, label: min === 0 ? `No ${noun[1]}` : word(min), points: 0, order: min };
+      const next = rows[i + 1]?.min;
+      const label = next === undefined ? `${word(min)} or more` : next === min + 1 ? word(min) : `${min} to ${next - 1} ${noun[1]}`;
+      return { key, label, points: rows[i].points, order: min };
+    }
+    case "recent_interest":
+    case "value_recency": {
+      const rows = [...withinRowsFor(dim, s)].sort((a, b) => a.withinDays - b.withinDays);
+      const older = dim === "recent_interest" ? s.readiness.recentInterestOlder : s.value.recencyOlder;
+      if (key === "older") {
+        const last = rows[rows.length - 1]?.withinDays;
+        return { key, label: last === undefined ? "Any time" : `Older than ${last} days`, points: older, order: rows.length };
+      }
+      const days = Number(key);
+      const i = rows.findIndex((r) => r.withinDays === days);
+      if (i === -1) return { key, label: key, points: null, order: unknownLast };
+      const label = i === 0 ? `Within ${days} days` : `${rows[i - 1].withinDays + 1} to ${days} days`;
+      return { key, label, points: rows[i].points, order: i };
+    }
     case "gut_stars": {
       const n = Number(key);
       const valid = key !== "" && Number.isInteger(n) && n >= 1 && n <= 5;
@@ -197,7 +261,63 @@ const TITLES: Record<CalibrationDimension, { title: string; note: string; points
   ai_level: { title: "AI knowledge", note: "Readiness input, up to 30 points. Scored as a curve.", pointsLabel: "Readiness points" },
   gut_stars: { title: "Gut rating", note: "Added to the Edapt Score as an adjustment.", pointsLabel: "Adjustment" },
   first_door: { title: "First Door", note: "Not a scoring input; shown to compare doors.", pointsLabel: null },
+  recent_interest: {
+    title: "Recent interest",
+    note: "Readiness input, up to 30 points. Judged at a snapshot one window ago: people who were leads then, by days since their last enquiry or chat, and whether they paid in the window after it.",
+    pointsLabel: "Readiness points",
+  },
+  value_recency: {
+    title: "Recency",
+    note: "Value input, up to 15 points. Judged at a snapshot one window ago: people who were customers then, by days since their last purchase, and whether they bought again in the window after it.",
+    pointsLabel: "Value points",
+  },
+  value_money: {
+    title: "Money so far",
+    note: "Value input, up to 25 points. One row per purchase: what they had spent up to and including it (purchase amounts in INR), and whether they bought again.",
+    pointsLabel: "Value points",
+  },
+  value_frequency: {
+    title: "Purchases so far",
+    note: "Value input, up to 20 points. One row per purchase: how many purchases they had made by then, and whether they bought again.",
+    pointsLabel: "Value points",
+  },
+  value_breadth: {
+    title: "Product families so far",
+    note: "Value input, up to 20 points. One row per purchase: how many product families they had bought by then, and whether they bought again.",
+    pointsLabel: "Value points",
+  },
+  value_referrals: {
+    title: "Paying referrals so far",
+    note: "Value input, up to 20 points. One row per purchase: how many people they had referred who had paid by then, and whether they bought again.",
+    pointsLabel: "Value points",
+  },
 };
+
+/** The min-row table of a Value input (frequency, breadth, referrals) from today's weights. */
+function minRowsFor(dim: "value_frequency" | "value_breadth" | "value_referrals", s: ScoringConfig): MinRow[] {
+  return dim === "value_frequency" ? s.value.frequency : dim === "value_breadth" ? s.value.breadth : s.value.referrals;
+}
+
+/** The within-days table of a time input from today's weights. */
+function withinRowsFor(dim: "recent_interest" | "value_recency", s: ScoringConfig): WithinDaysRow[] {
+  return dim === "recent_interest" ? s.readiness.recentInterest : s.value.recency;
+}
+
+/** The bucket of a number of days: the smallest window that holds it, as text, or "older" (also for no date). */
+export function withinDaysKey(days: number | null, rows: WithinDaysRow[]): string {
+  if (days === null || !Number.isFinite(days)) return "older";
+  const sorted = [...rows].sort((a, b) => a.withinDays - b.withinDays);
+  for (const r of sorted) if (days <= r.withinDays) return String(r.withinDays);
+  return "older";
+}
+
+/** The bucket of a count: the highest `min` it reaches ("0" below every row), as text. */
+export function minRowKey(value: number, rows: MinRow[]): string {
+  if (!Number.isFinite(value)) return "0";
+  let best: number | null = null;
+  for (const r of rows) if (value >= r.min && (best === null || r.min > best)) best = r.min;
+  return String(best ?? 0);
+}
 
 /** Labelled, ordered calibration tables from the grouped SQL rows. Location keys are classed here. */
 export function buildCalibrationTables(raw: CalibrationRawRow[], ctx: CalibrationContext): CalibrationTable[] {
@@ -208,6 +328,10 @@ export function buildCalibrationTables(raw: CalibrationRawRow[], ctx: Calibratio
     if (r.dim === "location") {
       const [country, state, city, phoneCountry] = key.split("|");
       key = classifyLocation({ country, state, city, phoneCountry }, ctx.locations, ctx.gccCountries);
+    } else if (r.dim === "value_frequency" || r.dim === "value_breadth" || r.dim === "value_referrals") {
+      key = minRowKey(Number(key), minRowsFor(r.dim, ctx.scoring));
+    } else if (r.dim === "recent_interest" || r.dim === "value_recency") {
+      key = withinDaysKey(key === "" ? null : Number(key), withinRowsFor(r.dim, ctx.scoring));
     }
     const byKey = acc.get(r.dim) ?? new Map<string, CalibrationRawRow>();
     const cur = byKey.get(key) ?? { dim: r.dim, key, leads: 0, converted: 0, customers: 0, repeated: 0 };

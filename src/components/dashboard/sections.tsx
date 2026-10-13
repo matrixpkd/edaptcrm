@@ -22,6 +22,7 @@ import type {
   RungMoves,
   TeamRow,
 } from "@/lib/dashboard/metrics";
+import { UNRATED_LABEL } from "@/lib/contacts/rules";
 import { cn, formatINR, formatINRCompact } from "@/lib/utils";
 import { LeadsByChannelChart, LtvByDoorChart, RevenueByFamilyChart, ShareTrendChart } from "./charts";
 import { DeltaLine, Figure, Meter, Section, SectionEmpty, SplitBar, Swatch, TableToggle } from "./kit";
@@ -705,10 +706,10 @@ export function DataHealthSection({ data, className }: { data: DataHealth; class
     {
       key: "unrated",
       icon: Star,
-      label: "Unrated contacts",
+      label: UNRATED_LABEL,
       value: count(data.unrated),
       hint: data.unrated ? `${plural(data.unratedCustomers, "paying customer")} among them` : "Everyone has a rating",
-      href: null as string | null,
+      href: "/contacts?unrated=1" as string | null,
       warn: data.unratedCustomers > 0,
     },
     {
@@ -778,7 +779,8 @@ export function DataHealthSection({ data, className }: { data: DataHealth; class
       </ul>
       {data.contacts > 0 && (
         <p className="mt-3 text-xs text-muted">
-          Unrated: no rating at all on any of the four scales ({share(data.unrated / data.contacts)} of {plural(data.contacts, "contact")}).
+          Unrated: no rating of any kind, from sales, a self-rating or an import ({share(data.unrated / data.contacts)} of{" "}
+          {plural(data.contacts, "contact")}).
         </p>
       )}
     </Section>

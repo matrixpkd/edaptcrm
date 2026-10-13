@@ -44,6 +44,13 @@ export async function destroySession(): Promise<void> {
   jar.delete(SESSION_COOKIE);
 }
 
+/** The id (token hash) of this browser's session, or null when there is no session cookie. */
+export async function currentSessionId(): Promise<string | null> {
+  const jar = await cookies();
+  const token = jar.get(SESSION_COOKIE)?.value;
+  return token ? hashToken(token) : null;
+}
+
 /** Ends every session of a user (used when someone is deactivated). */
 export async function destroyUserSessions(userId: string): Promise<void> {
   await db.delete(sessions).where(eq(sessions.userId, userId));

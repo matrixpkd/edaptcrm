@@ -235,7 +235,13 @@ export async function handleWebhookGet(req: Request, source: WebhookSource): Pro
     return Response.json({ ok: false, error: "Unauthorized" }, { status: 401, headers: NO_STORE });
   }
   const challenge = url.searchParams.get("hub.challenge");
-  if (challenge) return new Response(challenge, { status: 200, headers: { ...NO_STORE, "content-type": "text/plain" } });
+  // echoed as plain text that is never sniffed, and only after the secret matched
+  if (challenge) {
+    return new Response(challenge.slice(0, 256), {
+      status: 200,
+      headers: { ...NO_STORE, "content-type": "text/plain; charset=utf-8", "x-content-type-options": "nosniff" },
+    });
+  }
   return Response.json(
     { ok: true, source, message: `Ready. Send ${WEBHOOK_SOURCE_INFO[source].label} events here with POST.` },
     { headers: NO_STORE },
@@ -483,6 +489,9 @@ async function processTagMango(payload: unknown, ctx: IntegrationContext, receiv
         profile: { city: o.city },
         selfRatings: ratingsOnly(self),
         notes: answersNote("Checkout answers", o.answers),
+        // a completed order makes the buyer a customer the moment it is recorded: no "new lead" / "hot lead"
+        // alert, since a checkout buyer needs no salesperson (started and failed checkouts keep theirs)
+        skipAlerts: o.checkout === "completed",
       });
     } catch (e) {
       if (!(e instanceof InvalidPhoneError)) throw e;

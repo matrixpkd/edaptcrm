@@ -36,30 +36,42 @@ export function formatMoney(amount: number | null | undefined, currency: string)
   }
 }
 
+/**
+ * Formatters are reused per (kind, time zone): building an Intl formatter costs ~70 µs, and a list page formats
+ * a few hundred dates.
+ */
+const dateFormats = new Map<string, Intl.DateTimeFormat>();
+function dateFormat(kind: "date" | "dateTime", timeZone: string): Intl.DateTimeFormat {
+  const key = `${kind}|${timeZone}`;
+  let f = dateFormats.get(key);
+  if (!f) {
+    f =
+      kind === "date"
+        ? new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone })
+        : new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit", timeZone });
+    if (dateFormats.size < 200) dateFormats.set(key, f);
+  }
+  return f;
+}
+
 export function formatDate(d: Date | string | null | undefined, timeZone = "Asia/Kolkata"): string {
   if (!d) return "";
-  return new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone }).format(
-    new Date(d),
-  );
+  return dateFormat("date", timeZone).format(new Date(d));
 }
 
 export function formatDateTime(d: Date | string | null | undefined, timeZone = "Asia/Kolkata"): string {
   if (!d) return "";
-  return new Intl.DateTimeFormat("en-IN", {
-    day: "numeric",
-    month: "short",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone,
-  }).format(new Date(d));
+  return dateFormat("dateTime", timeZone).format(new Date(d));
 }
+
+const relativeFormat = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
 
 /** "3 days ago", "in 2 hours", "just now" */
 export function formatRelative(d: Date | string | null | undefined, now: Date = new Date()): string {
   if (!d) return "";
   const diff = new Date(d).getTime() - now.getTime();
   const abs = Math.abs(diff);
-  const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+  const rtf = relativeFormat;
   const min = 60_000, hour = 60 * min, day = 24 * hour;
   if (abs < min) return "just now";
   if (abs < hour) return rtf.format(Math.round(diff / min), "minute");

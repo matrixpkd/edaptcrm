@@ -431,9 +431,20 @@ describe("getTodayQueue: review fixes", () => {
     const top = await contact({ ownerId: s.id, name: "Top lead", edaptScore: 95, grade: "A" });
     await task(top.id, s.id, { type: "new_lead", dueAt: new Date(NOW.getTime() - H) });
 
+    // a second task on the same contact folds into its row (it does not add to the counts)
+    await task(top.id, s.id, { type: "at_risk", reason: "At risk", dueAt: new Date(NOW.getTime() - 2 * H) });
+
     const q = await getTodayQueue(s, NOW);
     expect(q.rows.slice(0, 3).map((r) => r.contact?.name)).toEqual(["Abandoned", "Overdue", "Top lead"]);
     expect(q.total).toBe(N + 3);
     expect(q.leftOut).toBe(N + 3 - 40);
+
+    // the team view loads at most 400 tasks per person in one pass, and still reports the true row count
+    const m = await makeUser({ role: "manager" });
+    const group = (await getTeamQueues(m, NOW)).find((g) => g.userId === s.id);
+    expect(group?.queue.rows.slice(0, 3).map((r) => r.contact?.name)).toEqual(["Abandoned", "Overdue", "Top lead"]);
+    expect(group?.queue.rows[2].taskIds).toHaveLength(2);
+    expect(group?.queue.total).toBe(N + 3);
+    expect(group?.queue.leftOut).toBe(N + 3 - 40);
   });
 });

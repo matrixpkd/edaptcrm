@@ -335,10 +335,11 @@ describe("dueForNextRung and atRisk", () => {
     expect(await tasksOf("next_rung")).toHaveLength(3);
   });
 
-  it("raises at risk once a month at most, never while one is open, never for Lost or merged contacts", async () => {
+  it("raises at risk once a month at most, never while one is open, never for Lost, Dormant or merged contacts", async () => {
     const sales = await makeUser({ role: "sales" });
     const c = await customer({ ownerId: sales.id, atRisk: true, nextExpectedAt: at(-45 * D), nextOffer: "Applied AI Mastery" });
     await customer({ atRisk: true, stage: "lost" });
+    await customer({ atRisk: true, stage: "dormant" });
     const winner = await customer();
     await customer({ atRisk: true, mergedIntoId: winner.id });
 

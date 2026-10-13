@@ -20,6 +20,7 @@ import "server-only";
  */
 import { sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
+import { unratedCondition } from "@/lib/contacts/unrated";
 import { getSettings, labelFor } from "@/lib/settings";
 import type { ProductFamily, Rung } from "@/lib/settings/defaults";
 import { monthRange, trailingMonths, type DashboardRange } from "./period";
@@ -846,7 +847,7 @@ export async function referralLeaderboard(limit: number = LEADERBOARD_SIZE, tx: 
 
 export type DataHealth = {
   contacts: number;
-  /** contacts with no rating at all: no ratings rows and none of the four scales set */
+  /** contacts with no rating of any kind: unratedCondition() in src/lib/contacts/unrated.ts, as the Contacts filter */
   unrated: number;
   unratedCustomers: number;
   unverified: { count: number; inr: number; stale: number; staleDays: number };
@@ -865,9 +866,7 @@ export async function dataHealth(now: Date, tx: Tx = db): Promise<DataHealth> {
         count(*) filter (where x.unrated) as unrated,
         count(*) filter (where x.unrated and x.customer) as unrated_customers
       from (
-        select c.purchase_count > 0 as customer,
-          (c.ai_level is null and c.umer_level is null and c.spending_band is null and c.gut_stars is null
-            and not exists (select 1 from ratings r where r.contact_id = c.id)) as unrated
+        select c.purchase_count > 0 as customer, ${unratedCondition("c")} as unrated
         from contacts c
         where c.merged_into_id is null
       ) x

@@ -289,6 +289,19 @@ describe("contacts assignment", () => {
       for (const keep of [touched, young, customer, paying, lost]) expect((await contactRow(keep.id)).ownerId).toBe(s.id);
     });
 
+    it("never releases Dormant contacts (old imported leads go Dormant on recompute)", async () => {
+      const s = await makeUser({ role: "sales" });
+      await makeUser({ role: "manager" });
+      const now = new Date(Date.now() + 10 * DAY_MS);
+      const dormant = await lead({ ownerId: s.id });
+      await db.update(contacts).set({ stage: "dormant" }).where(eq(contacts.id, dormant.id));
+      const open = await lead({ ownerId: s.id });
+
+      expect(await releaseStaleLeads(now)).toEqual([open.id]);
+      expect((await contactRow(dormant.id)).ownerId).toBe(s.id);
+      expect(await count(tasks, and(eq(tasks.type, "lead_released"), eq(tasks.contactId, dormant.id)))).toBe(0);
+    });
+
     it("uses the configured number of days", async () => {
       const s = await makeUser({ role: "sales" });
       await makeUser({ role: "admin" });

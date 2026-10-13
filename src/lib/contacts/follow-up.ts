@@ -34,13 +34,21 @@ export function followUpPresets(now: Date, timeZone: string): Record<FollowUpPre
   };
 }
 
+/** Zones already checked: building an Intl.DateTimeFormat is slow and the Today queue calls this per row. */
+const checkedZones = new Map<string, string>();
+
 /** Falls back to India time when the stored time zone is missing or unknown. */
 function safeTimeZone(tz: string | null | undefined): string {
   if (!tz) return "Asia/Kolkata";
+  const known = checkedZones.get(tz);
+  if (known) return known;
+  let out: string;
   try {
     new Intl.DateTimeFormat("en", { timeZone: tz });
-    return tz;
+    out = tz;
   } catch {
-    return "Asia/Kolkata";
+    out = "Asia/Kolkata";
   }
+  if (checkedZones.size < 500) checkedZones.set(tz, out);
+  return out;
 }

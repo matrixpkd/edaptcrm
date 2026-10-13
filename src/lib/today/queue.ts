@@ -49,29 +49,6 @@ const TEAM_PER_GROUP_LIMIT = 400;
 /** Derived new-lead rows loaded per ranking. */
 const NEW_LEAD_LIMIT = 500;
 
-const taskColumns = {
-  id: tasks.id,
-  type: tasks.type,
-  reason: tasks.reason,
-  dueAt: tasks.dueAt,
-  priority: tasks.priority,
-  createdAt: tasks.createdAt,
-  userId: tasks.userId,
-  contactId: contacts.id,
-  contactName: contacts.name,
-  phoneE164: contacts.phoneE164,
-  phoneCountry: contacts.phoneCountry,
-  ownerId: contacts.ownerId,
-  grade: contacts.grade,
-  edaptScore: contacts.edaptScore,
-  stage: contacts.stage,
-  nextOffer: contacts.nextOffer,
-  purchaseCount: contacts.purchaseCount,
-  expected90dInr: contacts.expected90dInr,
-  nextExpectedAt: contacts.nextExpectedAt,
-  lastEnquiryAt: contacts.lastEnquiryAt,
-};
-
 type TaskRow = {
   id: string;
   type: QueueTask["type"];
@@ -136,12 +113,68 @@ const liveOpen = (): SQL => and(eq(tasks.status, "open"), or(isNull(tasks.contac
  */
 function rankOrder(overdueBefore: Date): SQL[] {
   const band = sql`case when ${tasks.type} = 'abandoned_checkout' then 0 when ${tasks.type} = 'follow_up' and ${tasks.dueAt} < ${overdueBefore.toISOString()}::timestamptz then 1 else 2 end`;
-  const score = sql`case when coalesce(${contacts.purchaseCount}, 0) > 0 and ${contacts.expected90dInr} is not null then least(100, 20 * log(1 + greatest(${contacts.expected90dInr}, 0))) else coalesce(${contacts.edaptScore}, 0) end`;
+  // float8, not numeric: log() of a numeric is computed to full precision and made this sort ~10x slower
+  // (docs/PERFORMANCE.md); rank.ts uses a JS double for the same score anyway
+  const score = sql`case when coalesce(${contacts.purchaseCount}, 0) > 0 and ${contacts.expected90dInr} is not null then least(100, 20 * log(1 + greatest(${contacts.expected90dInr}, 0)::float8)) else coalesce(${contacts.edaptScore}, 0) end`;
   return [band, sql`${score} desc`, desc(tasks.priority), asc(tasks.dueAt), asc(tasks.createdAt), asc(tasks.id)];
 }
 
-/** How many Today rows these tasks make (one per contact; transfer requests and contactless tasks on their own). */
-const rowCountSql = sql<number>`count(distinct case when ${tasks.contactId} is null or ${tasks.type} = 'transfer_request' then 'task:' || ${tasks.id}::text else ${tasks.contactId}::text end)`.mapWith(Number);
+/** The Today row a task lands on (one per contact; transfer requests and contactless tasks on their own). */
+const rowKeySql = sql`case when ${tasks.contactId} is null or ${tasks.type} = 'transfer_request' then 'task:' || ${tasks.id}::text else ${tasks.contactId}::text end`;
+
+/** A ranked task row as the raw query returns it (bigint and numeric arrive as strings). */
+type TeamTaskRaw = {
+  id: string;
+  type: QueueTask["type"];
+  reason: string;
+  due_at: Date | string;
+  priority: number;
+  created_at: Date | string;
+  user_id: string | null;
+  contact_id: string | null;
+  contact_name: string | null;
+  phone_e164: string | null;
+  phone_country: string | null;
+  owner_id: string | null;
+  grade: TaskRow["grade"];
+  edapt_score: number | null;
+  stage: Stage | null;
+  next_offer: string | null;
+  purchase_count: number | null;
+  expected_90d_inr: string | number | null;
+  next_expected_at: Date | string | null;
+  last_enquiry_at: Date | string | null;
+  rn: string | number;
+  group_rows: string | number;
+};
+
+const asDate = (v: Date | string) => (v instanceof Date ? v : new Date(v));
+const asDateOrNull = (v: Date | string | null) => (v === null ? null : asDate(v));
+
+function fromRaw(r: TeamTaskRaw): TaskRow {
+  return {
+    id: r.id,
+    type: r.type,
+    reason: r.reason,
+    dueAt: asDate(r.due_at),
+    priority: Number(r.priority),
+    createdAt: asDate(r.created_at),
+    userId: r.user_id,
+    contactId: r.contact_id,
+    contactName: r.contact_name,
+    phoneE164: r.phone_e164,
+    phoneCountry: r.phone_country,
+    ownerId: r.owner_id,
+    grade: r.grade,
+    edaptScore: r.edapt_score === null ? null : Number(r.edapt_score),
+    stage: r.stage,
+    nextOffer: r.next_offer,
+    purchaseCount: r.purchase_count === null ? null : Number(r.purchase_count),
+    expected90dInr: r.expected_90d_inr === null ? null : Number(r.expected_90d_inr),
+    nextExpectedAt: asDateOrNull(r.next_expected_at),
+    lastEnquiryAt: asDateOrNull(r.last_enquiry_at),
+  };
+}
 
 /** The pool tasks a salesperson sees: no assignee, contact in the pool (or theirs), contact in their team. */
 function poolCondition(
@@ -257,6 +290,42 @@ async function loadNewLeads(ownerIds: string[], now: Date, windowHours: number, 
   });
 }
 
+/**
+ * Open tasks with their contact in ranking order, in ONE pass (docs/PERFORMANCE.md): at most `limit` tasks (per
+ * assignee when `perUser`), each with its rank (rn) and the number of Today rows all of its group's tasks make
+ * (group_rows: distinct row keys, counted with dense_rank before the limit), so a cut queue still reports its
+ * true size without a second scan of tasks and contacts.
+ */
+function loadRankedTasks(tx: Tx, where: SQL, order: SQL[], opts: { perUser: boolean; limit: number }) {
+  const partition = opts.perUser ? sql`partition by ${tasks.userId}` : sql``;
+  const groupPartition = opts.perUser ? sql`partition by uid` : sql``;
+  // ranked on narrow rows (id, assignee, rank), then the kept tasks are joined back to their columns: the window
+  // sorts then move a few bytes per task instead of the whole row
+  return tx.execute<TeamTaskRaw>(sql`
+    with ranked as (
+      select ${tasks.id} as task_id, ${tasks.userId} as uid,
+        row_number() over (${partition} order by ${sql.join(order, sql`, `)}) as rn,
+        dense_rank() over (${partition} order by ${rowKeySql}) as row_key_rank
+      from ${tasks} left join ${contacts} on ${contacts.id} = ${tasks.contactId}
+      where ${where}
+    ), counted as (
+      select task_id, uid, rn, max(row_key_rank) over (${groupPartition}) as group_rows from ranked
+    )
+    select ${tasks.id} as id, ${tasks.type} as type, ${tasks.reason} as reason, ${tasks.dueAt} as due_at,
+      ${tasks.priority} as priority, ${tasks.createdAt} as created_at, ${tasks.userId} as user_id,
+      ${contacts.id} as contact_id, ${contacts.name} as contact_name, ${contacts.phoneE164} as phone_e164,
+      ${contacts.phoneCountry} as phone_country, ${contacts.ownerId} as owner_id, ${contacts.grade} as grade,
+      ${contacts.edaptScore} as edapt_score, ${contacts.stage} as stage, ${contacts.nextOffer} as next_offer,
+      ${contacts.purchaseCount} as purchase_count, ${contacts.expected90dInr} as expected_90d_inr,
+      ${contacts.nextExpectedAt} as next_expected_at, ${contacts.lastEnquiryAt} as last_enquiry_at,
+      counted.rn, counted.group_rows
+    from counted
+      join ${tasks} on ${tasks.id} = counted.task_id
+      left join ${contacts} on ${contacts.id} = ${tasks.contactId}
+    where counted.rn <= ${opts.limit}
+    order by counted.uid, counted.rn`);
+}
+
 /** Row count when the fetch hit its limit: what the cap really left out. */
 function withTrueTotal(queue: BuiltQueue, trueTotal: number | null): BuiltQueue {
   if (trueTotal === null || trueTotal <= queue.total) return queue;
@@ -280,26 +349,13 @@ export async function getTodayQueue(
   const dayEnd = localDayEnd(now, timeZone);
   const pool = opts.includePool === false ? undefined : poolCondition(user, s.assignment);
   const mine = ownCondition(user);
-  const where = and(liveOpen(), lt(tasks.dueAt, dayEnd), pool ? or(mine, pool) : mine);
-  const [rows, newLeads] = await Promise.all([
-    tx
-      .select(taskColumns)
-      .from(tasks)
-      .leftJoin(contacts, eq(contacts.id, tasks.contactId))
-      .where(where)
-      .orderBy(...rankOrder(dayStart))
-      .limit(FETCH_LIMIT) as Promise<TaskRow[]>,
+  const where = and(liveOpen(), lt(tasks.dueAt, dayEnd), pool ? or(mine, pool) : mine)!;
+  const [raw, newLeads] = await Promise.all([
+    loadRankedTasks(tx, where, rankOrder(dayStart), { perUser: false, limit: FETCH_LIMIT }),
     loadNewLeads([user.id], now, newLeadWindowHours(s.thresholds), tx),
   ]);
-  let trueTotal: number | null = null;
-  if (rows.length >= FETCH_LIMIT) {
-    const [c] = await tx
-      .select({ n: rowCountSql })
-      .from(tasks)
-      .leftJoin(contacts, eq(contacts.id, tasks.contactId))
-      .where(where);
-    trueTotal = c?.n ?? null;
-  }
+  const rows = raw.map(fromRaw);
+  const trueTotal = raw.length >= FETCH_LIMIT ? Number(raw[0].group_rows) : null;
   const queue = buildQueue([...rows.map(toQueueTask), ...newLeads], {
     now,
     timeZone,
@@ -313,7 +369,7 @@ export async function getTodayQueue(
  * Team view for managers and admins: every person's queue (each in their own time zone, each capped), plus
  * the pool (in the viewer's time zone). The pool comes first, then people by name. A person's group is their
  * own work only (the pool is shown once, as its own group). One bounded query loads at most
- * TEAM_PER_GROUP_LIMIT tasks per person in ranking order.
+ * TEAM_PER_GROUP_LIMIT tasks per person in ranking order, with each person's true row count.
  */
 export async function getTeamQueues(
   viewer: QueueUser,
@@ -331,15 +387,11 @@ export async function getTeamQueues(
   const live = and(liveOpen(), lt(tasks.dueAt, bound))!;
   // in SQL every follow-up due before now counts as "overdue" for ordering: a superset of each zone's overdue
   const order = rankOrder(now);
-  const ranked = sql`select ${tasks.id} as id, row_number() over (partition by ${tasks.userId} order by ${sql.join(order, sql`, `)}) as rn
-    from ${tasks} left join ${contacts} on ${contacts.id} = ${tasks.contactId} where ${live}`;
-  const [rows, people] = await Promise.all([
-    tx
-      .select(taskColumns)
-      .from(tasks)
-      .leftJoin(contacts, eq(contacts.id, tasks.contactId))
-      .where(and(live, sql`${tasks.id} in (select ranked.id from (${ranked}) ranked where ranked.rn <= ${TEAM_PER_GROUP_LIMIT})`))
-      .orderBy(...order) as Promise<TaskRow[]>,
+  // One pass over the open tasks (docs/PERFORMANCE.md): each task's rank within its assignee (rn), and how many
+  // Today rows the assignee's tasks make in all (group_rows, distinct row keys counted with dense_rank), so
+  // groups cut at the per-person limit still report their true size without a second scan.
+  const [rawRows, people] = await Promise.all([
+    loadRankedTasks(tx, live, order, { perUser: true, limit: TEAM_PER_GROUP_LIMIT }),
     tx
       .select({ id: users.id, name: users.name, role: users.role, team: users.team, timezone: users.timezone, active: users.active })
       .from(users)
@@ -363,29 +415,13 @@ export async function getTeamQueues(
     if (list) list.push(t);
     else byUser.set(k, [t]);
   };
-  for (const r of rows) add(r.userId, toQueueTask(r));
-  for (const t of newLeads) add(t.userId, t);
-
-  // groups that hit the per-person limit: count their real row totals
-  const full = [...byUser.entries()]
-    .filter(([, list]) => list.filter((t) => !t.synthetic).length >= TEAM_PER_GROUP_LIMIT)
-    .map(([k]) => k);
+  // groups that hit the per-person limit report their real row totals
   const trueTotals = new Map<string | null, number>();
-  if (full.length) {
-    const ids = full.filter((k): k is string => k !== null);
-    const counts = await tx
-      .select({ userId: tasks.userId, n: rowCountSql })
-      .from(tasks)
-      .leftJoin(contacts, eq(contacts.id, tasks.contactId))
-      .where(
-        and(
-          live,
-          or(ids.length ? inArray(tasks.userId, ids) : undefined, full.includes(null) ? isNull(tasks.userId) : undefined),
-        ),
-      )
-      .groupBy(tasks.userId);
-    for (const c of counts) trueTotals.set(c.userId, c.n);
+  for (const r of rawRows) {
+    add(r.user_id, toQueueTask(fromRaw(r)));
+    if (Number(r.rn) >= TEAM_PER_GROUP_LIMIT) trueTotals.set(r.user_id, Number(r.group_rows));
   }
+  for (const t of newLeads) add(t.userId, t);
   const viewerTz = validTimeZone(viewer.timezone);
 
   const groups: TeamQueueGroup[] = [];

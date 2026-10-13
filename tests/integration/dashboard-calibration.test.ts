@@ -4,8 +4,9 @@
  * must have first paid by 15 Jul to count.
  */
 import { beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { contacts, purchases, type NewContact } from "@/db/schema";
+import { contacts, enquiries, interactions, purchases, type NewContact } from "@/db/schema";
 import { calibration, type CalibrationReport } from "@/lib/dashboard/calibration";
 import { getSetting, setSetting } from "@/lib/settings";
 import { makeUser, resetDb } from "../support/db";
@@ -144,6 +145,48 @@ describe("calibration report", () => {
       ["unknown", 1, 1],
     ]);
     expect(row(report, "location", "GCC")?.points).toBe(25);
+  });
+
+  it("Value inputs are judged at each matured purchase: spend, purchases, families and referrals up to it", () => {
+    // matured purchases (15 Jul or earlier): L1 x2, L3 x1, L5 x2; the 1st of L1 and of L5 were followed within 90 days
+    expect(table(report, "value_frequency").rows.map((r) => [r.label, r.points, r.customers, r.repeated, r.leads])).toEqual([
+      ["1 purchase", 5, 3, 2, 0],
+      ["2 purchases", 10, 2, 0, 0],
+    ]);
+    expect(table(report, "value_money").rows.map((r) => [r.label, r.points, r.customers, r.repeated])).toEqual([
+      ["Under ₹1,000", 5, 3, 2],
+      ["₹1,000 to ₹5,000", 10, 2, 0],
+    ]);
+    expect(table(report, "value_breadth").rows.map((r) => [r.label, r.points, r.customers, r.repeated])).toEqual([["1 family", 5, 5, 2]]);
+    expect(table(report, "value_referrals").rows.map((r) => [r.label, r.points, r.customers])).toEqual([["No paying referrals", 0, 5]]);
+    expect(table(report, "value_money").pointsLabel).toBe("Value points");
+    // the overall totals still count people, not purchases
+    expect(report.totals.customers).toBe(3);
+  });
+
+  it("recent interest and recency are judged at the snapshot one window ago (15 Jul)", async () => {
+    // customers on 15 Jul: L1 (last bought 10 Jun, 35 days), L3 (5 Jun, 40 days), L5 (1 Feb, 164 days); none bought after
+    expect(table(report, "value_recency").rows.map((r) => [r.label, r.points, r.customers, r.repeated, r.leads])).toEqual([
+      ["Within 90 days", 15, 2, 0, 0],
+      ["91 to 180 days", 10, 1, 0, 0],
+    ]);
+    // leads on 15 Jul: L2 (paid 15 Sep, after the snapshot) and L4 (only a pending purchase), nothing recorded yet
+    expect(table(report, "recent_interest").rows.map((r) => [r.label, r.points, r.leads, r.converted])).toEqual([["Older than 90 days", 0, 2, 1]]);
+
+    // L2 enquired 5 days before the snapshot; L4 had an inbound WhatsApp 25 days before it (an unanswered call later
+    // is not a chat), so they move to the 7- and 30-day windows
+    const [l2] = await db.select().from(contacts).where(eq(contacts.phoneE164, "+919745000002"));
+    const [l4] = await db.select().from(contacts).where(eq(contacts.phoneE164, "+919745000004"));
+    await db.insert(enquiries).values({ contactId: l2.id, channel: "whatsapp_api", receivedAt: at("2026-07-10") });
+    await db.insert(interactions).values([
+      { contactId: l4.id, type: "whatsapp", direction: "in", occurredAt: at("2026-06-20") },
+      { contactId: l4.id, type: "call", direction: "out", outcome: "no_answer", occurredAt: at("2026-07-14") },
+    ]);
+    const r = await calibration(NOW);
+    expect(table(r, "recent_interest").rows.map((x) => [x.label, x.points, x.leads, x.converted])).toEqual([
+      ["Within 7 days", 30, 1, 1],
+      ["8 to 30 days", 20, 1, 0],
+    ]);
   });
 
   it("the small-sample flag and the window come from settings", async () => {

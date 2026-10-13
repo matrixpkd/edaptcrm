@@ -249,7 +249,8 @@ export function buildQueue(tasks: QueueTask[], opts: BuildQueueOptions): BuiltQu
       types: [...new Set(list.map((r) => r.task.type))],
       reason: top.task.reason,
       alsoReasons: [...new Set(reasons.slice(1).filter((x) => x !== top.task.reason))],
-      context: contextFor(top.task, contact, opts.now, opts.timeZone),
+      // filled in below for the rows that survive the cap (date formatting is the slow part of a long queue)
+      context: [],
       contact,
       pool: list.every((r) => r.task.userId === null),
       canDismiss: stored.length > 0 && stored.every((r) => !NOT_DISMISSIBLE.includes(r.task.type)),
@@ -267,8 +268,12 @@ export function buildQueue(tasks: QueueTask[], opts: BuildQueueOptions): BuiltQu
   }
 
   const cap = Math.max(0, Math.floor(opts.cap));
+  const shown = rows.slice(0, cap);
+  for (const r of shown) {
+    r.context = contextFor(r.primary, r.contact, opts.now, opts.timeZone);
+  }
   return {
-    rows: rows.slice(0, cap),
+    rows: shown,
     total: rows.length,
     leftOut: Math.max(0, rows.length - cap),
     cap,

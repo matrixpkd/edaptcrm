@@ -7,6 +7,7 @@ import { requireUser } from "@/lib/auth/session";
 import { captureEnquiry } from "@/lib/contacts/capture";
 import { checkQuickAddDuplicate, lookupByEmail } from "@/lib/contacts/identity";
 import { userName } from "@/lib/contacts/internal";
+import { isManualChannel } from "@/lib/contacts/rules";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
 import { activeItems, getSettings } from "@/lib/settings";
 import { isUuid } from "@/lib/utils";
@@ -41,15 +42,17 @@ export async function quickAddAction(_prev: ActionResult, fd: FormData): Promise
   const note = str(fd, "note");
   const referrerPhone = str(fd, "referrerPhone");
   const tags = list(fd, "tags");
+  // a known number: the enquiry joins that record (only when the user can open it); name and first door are kept
+  const attachTo = str(fd, "attachTo");
 
   const errors: Record<string, string> = {};
   const np = rawPhone ? normalizePhone(rawPhone) : null;
   if (!rawPhone) errors.phone = "Enter a phone number";
   else if (!np) errors.phone = "That is not a valid number. Add the country code for numbers outside India.";
-  if (!name) errors.name = "Enter a name";
-  else if (name.length > 200) errors.name = "The name is too long";
-  if (!inList("lists.channels", channel)) errors.channel = "Choose how this enquiry reached us";
-  if (!inList("lists.firstDoors", firstDoor)) errors.firstDoor = "Choose how they first came to know Edapt";
+  if (!name && !attachTo) errors.name = "Enter a name";
+  else if (name && name.length > 200) errors.name = "The name is too long";
+  if (!inList("lists.channels", channel) || !isManualChannel(channel)) errors.channel = "Choose how this enquiry reached us";
+  if (!attachTo && !inList("lists.firstDoors", firstDoor)) errors.firstDoor = "Choose how they first came to know Edapt";
   const email = rawEmail ? normalizeEmail(rawEmail) : null;
   if (rawEmail && !email) errors.email = "Enter a valid email address";
   if (campaign && !inList("lists.campaigns", campaign)) errors.campaign = "Choose a campaign from the list";
@@ -62,14 +65,20 @@ export async function quickAddAction(_prev: ActionResult, fd: FormData): Promise
 
   // one person, one record: a known number or email is shown, never added again
   const dup = await checkQuickAddDuplicate(np.e164, user);
-  if (dup.existing) {
+  const attaching = !!attachTo && !!dup.existing && dup.existing.id === attachTo && dup.existing.visible;
+  if (attachTo && !attaching) {
+    // the number changed hands or was typed differently since the check: never attach to someone else's record
+    const msg = dup.existing ? `${dup.existing.name} already has this number` : "This number is not in the CRM yet. Save it as a new contact.";
+    return fail(msg, { phone: msg });
+  }
+  if (dup.existing && !attaching) {
     const owner = dup.existing.ownerName ? `, owned by ${dup.existing.ownerName}` : ", in the pool";
     const msg = `${dup.existing.name} already has this number${owner}`;
     return fail(msg, { phone: msg });
   }
   if (email) {
     const byEmail = await lookupByEmail(email);
-    if (byEmail) {
+    if (byEmail && !(attaching && byEmail.contact.id === dup.existing?.id)) {
       const msg = `This email belongs to ${byEmail.contact.name}. Leave it out, or add this number to their record.`;
       return fail(msg, { email: msg });
     }
@@ -92,10 +101,10 @@ export async function quickAddAction(_prev: ActionResult, fd: FormData): Promise
   try {
     const r = await captureEnquiry({
       phone: np.e164,
-      name,
+      name: attaching ? null : name,
       email,
       channel: channel!,
-      firstDoor,
+      firstDoor: attaching ? null : firstDoor,
       campaign,
       createdById: user.id,
       ownerId,

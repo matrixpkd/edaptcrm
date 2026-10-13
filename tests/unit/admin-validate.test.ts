@@ -183,6 +183,18 @@ describe("ladder, currency, locations, offers", () => {
     expect(validateNboRules([{ id: "a", label: "A", when: [{ type: "fit_gte", value: 120 }], offer: "X" }], { productIds: [] }).ok).toBe(false);
     expect(validateNboRules([{ id: "a", label: "A", when: [], offer: "X", productId: "gone" }], { productIds: [] }).ok).toBe(false);
     expect(validateNboRules([rules[1], rules[1]], { productIds: [] })).toMatchObject({ ok: false, error: expect.stringMatching(/share the id/) });
+    // product name and family are kept; an unknown family is refused, an unknown product name only warns
+    const named = validateNboRules([{ id: "a", label: "A", when: [], offer: "X", productName: " AI Agents for Business ", family: "ai_office" }], {
+      productIds: [],
+      activeProductNames: ["AI agents for business"],
+      families: ["ai_office"],
+    });
+    expect(named).toMatchObject({ ok: true, warnings: [], value: [{ productName: "AI Agents for Business", family: "ai_office" }] });
+    expect(validateNboRules([{ id: "a", label: "A", when: [], offer: "X", family: "nope" }], { productIds: [], families: ["ai_office"] }).ok).toBe(false);
+    const unknownName = validateNboRules([{ id: "a", label: "A", when: [], offer: "X", productName: "Gone" }], { productIds: [], activeProductNames: [] });
+    expect(unknownName.ok && unknownName.warnings[0]).toMatch(/no active product is named "Gone"/);
+    const blank = validateNboRules([{ id: "a", label: "A", when: [], offer: "X", productName: "", family: "" }], { productIds: [] });
+    expect(blank.ok && blank.value[0]).not.toHaveProperty("productName");
     for (const type of NBO_CONDITION_TYPES) {
       const c = blankCondition(type);
       const ok = validateNboRules([{ id: "x", label: "X", when: [c], offer: "Y" }], { productIds: [] }).ok;

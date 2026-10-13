@@ -39,6 +39,7 @@ import {
 } from "@/lib/dashboard/metrics";
 import { monthRange, rollingRange } from "@/lib/dashboard/period";
 import { recomputeContacts } from "@/lib/metrics/recompute";
+import { listContacts } from "@/lib/contacts/queries";
 import { makeUser, resetDb } from "../support/db";
 
 const TZ = "Asia/Kolkata";
@@ -386,6 +387,18 @@ describe("dashboard metrics", () => {
     // live contacts: C1..C9 and C11 = 10. Rated: C1, C2, C4 (familiarity) and C9 (has a ratings row).
     // Unrated: C3, C5, C6, C7, C8, C11.
     expect(r).toMatchObject({ contacts: 10, unrated: 6, unratedCustomers: 1 });
+    // the tile links to the Contacts list filter, which uses the same definition: same count for an admin
+    const admin = await makeUser({ role: "admin" });
+    const listed = await listContacts(admin, { unrated: true }, { pageSize: 200 });
+    expect(listed.total).toBe(6);
+    expect(await listContacts(admin, { unrated: false }, { pageSize: 1 })).toMatchObject({ total: 10 });
+    // a self-rating or an imported rating counts as a rating, as does any scale set on the contact
+    const selfRated = listed.rows[0].id;
+    await db.insert(ratings).values({ contactId: selfRated, source: "self", umerLevel: 2 });
+    expect((await listContacts(admin, { unrated: true })).total).toBe(5);
+    expect((await dataHealth(NOW)).unrated).toBe(5);
+    await db.delete(ratings).where(eq(ratings.contactId, selfRated));
+    expect((await dataHealth(NOW)).unrated).toBe(6);
     expect(r.unverified).toEqual({ count: 1, inr: 5000, stale: 1, staleDays: 2 });
     expect(r.duplicates).toBe(1);
   });

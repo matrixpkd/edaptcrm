@@ -3,6 +3,7 @@
  * imports). Everything here is deterministic and unit tested in tests/unit/contacts-rules.test.ts.
  */
 import type { FieldSource, InteractionType, RatingSource } from "@/db/schema";
+import { properCase } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // First door
@@ -22,6 +23,20 @@ export const DEFAULT_FIRST_DOOR_BY_CHANNEL: Readonly<Record<string, string>> = {
   walk_in_event: "other",
   import: "other",
 };
+
+/** The label of "no rating of any kind" (unratedCondition in ./unrated.ts): Contacts filter, export, dashboard tile. */
+export const UNRATED_LABEL = "Unrated (no rating at all)";
+
+/**
+ * Channels only the system records: TagMango checkouts arrive by webhook and "import" is the import wizard's.
+ * Quick Add never offers them, and its action refuses them.
+ */
+export const SYSTEM_ONLY_CHANNELS: readonly string[] = ["import", "tagmango_checkout"];
+
+/** True when a person may pick this channel for a manual entry (Quick Add). */
+export function isManualChannel(key: string | null | undefined): boolean {
+  return !!key && !SYSTEM_ONLY_CHANNELS.includes(key);
+}
 
 /** first_door = chosen door, else "referral" when a referrer came with the enquiry, else the channel default, else "other". */
 export function decideFirstDoor(input: {
@@ -243,4 +258,27 @@ export function teamForCountry(
   const cc = phoneCountry?.toUpperCase();
   if (cc && cfg.gccCountries.some((c) => c.toUpperCase() === cc)) return cfg.gccTeam;
   return cfg.defaultTeam;
+}
+
+// ---------------------------------------------------------------------------
+// Places (city / state search dropdowns)
+// ---------------------------------------------------------------------------
+
+/**
+ * Suggestions for a city or state search dropdown: the built-in names (settings lists are stored lower-case, so
+ * they are shown in proper case) first in spelling priority, then what people already typed. Case, spacing and
+ * punctuation differences count as the same place ("Kochi", " kochi ", "KOCHI"); sorted alphabetically.
+ */
+export function placeSuggestionList(builtIn: readonly string[], used: readonly string[], max = 500): string[] {
+  const key = (v: string) => v.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const out = new Map<string, string>();
+  for (const raw of builtIn) {
+    const v = properCase(raw);
+    if (v && !out.has(key(v))) out.set(key(v), v);
+  }
+  for (const raw of used) {
+    const v = raw.trim().replace(/\s+/g, " ");
+    if (v && key(v) && !out.has(key(v))) out.set(key(v), v);
+  }
+  return [...out.values()].sort((a, b) => a.localeCompare(b)).slice(0, max);
 }

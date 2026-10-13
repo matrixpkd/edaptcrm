@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { db } from "@/db";
-import { contacts, enquiries, interactions, payments, products, purchases, ratings, tasks, webhookEvents } from "@/db/schema";
+import { contacts, enquiries, interactions, notifications, payments, products, purchases, ratings, tasks, webhookEvents } from "@/db/schema";
 import { GET as libromiGET, POST as libromiPOST } from "@/app/api/webhooks/libromi/route";
 import { POST as metaLeadPOST } from "@/app/api/webhooks/pabbly/meta-lead/route";
 import { POST as websiteFormPOST } from "@/app/api/webhooks/pabbly/website-form/route";
@@ -580,5 +580,21 @@ describe("review fixes", () => {
     const r = await send(libromiPOST, { event: "template_status_update", template: "welcome_v2", status: "APPROVED" });
     expect(r.json).toMatchObject({ ok: true });
     expect(String(r.json.note)).toMatch(/^Skipped:/);
+  });
+
+  it("a completed order raises no new-lead or hot-lead alert; a started checkout still tells the owner", async () => {
+    await makeUser({ role: "manager" });
+    await send(tagmangoPOST, fixture("tagmango-completed-flat"));
+    const buyer = await contactByPhone("+919847012345");
+    expect(buyer.ownerId).toBe(sales.id);
+    const leadAlerts = and(sql`${notifications.type} in ('new_lead', 'hot_lead', 'new_enquiry')`, eq(notifications.contactId, buyer.id));
+    expect(await count(notifications, leadAlerts)).toBe(0);
+
+    const started = fixture("tagmango-initiated");
+    delete started.created_at;
+    await send(tagmangoPOST, started);
+    const c = await contactByPhone("+919847022222");
+    const n = await db.select().from(notifications).where(eq(notifications.contactId, c.id));
+    expect(n.map((x) => x.type)).toEqual(["new_lead"]);
   });
 });

@@ -3,7 +3,7 @@ import { asc, eq } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { contacts, products } from "@/db/schema";
 import type { NboFacts, NboProduct } from "@/lib/metrics/nbo";
-import type { NboRule } from "@/lib/settings";
+import { getSetting, type NboRule } from "@/lib/settings";
 import { isUuid } from "@/lib/utils";
 import { AdminError } from "./errors";
 import { assertAdmin, saveSettingAudited, type AdminActor } from "./settings";
@@ -77,8 +77,13 @@ export async function nboFactsForContact(
 /** Validates and saves the ordered rule list (audited). */
 export async function saveNboRules(input: unknown, actor: AdminActor, tx: Tx = db): Promise<{ changed: boolean; warnings: string[] }> {
   assertAdmin(actor);
-  const ids = (await tx.select({ id: products.id }).from(products)).map((p) => p.id);
-  const v = validateNboRules(input, { productIds: ids });
+  const catalogue = await tx.select({ id: products.id, name: products.name, active: products.active }).from(products);
+  const families = (await getSetting("ladder.families", tx)).map((f) => f.key);
+  const v = validateNboRules(input, {
+    productIds: catalogue.map((p) => p.id),
+    activeProductNames: catalogue.filter((p) => p.active).map((p) => p.name),
+    families,
+  });
   if (!v.ok) throw new AdminError(v.error);
   const rules: NboRule[] = v.value;
   const { changed } = await saveSettingAudited("nbo.rules", rules, actor, tx);

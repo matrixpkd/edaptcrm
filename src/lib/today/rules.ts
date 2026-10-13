@@ -3,6 +3,7 @@
  * Unit tested in tests/unit/today-rules.test.ts.
  */
 import type { InteractionType, Role, TaskType } from "@/db/schema";
+import { safeNextPath } from "@/lib/auth/redirect";
 import { followUpPresets, type FollowUpPresetKey } from "@/lib/contacts/follow-up";
 import { localDateAt, localDayStart } from "./time";
 
@@ -136,9 +137,8 @@ export function suggestedFollowUp(outcome: string | null | undefined): FollowUpC
  * itself), else the fallback (the contact page).
  */
 export function safeReturnPath(raw: string | null | undefined, fallback: string): string {
-  const v = (raw ?? "").trim();
-  if (!v.startsWith("/") || v.startsWith("//") || v.startsWith("/\\")) return fallback;
-  if (/[\r\n\t]/.test(v) || v.length > 500) return fallback;
+  const v = safeNextPath(raw, "");
+  if (!v) return fallback;
   const path = v.split(/[?#]/)[0];
   if (/\/(log|rate)\/?$/.test(path)) return fallback;
   return v;

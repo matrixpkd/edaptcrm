@@ -11,6 +11,7 @@ import {
   interactions,
   organisations,
   payments,
+  products,
   purchases,
   ratings,
   savedViews,
@@ -27,11 +28,12 @@ import {
   type Role,
   type Stage,
 } from "@/db/schema";
-import { can } from "@/lib/auth/permissions";
+import { can, canViewContact } from "@/lib/auth/permissions";
 import { contactScope } from "@/lib/auth/scope";
 import { normalizePhone } from "@/lib/phone";
 import { ContactForbiddenError, ContactValidationError } from "./errors";
 import { cleanText, isUuid } from "./rules";
+import { unratedCondition } from "./unrated";
 
 /**
  * Read models for the contact screens: the Contacts list (filters, search, sort, pagination, saved views),
@@ -41,6 +43,12 @@ import { cleanText, isUuid } from "./rules";
  */
 
 type Viewer = { id: string; role: Role };
+
+/**
+ * Shown instead of the name of a contact the viewer may not open (a salesperson looking at a colleague's
+ * contact): names and phones of other people's contacts are never revealed, but their money still counts.
+ */
+export const HIDDEN_CONTACT_LABEL = "Another salesperson's contact";
 
 // ---------------------------------------------------------------------------
 // Contacts list: filters in the URL
@@ -67,6 +75,8 @@ export type ContactFilters = {
   owner?: string | null;
   /** product family bought (a paid or part-paid purchase) */
   family?: string | null;
+  /** one catalogue product bought (a paid or part-paid purchase of that product id) */
+  product?: string | null;
   /** ISO 3166-1 alpha-2 */
   country?: string | null;
   language?: string | null;
@@ -87,6 +97,7 @@ export const FILTER_PARAMS = [
   "channel",
   "owner",
   "family",
+  "product",
   "country",
   "lang",
   "tag",
@@ -147,6 +158,7 @@ export function parseContactFilters(sp: ParamSource): ContactFilters {
     channel: paramOne(sp, "channel"),
     owner,
     family: paramOne(sp, "family"),
+    product: isUuid(paramOne(sp, "product")) ? paramOne(sp, "product") : null,
     country: countryRaw && /^[A-Z]{2}$/.test(countryRaw) ? countryRaw : null,
     language: paramOne(sp, "lang"),
     tag: paramOne(sp, "tag"),
@@ -173,6 +185,7 @@ export function filtersToQuery(f: ContactFilters): string {
   if (f.channel) p.set("channel", f.channel);
   if (f.owner) p.set("owner", f.owner);
   if (f.family) p.set("family", f.family);
+  if (f.product) p.set("product", f.product);
   if (f.country) p.set("country", f.country);
   if (f.language) p.set("lang", f.language);
   if (f.tag) p.set("tag", f.tag);
@@ -187,7 +200,7 @@ export function activeFilterCount(f: ContactFilters): number {
   return (
     (f.grades?.length ? 1 : 0) +
     (f.stages?.length ? 1 : 0) +
-    [f.firstDoor, f.campaign, f.channel, f.owner, f.family, f.country, f.language, f.tag].filter(Boolean).length +
+    [f.firstDoor, f.campaign, f.channel, f.owner, f.family, f.product, f.country, f.language, f.tag].filter(Boolean).length +
     (f.atRisk ? 1 : 0) +
     (f.unrated ? 1 : 0)
   );
@@ -218,8 +231,12 @@ export function contactSearchCondition(raw: string | null | undefined): SQL | un
     sql`lower(${contacts.name}) like ${like}`,
     sql`lower(coalesce(${contacts.email}, '')) like ${like}`,
   ];
+  // the cardinality() guards match the partial indexes contacts_has_alt_*_idx, so every arm of the OR can use an
+  // index (with the trigram indexes on name, email and phone) and the search never scans the whole table
   if (lower.includes("@")) {
-    conds.push(sql`exists (select 1 from unnest(${contacts.altEmails}) as ae(v) where ae.v like ${like})`);
+    conds.push(
+      sql`(cardinality(${contacts.altEmails}) > 0 and exists (select 1 from unnest(${contacts.altEmails}) as ae(v) where ae.v like ${like}))`,
+    );
   }
   const digits = text.replace(/\D/g, "");
   const phoneLike = /^[\d\s()+\-./]+$/.test(text);
@@ -232,16 +249,17 @@ export function contactSearchCondition(raw: string | null | undefined): SQL | un
     const partial = digits.replace(/^0+/, "");
     if (partial.length >= 3) {
       const pl = `%${partial}%`;
-      conds.push(sql`${contacts.phoneE164} like ${pl}`, sql`array_to_string(${contacts.altPhones}, ' ') like ${pl}`);
+      conds.push(
+        sql`${contacts.phoneE164} like ${pl}`,
+        sql`(cardinality(${contacts.altPhones}) > 0 and array_to_string(${contacts.altPhones}, ' ') like ${pl})`,
+      );
     }
   }
   return or(...conds);
 }
 
-/** "Unrated": no salesperson has rated this contact yet (self-ratings and imports do not count). */
-export function unratedCondition(): SQL {
-  return sql`not exists (select 1 from ratings r where r.contact_id = ${CONTACT_ID} and r.source = 'sales')`;
-}
+/** "Unrated": no rating of any kind (see src/lib/contacts/unrated.ts, shared with the dashboard). */
+export { unratedCondition } from "./unrated";
 
 /** The full WHERE for the Contacts list: the viewer's scope (always) plus every filter. */
 export function contactListWhere(user: Viewer, f: ContactFilters): SQL {
@@ -254,7 +272,9 @@ export function contactListWhere(user: Viewer, f: ContactFilters): SQL {
     conds.push(
       or(
         eq(contacts.firstCampaign, f.campaign),
-        sql`exists (select 1 from enquiries e where e.contact_id = ${CONTACT_ID} and e.campaign = ${f.campaign})`,
+        // IN, not a correlated EXISTS inside the OR: the planner costs that OR at ~800k, which switches on JIT
+        // compilation (~0.5 s per query) for a scan that takes 40 ms (docs/PERFORMANCE.md)
+        sql`${CONTACT_ID} in (select e.contact_id from enquiries e where e.campaign = ${f.campaign})`,
       ),
     );
   }
@@ -265,6 +285,13 @@ export function contactListWhere(user: Viewer, f: ContactFilters): SQL {
   else if (f.owner === "pool") conds.push(isNull(contacts.ownerId));
   else if (f.owner && isUuid(f.owner)) conds.push(eq(contacts.ownerId, f.owner));
   if (f.family) conds.push(sql`${contacts.families} @> array[${f.family}]::text[]`);
+  if (f.product && isUuid(f.product)) {
+    // same shape as the campaign filter: an IN over the purchases of that product (paid or part-paid), never a
+    // correlated EXISTS per contact
+    conds.push(
+      sql`${CONTACT_ID} in (select pu.contact_id from purchases pu where pu.product_id = ${f.product}::uuid and pu.status in ('paid', 'partial'))`,
+    );
+  }
   if (f.country) conds.push(eq(contacts.country, f.country));
   if (f.language) conds.push(eq(contacts.language, f.language));
   if (f.tag) conds.push(sql`${contacts.tags} @> array[${f.tag}]::text[]`);
@@ -378,6 +405,19 @@ export async function listContactCountries(user: Viewer, tx: Tx = db): Promise<{
     .orderBy(sql`count(*) desc`, asc(contacts.country))
     .limit(80);
   return rows.filter((r): r is { country: string; n: number } => !!r.country);
+}
+
+/**
+ * Catalogue products for the "Product" filter: active ones first, then by name. An inactive product stays listed
+ * (people bought it); `selected` keeps a filtered product in the list even if it was deleted.
+ */
+export async function listProductOptions(tx: Tx = db): Promise<{ value: string; label: string }[]> {
+  const rows = await tx
+    .select({ id: products.id, name: products.name, active: products.active })
+    .from(products)
+    .orderBy(desc(products.active), sql`lower(${products.name})`, asc(products.id))
+    .limit(500);
+  return rows.map((p) => ({ value: p.id, label: p.active ? p.name : `${p.name} (inactive)` }));
 }
 
 // ---------------------------------------------------------------------------
@@ -936,10 +976,15 @@ export type ReferralRow = {
   ltvInr: number;
   purchaseCount: number;
   createdAt: Date;
+  /** true when the viewer may not open this contact: the name is HIDDEN_CONTACT_LABEL and the owner is left out */
+  hidden: boolean;
 };
 
-/** The people this contact brought in (live records), highest LTV first. */
-export async function getContactReferrals(contactId: string, tx: Tx = db): Promise<ReferralRow[]> {
+/**
+ * The people this contact brought in (live records), highest LTV first. With a viewer, contacts they may not
+ * open keep their LTV but lose their name and owner (HIDDEN_CONTACT_LABEL).
+ */
+export async function getContactReferrals(contactId: string, viewer: Viewer | null = null, tx: Tx = db): Promise<ReferralRow[]> {
   if (!isUuid(contactId)) return [];
   const rows = await tx
     .select({
@@ -958,7 +1003,11 @@ export async function getContactReferrals(contactId: string, tx: Tx = db): Promi
     .where(and(eq(contacts.referredById, contactId), isNull(contacts.mergedIntoId)))
     .orderBy(desc(contacts.ltvInr), desc(contacts.createdAt))
     .limit(500);
-  return rows as ReferralRow[];
+  return rows.map((r) =>
+    viewer && !canViewContact(viewer, r)
+      ? { ...r, name: HIDDEN_CONTACT_LABEL, ownerName: null, hidden: true }
+      : { ...r, hidden: false },
+  ) as ReferralRow[];
 }
 
 export type MergeHistoryRow = {
@@ -1143,15 +1192,21 @@ export async function getOrganisation(id: string, tx: Tx = db): Promise<Organisa
 export type OrganisationPerson = {
   id: string;
   name: string;
-  phoneE164: string;
+  /** null for a hidden person */
+  phoneE164: string | null;
   designation: string | null;
   stage: Stage;
   grade: Grade | null;
   ltvInr: number;
   ownerName: string | null;
+  /** true when the viewer may not open this contact: name is HIDDEN_CONTACT_LABEL, phone/designation/owner left out */
+  hidden: boolean;
 };
 
-/** People linked to an organisation that the viewer may see, plus how many others are linked. */
+/**
+ * Everyone linked to an organisation (live records), highest LTV first. People the viewer may not open are listed
+ * as HIDDEN_CONTACT_LABEL with their LTV only; `hidden` counts them.
+ */
 export async function getOrganisationPeople(
   user: Viewer,
   orgId: string,
@@ -1167,18 +1222,20 @@ export async function getOrganisationPeople(
       stage: contacts.stage,
       grade: contacts.grade,
       ltvInr: contacts.ltvInr,
+      ownerId: contacts.ownerId,
       ownerName: users.name,
     })
     .from(contacts)
     .leftJoin(users, eq(users.id, contacts.ownerId))
-    .where(and(contactScope(user), eq(contacts.organisationId, orgId)))
+    .where(and(isNull(contacts.mergedIntoId), eq(contacts.organisationId, orgId)))
     .orderBy(desc(contacts.ltvInr), asc(contacts.name))
     .limit(500);
-  const [{ n }] = await tx
-    .select({ n: sql<number>`count(*)::int` })
-    .from(contacts)
-    .where(and(isNull(contacts.mergedIntoId), eq(contacts.organisationId, orgId)));
-  return { people: people as OrganisationPerson[], hidden: Math.max(0, n - people.length) };
+  const out: OrganisationPerson[] = people.map(({ ownerId, ...p }) =>
+    canViewContact(user, { ownerId })
+      ? { ...p, hidden: false }
+      : { ...p, name: HIDDEN_CONTACT_LABEL, phoneE164: null, designation: null, ownerName: null, hidden: true },
+  );
+  return { people: out, hidden: out.filter((p) => p.hidden).length };
 }
 
 export type OrganisationPurchase = {
@@ -1194,10 +1251,15 @@ export type OrganisationPurchase = {
   contactName: string;
   contactOwnerId: string | null;
   netInr: number;
+  /** true when the viewer may not open the signer: contactName is HIDDEN_CONTACT_LABEL */
+  contactHidden: boolean;
 };
 
-/** Purchases linked to an organisation (B2B deals), newest first, with the net verified INR of each. */
-export async function getOrganisationPurchases(orgId: string, tx: Tx = db): Promise<OrganisationPurchase[]> {
+/**
+ * Purchases linked to an organisation (B2B deals), newest first, with the net verified INR of each. With a viewer,
+ * a signer they may not open is named HIDDEN_CONTACT_LABEL.
+ */
+export async function getOrganisationPurchases(orgId: string, viewer: Viewer | null = null, tx: Tx = db): Promise<OrganisationPurchase[]> {
   if (!isUuid(orgId)) return [];
   const rows = await tx
     .select({
@@ -1222,7 +1284,10 @@ export async function getOrganisationPurchases(orgId: string, tx: Tx = db): Prom
     .where(eq(purchases.organisationId, orgId))
     .orderBy(desc(purchases.purchasedAt))
     .limit(500);
-  return rows.map((r) => ({ ...r, netInr: Number(r.netInr) }));
+  return rows.map((r) => {
+    const contactHidden = !!viewer && !canViewContact(viewer, { ownerId: r.contactOwnerId });
+    return { ...r, netInr: Number(r.netInr), contactHidden, ...(contactHidden ? { contactName: HIDDEN_CONTACT_LABEL } : {}) };
+  });
 }
 
 /** Every organisation as a picker option, by name. */

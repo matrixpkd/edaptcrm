@@ -16,7 +16,6 @@ import {
   formatAmount,
 } from "@/components/contacts/labels";
 import { ORG_KINDS } from "@/db/schema";
-import { canViewContact } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import {
   canManageOrganisations,
@@ -54,7 +53,7 @@ export default async function OrganisationPage({
   const editing = canManage && sp.edit === "1";
   const [{ people, hidden }, purchases] = await Promise.all([
     getOrganisationPeople(user, org.id),
-    getOrganisationPurchases(org.id),
+    getOrganisationPurchases(org.id, user),
   ]);
   const paid = purchases.filter((p) => p.status !== "cancelled");
 
@@ -120,7 +119,7 @@ export default async function OrganisationPage({
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <Stat label="Total revenue" value={formatINR(org.revenueInr)} hint="Verified payments minus refunds" />
         <Stat label="Purchases" value={paid.length} />
-        <Stat label="People" value={people.length + hidden} className="col-span-2 sm:col-span-1" />
+        <Stat label="People" value={people.length} className="col-span-2 sm:col-span-1" />
       </div>
 
       {org.notes && !editing && (
@@ -135,34 +134,44 @@ export default async function OrganisationPage({
         <CardHeader
           title="People"
           description={
-            hidden > 0 ? `${hidden} more linked, owned by colleagues` : "Linked from each contact's Edit page"
+            hidden > 0
+              ? `${hidden} owned by colleagues: their LTV counts, their details stay private`
+              : "Linked from each contact's Edit page"
           }
         />
         {people.length === 0 ? (
           <EmptyState title="No people linked" description="Open a contact, choose Edit, and pick this organisation." />
         ) : (
           <ul className="divide-y divide-border">
-            {people.map((p) => (
-              <li key={p.id} className="flex items-center gap-3 px-4 py-3">
-                <GradeBadge grade={p.grade} size="sm" />
-                <div className="min-w-0 flex-1">
-                  <Link
-                    href={`/contacts/${p.id}`}
-                    className="block truncate text-sm font-medium underline-offset-2 hover:underline"
-                  >
-                    {p.name}
-                  </Link>
-                  <p className="truncate text-xs text-muted">
-                    {p.designation ? `${p.designation} · ` : ""}
-                    <span className="tabular">{formatPhone(p.phoneE164)}</span> · {p.ownerName ?? "Pool"}
-                  </p>
-                </div>
-                <div className="hidden sm:block">
-                  <StageBadge stage={p.stage} />
-                </div>
-                <p className="tabular w-24 text-right text-sm font-semibold">{formatINR(p.ltvInr)}</p>
-              </li>
-            ))}
+            {people.map((p) =>
+              p.hidden ? (
+                <li key={p.id} className="flex items-center gap-3 px-4 py-3">
+                  <GradeBadge grade={null} size="sm" />
+                  <p className="min-w-0 flex-1 truncate text-sm text-muted">{p.name}</p>
+                  <p className="tabular w-24 text-right text-sm font-semibold">{formatINR(p.ltvInr)}</p>
+                </li>
+              ) : (
+                <li key={p.id} className="flex items-center gap-3 px-4 py-3">
+                  <GradeBadge grade={p.grade} size="sm" />
+                  <div className="min-w-0 flex-1">
+                    <Link
+                      href={`/contacts/${p.id}`}
+                      className="block truncate text-sm font-medium underline-offset-2 hover:underline"
+                    >
+                      {p.name}
+                    </Link>
+                    <p className="truncate text-xs text-muted">
+                      {p.designation ? `${p.designation} · ` : ""}
+                      {p.phoneE164 && <span className="tabular">{formatPhone(p.phoneE164)}</span>} · {p.ownerName ?? "Pool"}
+                    </p>
+                  </div>
+                  <div className="hidden sm:block">
+                    <StageBadge stage={p.stage} />
+                  </div>
+                  <p className="tabular w-24 text-right text-sm font-semibold">{formatINR(p.ltvInr)}</p>
+                </li>
+              ),
+            )}
           </ul>
         )}
       </Card>
@@ -193,12 +202,12 @@ export default async function OrganisationPage({
                     <span className="text-xs text-muted">{formatDate(p.purchasedAt, tz)}</span>
                   </Td>
                   <Td className="hidden text-sm sm:table-cell">
-                    {canViewContact(user, { ownerId: p.contactOwnerId }) ? (
+                    {p.contactHidden ? (
+                      <span className="text-muted">{p.contactName}</span>
+                    ) : (
                       <Link href={`/contacts/${p.contactId}`} className="underline-offset-2 hover:underline">
                         {p.contactName}
                       </Link>
-                    ) : (
-                      p.contactName
                     )}
                   </Td>
                   <Td className="tabular hidden text-right sm:table-cell">{formatAmount(p.amount, p.currency)}</Td>

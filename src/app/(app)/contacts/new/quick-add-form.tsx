@@ -35,6 +35,7 @@ export function QuickAddForm({
   owners,
   canRequestTransfer,
   defaultPhone,
+  cities = [],
 }: {
   commonChannels: Option[];
   otherChannels: Option[];
@@ -46,6 +47,8 @@ export function QuickAddForm({
   owners: Option[] | null;
   canRequestTransfer: boolean;
   defaultPhone?: string;
+  /** city search dropdown suggestions (free text still allowed) */
+  cities?: string[];
 }) {
   const [state, dispatch, pending] = useActionState(quickAddAction, null);
   const [phone, setPhone] = useState(defaultPhone ?? "");
@@ -92,6 +95,8 @@ export function QuickAddForm({
   const fresh = check.status === "done" && check.phone === current;
   const result = fresh ? check.result : check.status === "checking" ? check.last : null;
   const existing = result?.existing ?? null;
+  // a known number the user may open: the enquiry can be added to that record (rule 2: the owner stays)
+  const attachTo = existing?.visible ? existing.id : null;
   const digits = phone.replace(/\D/g, "");
   const showInvalid = fresh && !check.result.valid && (phoneBlurred || digits.length >= 10);
   const fe = state && !state.ok ? (state.fieldErrors ?? {}) : {};
@@ -105,7 +110,7 @@ export function QuickAddForm({
 
   function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (existing) return;
+    if (existing && !attachTo) return;
     const fd = new FormData(e.currentTarget);
     // dispatching by hand keeps what was typed when the server sends back an error
     startTransition(() => dispatch(fd));
@@ -174,18 +179,21 @@ export function QuickAddForm({
       </div>
 
       <form id={FORM_ID} onSubmit={submit} noValidate className="space-y-5" aria-describedby={ids.status}>
-        {/* Name */}
-        <Field label="Name" htmlFor={ids.name} required error={fe.name}>
-          <Input
-            id={ids.name}
-            name="name"
-            autoComplete="off"
-            autoCapitalize="words"
-            required
-            className="h-12 text-base"
-            aria-invalid={!!fe.name}
-          />
-        </Field>
+        {/* Name and first door are kept from the record when the enquiry joins a known contact */}
+        <div hidden={!!attachTo}>
+          {/* Name */}
+          <Field label="Name" htmlFor={ids.name} required error={fe.name}>
+            <Input
+              id={ids.name}
+              name="name"
+              autoComplete="off"
+              autoCapitalize="words"
+              required
+              className="h-12 text-base"
+              aria-invalid={!!fe.name}
+            />
+          </Field>
+        </div>
 
         {/* Channel */}
         <fieldset className="flex flex-col gap-2">
@@ -234,25 +242,27 @@ export function QuickAddForm({
           {fe.channel && <p className="text-xs text-danger">{fe.channel}</p>}
         </fieldset>
 
-        {/* First door */}
-        <Field
-          label="First door"
-          htmlFor={ids.door}
-          required
-          error={fe.firstDoor}
-          hint="How they first came to know Edapt or Umer. Stored forever."
-        >
-          <Select
-            id={ids.door}
-            name="firstDoor"
+        <div hidden={!!attachTo}>
+          {/* First door */}
+          <Field
+            label="First door"
+            htmlFor={ids.door}
             required
-            defaultValue=""
-            placeholder="Choose…"
-            options={firstDoors}
-            className="h-12"
-            aria-invalid={!!fe.firstDoor}
-          />
-        </Field>
+            error={fe.firstDoor}
+            hint="How they first came to know Edapt or Umer. Stored forever."
+          >
+            <Select
+              id={ids.door}
+              name="firstDoor"
+              required
+              defaultValue=""
+              placeholder="Choose…"
+              options={firstDoors}
+              className="h-12"
+              aria-invalid={!!fe.firstDoor}
+            />
+          </Field>
+        </div>
 
         {/* More */}
         <div className="rounded-xl border border-border">
@@ -292,7 +302,12 @@ export function QuickAddForm({
               </Field>
             )}
             <Field label="City" htmlFor="qa-city">
-              <Input id="qa-city" name="city" autoComplete="off" autoCapitalize="words" />
+              <Input id="qa-city" name="city" autoComplete="off" autoCapitalize="words" list="qa-city-list" />
+              <datalist id="qa-city-list">
+                {cities.map((c) => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
             </Field>
             <div className="flex flex-col gap-2">
               <span className="text-sm font-medium" id="qa-lang">
@@ -347,9 +362,16 @@ export function QuickAddForm({
 
         <div id={ids.status}>{state && !state.ok && <FormMessage state={state} />}</div>
 
-        <Button type="submit" size="lg" className="w-full" disabled={pending || !!existing} aria-busy={pending}>
+        {attachTo && <input type="hidden" name="attachTo" value={attachTo} />}
+        <Button type="submit" size="lg" className="w-full" disabled={pending || (!!existing && !attachTo)} aria-busy={pending}>
           {pending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
-          {pending ? "Saving…" : existing ? "Already in the CRM" : "Save contact"}
+          {pending
+            ? "Saving…"
+            : existing
+              ? attachTo
+                ? `Add this enquiry to ${existing.name}`
+                : "Already in the CRM"
+              : "Save contact"}
         </Button>
       </form>
     </div>
@@ -391,9 +413,14 @@ function ExistingContact({
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         {existing.visible ? (
-          <Link href={`/contacts/${existing.id}`} className={buttonClass("primary", "md", "flex-1 sm:flex-none")}>
-            Open contact
-          </Link>
+          <>
+            <Link href={`/contacts/${existing.id}`} className={buttonClass("primary", "md", "flex-1 sm:flex-none")}>
+              Open contact
+            </Link>
+            <p className="w-full text-sm text-muted">
+              A new enquiry from them? Pick the channel below and add it to this record. Name and first door are kept.
+            </p>
+          </>
         ) : canRequestTransfer ? (
           asking ? null : (
             <Button variant="outline" onClick={() => setAsking(true)} className="flex-1 sm:flex-none">

@@ -112,6 +112,8 @@ export type CaptureResult = {
   referrerCreated: boolean;
   /** for an existing contact: every profile field this touch changed, for import undo and review */
   changes: Record<string, { before: unknown; after: unknown }>;
+  /** the existing contact as it was before this touch (read under lock); null for a new contact or a duplicate */
+  before: Contact | null;
 };
 
 class SourceRefTaken extends Error {}
@@ -181,6 +183,7 @@ async function existingBySourceRef(sourceRef: string, t: Tx): Promise<CaptureRes
     referrerId: null,
     referrerCreated: false,
     changes: {},
+    before: null,
   };
 }
 
@@ -262,6 +265,7 @@ async function captureInner(
   const changes: CaptureResult["changes"] = {};
   let created = false;
   let contact: Contact;
+  let before: Contact | null = null;
 
   // ---- 1. find or create the one record
   const match = await matchContact({ phone: np.e164, email, name, city: profile.city }, t);
@@ -331,6 +335,7 @@ async function captureInner(
   if (!created) {
     contact = await getContact(contact.id, t, { forUpdate: true });
     const c = contact;
+    before = c;
     const patch: Partial<NewContact> = {};
     if (np.e164 !== c.phoneE164 && !c.altPhones.includes(np.e164)) {
       patch.altPhones = addUnique(c.altPhones, [np.e164], [c.phoneE164]);
@@ -390,6 +395,8 @@ async function captureInner(
         .update(contacts)
         .set({ ...patch, ...markers, updatedAt: now })
         .where(eq(contacts.id, c.id));
+      // the row as it now stands (the values written are the values stored)
+      contact = { ...c, ...patch, ...markers, updatedAt: now } as Contact;
     }
     if (Object.keys(changes).length) {
       const { fieldSources: _fs, ...auditable } = patch;
@@ -402,6 +409,7 @@ async function captureInner(
   let referrerId: string | null = null;
   let referrerCreated = false;
   let referrerNote: string | null = null;
+  let referrerLinked = false;
   if (r && hasReferrer) {
     const res = await resolveReferrer(r, contact, input, t);
     if (res) {
@@ -410,6 +418,7 @@ async function captureInner(
       const current = await getContact(contact.id, t);
       if (!current.referredById && !(await wouldCreateReferralCycle(contact.id, res.id, t))) {
         await t.update(contacts).set({ referredById: res.id, updatedAt: now }).where(eq(contacts.id, contact.id));
+        referrerLinked = true;
         if (!created) {
           changes.referredById = { before: null, after: res.id };
           await audit(
@@ -424,7 +433,8 @@ async function captureInner(
   }
 
   // ---- 4. owner: new leads are assigned; returning contacts stay with their owner (rule 2)
-  const current = await getContact(contact.id, t);
+  // (`contact` is the row as written above; it is read again only when the referrer link changed it)
+  const current = referrerLinked ? await getContact(contact.id, t) : contact;
   let ownerChanged = false;
   let ownerIsActive = true;
   if (current.ownerId) {
@@ -446,7 +456,8 @@ async function captureInner(
           : current.ownerId
             ? "Owner inactive: new enquiry reassigned by round robin"
             : "New enquiry from the pool: round robin";
-      const res = await setOwner(current.id, to, { reason, changedById: createdById }, t);
+      // a contact created by this touch has no tasks to move yet
+      const res = await setOwner(current.id, to, { reason, changedById: createdById, moveTasks: !created }, t);
       ownerChanged = res.changed;
     }
   }
@@ -478,16 +489,18 @@ async function captureInner(
     industries: lists["lists.industries"].map((i) => i.key),
   });
   delete self.notes;
-  if (Object.keys(self).length) await applyRating(contact.id, self, "self", null, t, { recompute: false });
+  const selfRated = Object.keys(self).length > 0;
+  if (selfRated) await applyRating(contact.id, self, "self", null, t, { recompute: false });
 
   // ---- 7. calculated columns (a bulk import recomputes once at the end of its chunk instead)
-  if (!(input.skipRecompute && input.skipAlerts)) {
+  const recompute = !(input.skipRecompute && input.skipAlerts);
+  if (recompute) {
     await recomputeContact(contact.id, t);
     if (referrerId) await recomputeContact(referrerId, t);
   }
 
-  // ---- 8. alerts
-  const fresh = await getContact(contact.id, t);
+  // ---- 8. alerts (the row is read again only when something above changed it since `current`)
+  const fresh = recompute || ownerChanged || selfRated ? await getContact(contact.id, t) : current;
   if (!input.skipAlerts) {
     const channelLabel = labelFor(lists["lists.channels"], input.channel);
     const campaignLabel = campaign ? labelFor(lists["lists.campaigns"], campaign) : null;
@@ -515,7 +528,9 @@ async function captureInner(
     }
     if (fresh.purchaseCount === 0 && fresh.grade === "A") {
       const recipients = new Set<string>(await managerIds(t));
-      if (owner && owner !== createdById) recipients.add(owner);
+      if (owner) recipients.add(owner);
+      // whoever entered the lead already knows about it, even when they are a manager
+      if (createdById) recipients.delete(createdById);
       await notify(
         [...recipients].map((userId) => ({
           userId,
@@ -540,6 +555,7 @@ async function captureInner(
     referrerId,
     referrerCreated,
     changes,
+    before,
   };
 }
 

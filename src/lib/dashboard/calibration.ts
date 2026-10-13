@@ -1,7 +1,8 @@
 import "server-only";
 /**
- * The calibration report: conversion and repeat rates by grade, Edapt Score band and each scoring input, so the
- * weights in Settings > Scoring can be checked against what actually happened.
+ * The calibration report: conversion and repeat rates by grade, Edapt Score band and each scoring input (the Value
+ * inputs judged at each purchase, see VALUE_DIMENSIONS), so the weights in Settings > Scoring can be checked against
+ * what actually happened.
  *
  * Populations (window = settings thresholds.repeatWindowDays, 90 days by default):
  * - Conversion: contacts created at least `window` days before `now` (so the outcome is known), leaving out records
@@ -57,7 +58,16 @@ export async function calibration(now: Date = new Date(), tx: Tx = db): Promise<
   const minN = Math.max(1, Math.round(Number(s.thresholds.cohortMinSize) || 30));
   const nowIso = now.toISOString();
 
-  const [rows, [span]] = await Promise.all([
+  // money band of the spend so far: the index of the first `below` threshold it stays under, else "top"
+  const ltvRows = [...s.scoring.value.ltv].sort((a, b) => a.below - b.below);
+  const moneyBand = ltvRows.length
+    ? sql`case ${sql.join(
+        ltvRows.map((r, i) => sql`when m.spent < ${Number(r.below)}::numeric then ${String(i)}`),
+        sql` `,
+      )} else 'top' end`
+    : sql`'top'`;
+
+  const [rows, valueRows, snapshotRows, [span]] = await Promise.all([
     tx.execute<{ dim: string; key: string; leads: string; converted: string; customers: string; repeated: string }>(sql`
       with p as (
         select pu.contact_id,
@@ -102,6 +112,88 @@ export async function calibration(now: Date = new Date(), tx: Tx = db): Promise<
       where b.is_lead or b.is_customer
       group by d.dim, d.key
     `),
+    // Value inputs, judged at each purchase (see VALUE_DIMENSIONS): every paid purchase at least `window` days old,
+    // with the spend, purchases, families and paying referrals up to it, and whether another purchase followed
+    // within `window` days. Purchases are ordered like the cohort builder (purchased_at, created_at, id).
+    tx.execute<{ dim: string; key: string; customers: string; repeated: string }>(sql`
+      with p as (
+        select pu.contact_id, pu.purchased_at,
+          row_number() over w as k,
+          lead(pu.purchased_at) over w as next_at,
+          sum(pu.amount_inr) over (w rows between unbounded preceding and current row) as spent,
+          (row_number() over (partition by pu.contact_id, pu.family order by pu.purchased_at, pu.created_at, pu.id) = 1)::int as new_family
+        from purchases pu
+        join contacts c on c.id = pu.contact_id and c.merged_into_id is null
+        where pu.status in ('paid', 'partial') and pu.purchased_at <= ${nowIso}::timestamptz
+        window w as (partition by pu.contact_id order by pu.purchased_at, pu.created_at, pu.id)
+      ),
+      o as (
+        select p.k, p.spent,
+          sum(p.new_family) over (partition by p.contact_id order by p.k rows between unbounded preceding and current row) as families,
+          (p.next_at is not null and p.next_at <= p.purchased_at + ${windowDays}::int * interval '1 day') as repeated,
+          p.purchased_at, p.contact_id
+        from p
+      ),
+      m as (
+        select o.*,
+          (select count(*) from contacts r
+            where r.referred_by_id = o.contact_id and r.merged_into_id is null and r.id <> o.contact_id
+              and r.first_purchase_at is not null and r.first_purchase_at <= o.purchased_at) as referrals
+        from o
+        where o.purchased_at <= ${nowIso}::timestamptz - ${windowDays}::int * interval '1 day'
+      )
+      select d.dim, d.key, count(*) as customers, count(*) filter (where m.repeated) as repeated
+      from m
+      cross join lateral (values
+        ('value_money', ${moneyBand}),
+        ('value_frequency', least(m.k, 1000)::text),
+        ('value_breadth', least(m.families, 1000)::text),
+        ('value_referrals', least(m.referrals, 1000)::text)
+      ) as d(dim, key)
+      group by d.dim, d.key
+    `),
+    // Recent interest and recency, judged at the snapshot `window` days ago (see SNAPSHOT_DIMENSIONS). A chat is what
+    // Readiness counts (src/lib/metrics/facts.ts): a call, WhatsApp, meeting or email that was inbound or reached them.
+    tx.execute<{ dim: string; key: string | null; leads: string; converted: string; customers: string; repeated: string }>(sql`
+      with d as (select ${nowIso}::timestamptz - ${windowDays}::int * interval '1 day' as at),
+      bought as (
+        select pu.contact_id,
+          max(pu.purchased_at) filter (where pu.purchased_at <= d.at) as last_before,
+          bool_or(pu.purchased_at > d.at) as bought_after
+        from purchases pu
+        join contacts c on c.id = pu.contact_id and c.merged_into_id is null
+        cross join d
+        where pu.status in ('paid', 'partial') and pu.purchased_at <= ${nowIso}::timestamptz
+        group by pu.contact_id
+      ),
+      customers as (
+        select 'value_recency' as dim, floor(extract(epoch from (d.at - b.last_before)) / 86400)::int as days, b.bought_after as outcome
+        from bought b cross join d
+        where b.last_before is not null
+      ),
+      leads as (
+        select 'recent_interest' as dim,
+          floor(extract(epoch from (d.at - greatest(
+            (select max(e.received_at) from enquiries e where e.contact_id = c.id and e.received_at <= d.at),
+            (select max(i.occurred_at) from interactions i where i.contact_id = c.id and i.occurred_at <= d.at
+              and i.type in ('call', 'whatsapp', 'meeting', 'email')
+              and (i.direction = 'in' or coalesce(i.outcome, '') not in ('no_answer', 'busy', 'wrong_number')))
+          ))) / 86400)::int as days,
+          coalesce(b.bought_after, false) as outcome
+        from contacts c
+        cross join d
+        left join bought b on b.contact_id = c.id
+        where c.merged_into_id is null and c.import_batch_id is null and c.created_at <= d.at
+          and b.last_before is null
+      )
+      select dim, days::text as key,
+        count(*) filter (where dim = 'recent_interest') as leads,
+        count(*) filter (where dim = 'recent_interest' and outcome) as converted,
+        count(*) filter (where dim = 'value_recency') as customers,
+        count(*) filter (where dim = 'value_recency' and outcome) as repeated
+      from (select * from customers union all select * from leads) x
+      group by dim, days
+    `),
     tx.execute<{ first_contact: string | null; first_purchase: string | null }>(sql`
       select
         (select min(c.created_at) from contacts c where c.merged_into_id is null) as first_contact,
@@ -109,14 +201,25 @@ export async function calibration(now: Date = new Date(), tx: Tx = db): Promise<
     `),
   ]);
 
-  const raw: CalibrationRawRow[] = rows.map((r) => ({
-    dim: r.dim,
-    key: r.key ?? "",
-    leads: num(r.leads),
-    converted: num(r.converted),
-    customers: num(r.customers),
-    repeated: num(r.repeated),
-  }));
+  const raw: CalibrationRawRow[] = [
+    ...rows.map((r) => ({
+      dim: r.dim,
+      key: r.key ?? "",
+      leads: num(r.leads),
+      converted: num(r.converted),
+      customers: num(r.customers),
+      repeated: num(r.repeated),
+    })),
+    ...valueRows.map((r) => ({ dim: r.dim, key: r.key ?? "", leads: 0, converted: 0, customers: num(r.customers), repeated: num(r.repeated) })),
+    ...snapshotRows.map((r) => ({
+      dim: r.dim,
+      key: r.key ?? "",
+      leads: num(r.leads),
+      converted: num(r.converted),
+      customers: num(r.customers),
+      repeated: num(r.repeated),
+    })),
+  ];
   const tables = buildCalibrationTables(raw, {
     scoring: s.scoring,
     industries: s["lists.industries"],

@@ -199,7 +199,11 @@ export function NboEditor({
   const [addType, setAddType] = useState<Record<string, NboConditionType>>({});
   const [now] = useState(() => new Date());
 
-  const check = validateNboRules(rules, { productIds: options.products.map((p) => p.id) });
+  const check = validateNboRules(rules, {
+    productIds: options.products.map((p) => p.id),
+    activeProductNames: options.products.filter((p) => p.active).map((p) => p.name),
+    families: options.families.map((f) => f.key),
+  });
   const dirty = JSON.stringify(rules) !== JSON.stringify(saved);
   const preview = tester && check.ok ? previewNbo(tester.facts, check.value, { ...options, now }) : null;
 
@@ -217,6 +221,11 @@ export function NboEditor({
       return next;
     });
   const productOptions = options.products.map((p) => ({ value: p.id, label: `${p.name}${p.active ? "" : " (off)"}` }));
+  const familyOptions = options.families.map((f) => ({
+    value: f.key,
+    label: `${f.label}${f.rung !== null ? ` (rung ${f.rung})` : f.group ? ` (${f.group})` : ""}`,
+  }));
+  const activeNames = [...new Set(options.products.filter((p) => p.active).map((p) => p.name))];
 
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
@@ -387,6 +396,27 @@ export function NboEditor({
                         />
                       </label>
                     </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+                        Or a product by name (optional)
+                        <Input
+                          value={rule.productName ?? ""}
+                          list="nbo-product-names"
+                          placeholder="e.g. AI Agents for Business"
+                          autoComplete="off"
+                          onChange={(e) => patch(i, { productName: e.target.value || undefined })}
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+                        Or the cheapest in a family (optional)
+                        <Select
+                          value={rule.family ?? ""}
+                          onChange={(e) => patch(i, { family: e.target.value || undefined })}
+                          placeholder="None"
+                          options={familyOptions}
+                        />
+                      </label>
+                    </div>
                   </CardBody>
                 </Card>
               </li>
@@ -403,9 +433,15 @@ export function NboEditor({
             <Plus className="h-4 w-4" aria-hidden /> Add rule
           </Button>
         </div>
+        <datalist id="nbo-product-names">
+          {activeNames.map((n) => (
+            <option key={n} value={n} />
+          ))}
+        </datalist>
         <p className="text-xs text-muted">
-          Price for the 90-day forecast: the rule&apos;s price, else its product&apos;s list price, else the cheapest active
-          product on the rung above the customer.
+          Price for the 90-day forecast: the rule&apos;s price, else its product&apos;s list price, else the active product
+          with that name, else the cheapest active product in its family, else the cheapest active product on the rung
+          above the customer. The product found also sets the next rung on the contact page.
         </p>
         {/* phones: the tester and the save button sit at the end, so keep the result and a way there in view */}
         <div className="sticky bottom-20 z-20 flex items-center gap-2 rounded-xl border border-border bg-surface/95 p-2 text-xs shadow-lg backdrop-blur lg:hidden">

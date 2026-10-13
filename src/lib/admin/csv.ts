@@ -1,9 +1,10 @@
 /**
  * CSV writing for exports. PURE.
  * - RFC 4180 quoting (commas, quotes, line breaks).
- * - Spreadsheet formula injection is neutralised: a cell that would start a formula (=, @, tab, carriage return,
- *   or + / - not followed by a number) gets a leading apostrophe. Phone numbers such as +919876543210 and
- *   negative amounts stay as they are.
+ * - Spreadsheet formula injection is neutralised (neutraliseFormula): a cell that would start a formula (=, @,
+ *   tab, carriage return, line feed, or + / - when the cell is not a plain number), also after leading spaces, gets
+ *   a leading apostrophe. Phone numbers such as +919876543210 and negative amounts stay as they are; a payload such
+ *   as -2+3+cmd|' /C calc'!A0 does not.
  */
 
 export type CsvValue = string | number | boolean | Date | null | undefined;
@@ -13,6 +14,13 @@ export const CSV_BOM = "﻿";
 
 const NUMBER_LIKE = /^[+-]?\d[\d\s.,]*$/;
 
+/** Text a spreadsheet would run as a formula gets a leading apostrophe so it stays text. Used by every CSV we write. */
+export function neutraliseFormula(s: string): string {
+  const t = s.replace(/^[ \u00a0]+/, "");
+  if (/^[=@\t\r\n\uff1d\uff20]/.test(t) || (/^[+\-\uff0b\uff0d]/.test(t) && !NUMBER_LIKE.test(t))) return `'${s}`;
+  return s;
+}
+
 export function csvCell(v: CsvValue): string {
   if (v === null || v === undefined) return "";
   let s: string;
@@ -20,7 +28,7 @@ export function csvCell(v: CsvValue): string {
   else if (typeof v === "number") s = Number.isFinite(v) ? String(v) : "";
   else if (typeof v === "boolean") s = v ? "yes" : "no";
   else s = v;
-  if (/^[=@\t\r]/.test(s) || (/^[+-]/.test(s) && !NUMBER_LIKE.test(s))) s = `'${s}`;
+  s = neutraliseFormula(s);
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -28,20 +36,31 @@ export function csvRow(values: CsvValue[]): string {
   return values.map(csvCell).join(",") + "\r\n";
 }
 
+/** One formatter per time zone: an export formats ~300,000 dates and building a formatter is the slow part. */
+const dateTimeFormats = new Map<string, Intl.DateTimeFormat>();
+function dateTimeFormat(timeZone: string): Intl.DateTimeFormat {
+  let f = dateTimeFormats.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+    if (dateTimeFormats.size < 100) dateTimeFormats.set(timeZone, f);
+  }
+  return f;
+}
+
 /** "2026-10-13 14:05" in the given time zone (exports show local time; the header names the zone). */
 export function csvDateTime(d: Date | string | null | undefined, timeZone: string): string {
   if (!d) return "";
   const date = new Date(d);
   if (Number.isNaN(date.getTime())) return "";
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(date);
+  const parts = dateTimeFormat(timeZone).formatToParts(date);
   const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
   return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`;
 }

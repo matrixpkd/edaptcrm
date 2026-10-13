@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { db, type Database, type Tx } from "@/db";
 import { contacts, users, type Contact, type Role, type User } from "@/db/schema";
 import { ContactMergedError, ContactNotFoundError, ContactValidationError } from "./errors";
+import { selectContacts } from "./rows";
 import { isUuid } from "./rules";
 
 /** The signed-in user acting on a contact (SessionUser satisfies this). */
@@ -19,8 +20,7 @@ export function withTx<T>(tx: Tx, fn: (t: Tx) => Promise<T>): Promise<T> {
 /** Loads a contact (optionally locking the row). Throws when it does not exist (or the id is not an id). */
 export async function getContact(id: string, tx: Tx = db, opts: { forUpdate?: boolean } = {}): Promise<Contact> {
   if (!isUuid(id)) throw new ContactNotFoundError();
-  const q = tx.select().from(contacts).where(eq(contacts.id, id)).limit(1);
-  const rows = opts.forUpdate ? await q.for("update") : await q;
+  const rows = await selectContacts(eq(contacts.id, id), tx, { limit: 1, forUpdate: opts.forUpdate });
   if (!rows[0]) throw new ContactNotFoundError();
   return rows[0];
 }
@@ -39,7 +39,7 @@ export async function resolveSurvivor(contact: Contact | null | undefined, tx: T
   while (c && c.mergedIntoId) {
     if (seen.has(c.id) || seen.size > 20) return null;
     seen.add(c.id);
-    const next = await tx.select().from(contacts).where(eq(contacts.id, c.mergedIntoId)).limit(1);
+    const next = await selectContacts(eq(contacts.id, c.mergedIntoId), tx, { limit: 1 });
     c = next[0] ?? null;
   }
   return c;

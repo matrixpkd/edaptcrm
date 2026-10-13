@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, eq, inArray, isNotNull, isNull, ne, notInArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { contacts, ownershipLog, tasks, users, type TaskType } from "@/db/schema";
 import { managerIds, notify } from "@/lib/alerts/core";
@@ -322,7 +322,8 @@ export async function releaseStaleLeads(now: Date, tx: Tx = db, opts: { limit?: 
           isNull(contacts.mergedIntoId),
           isNotNull(contacts.ownerId),
           eq(contacts.purchaseCount, 0),
-          ne(contacts.stage, "lost"),
+          // Lost and Dormant contacts are not open leads (old imported leads turn Dormant on recompute)
+          notInArray(contacts.stage, ["lost", "dormant"]),
           sql`${assignedAt} <= ${cutoff}::timestamptz`,
           sql`not exists (select 1 from purchases p where p.contact_id = ${contacts.id} and p.status <> 'cancelled')`,
           sql`not exists (

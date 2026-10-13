@@ -17,13 +17,22 @@ import { contacts, notifications, payments, purchases, users, type Role } from "
 import { dailyDigestEmail, isDigestEmpty, type DailyDigestData, type DigestContactItem } from "@/emails/daily-digest";
 import { weeklySummaryEmail, type WeeklySummaryData } from "@/emails/weekly-summary";
 import { can } from "@/lib/auth/permissions";
-import { BEYOND_UMER_MAX_LEVEL } from "@/lib/dashboard/metrics";
+import {
+  abandonedCheckoutsRecovered,
+  assistedVsSelfServe,
+  atRiskPool,
+  beyondUmerShare,
+  dataHealth,
+  leadsAndConversionByChannel,
+  newCustomers as dashboardNewCustomers,
+  referralLeaderboard,
+  revenueByFamily,
+} from "@/lib/dashboard/metrics";
 import { sendEmail } from "@/lib/email";
 import { getSetting, getSettings, labelFor } from "@/lib/settings";
 import { getTodayQueue } from "@/lib/today/queue";
 import { TASK_TYPE_LABELS } from "@/lib/today/rank";
 import { localTime, validTimeZone } from "@/lib/today/time";
-import { CHECKOUT_CHANNEL } from "./rules";
 import { DEFAULT_TIME_ZONE, digestSendTime, isDigestDue, localDateKey, weekWindow, wholeDaysBetween } from "./schedule";
 import {
   DAY_MS,
@@ -269,115 +278,37 @@ export async function sendDailyDigests(now: Date, tx: Tx = db): Promise<SendResu
 
 export type WeeklySummary = WeeklySummaryData & { weekKey: string };
 
-const num = (v: unknown) => Number(v ?? 0) || 0;
-
 /**
- * The Monday summary over the last full week, Monday to Sunday (India calendar), compared with the week before:
- * revenue (verified payments minus verified refunds, INR, by payment date), new customers (first purchase in the
- * week), new leads by first channel, assisted vs self-serve revenue (sales credit on the purchase), the
- * Beyond-Umer share (revenue from customers at Umer familiarity 0 to 2, out of the revenue from rated customers;
- * unrated revenue is reported apart, exactly like the dashboard's beyondUmerShare), the at-risk pool, unverified
- * payments, abandoned checkouts (those that passed the window, and how many of them were recovered, as on the
- * dashboard), top advocates and VIPs gone quiet.
+ * The Monday summary over the last full week, Monday to Sunday (India calendar), compared with the week before.
+ * Every number the dashboard also shows is computed BY the dashboard's own functions (src/lib/dashboard/metrics.ts)
+ * over that week, so the email and the cockpit can never disagree:
+ * revenue (revenueByFamily totals), new customers (newCustomers), new leads by first channel and enquiries
+ * (leadsAndConversionByChannel), assisted vs self-serve (assistedVsSelfServe), the Beyond-Umer share
+ * (beyondUmerShare: familiarity 0 to 2 over rated revenue, unrated reported apart), the at-risk pool (atRiskPool),
+ * unverified payments (dataHealth), abandoned checkouts and recoveries (abandonedCheckoutsRecovered) and top
+ * advocates (referralLeaderboard). Only VIPs gone quiet (an alert, not a dashboard figure) are counted here.
  */
 export async function buildWeeklySummary(now: Date, tx: Tx = db): Promise<WeeklySummary> {
   const tz = DEFAULT_TIME_ZONE;
   const win = weekWindow(now, tz);
-  const s = await getSettings(["thresholds", "lists.channels"], tx);
-  const [start, end, prevStart] = [win.start.toISOString(), win.end.toISOString(), win.prevStart.toISOString()];
+  const s = await getSettings(["thresholds"], tx);
+  // the week and the week before, as a dashboard period (the previous week is complete, so "to date" is all of it)
+  const week = { start: win.start, end: win.end, prevStart: win.prevStart, prevEnd: win.start, prevToDateEnd: win.start, timeZone: tz };
 
-  const [rev] = await tx.execute<{
-    current: string;
-    previous: string;
-    assisted: string;
-    self_serve: string;
-    beyond: string;
-    circle: string;
-    unrated: string;
-  }>(sql`
-    with m as (
-      select
-        case when p.kind = 'refund' then -p.amount_inr else p.amount_inr end as inr,
-        coalesce(p.paid_at, p.verified_at, p.created_at) as at,
-        pu.assisted,
-        c.umer_level as umer
-      from payments p
-      join purchases pu on pu.id = p.purchase_id
-      join contacts c on c.id = p.contact_id
-      where p.status = 'verified'
-        and coalesce(p.paid_at, p.verified_at, p.created_at) >= ${prevStart}::timestamptz
-        and coalesce(p.paid_at, p.verified_at, p.created_at) < ${end}::timestamptz
-    )
-    select
-      coalesce(sum(inr) filter (where at >= ${start}::timestamptz), 0) as current,
-      coalesce(sum(inr) filter (where at < ${start}::timestamptz), 0) as previous,
-      coalesce(sum(inr) filter (where at >= ${start}::timestamptz and assisted), 0) as assisted,
-      coalesce(sum(inr) filter (where at >= ${start}::timestamptz and not assisted), 0) as self_serve,
-      coalesce(sum(inr) filter (where at >= ${start}::timestamptz and umer <= ${BEYOND_UMER_MAX_LEVEL}), 0) as beyond,
-      coalesce(sum(inr) filter (where at >= ${start}::timestamptz and umer > ${BEYOND_UMER_MAX_LEVEL}), 0) as circle,
-      coalesce(sum(inr) filter (where at >= ${start}::timestamptz and umer is null), 0) as unrated
-    from m
-  `);
-  const current = num(rev?.current);
-
-  const [{ n: newCustomers }] = await tx
-    .select({ n: count() })
-    .from(contacts)
-    .where(and(isNull(contacts.mergedIntoId), gte(contacts.firstPurchaseAt, win.start), lt(contacts.firstPurchaseAt, win.end)));
-
-  const channelRows = await tx
-    .select({ channel: contacts.firstChannel, n: count() })
-    .from(contacts)
-    .where(and(isNull(contacts.mergedIntoId), gte(contacts.createdAt, win.start), lt(contacts.createdAt, win.end)))
-    .groupBy(contacts.firstChannel);
-  const byChannel = channelRows
-    .map((r) => ({
-      key: r.channel ?? "unknown",
-      label: r.channel ? labelFor(s["lists.channels"], r.channel) : "Not recorded",
-      count: r.n,
-    }))
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
-
-  const [enq] = await tx.execute<{ total: string; abandoned: string; recovered: string }>(sql`
-    select
-      count(*) as total,
-      count(*) filter (where channel = ${CHECKOUT_CHANNEL} and status in ('abandoned', 'recovered')) as abandoned,
-      count(*) filter (where channel = ${CHECKOUT_CHANNEL} and status = 'recovered') as recovered
-    from enquiries
-    where received_at >= ${start}::timestamptz and received_at < ${end}::timestamptz
-  `);
-
-  const [risk] = await tx
-    .select({ n: count(), inr: sql<number>`coalesce(sum(${contacts.expected90dInr}), 0)`.mapWith(Number) })
-    .from(contacts)
-    .where(and(isNull(contacts.mergedIntoId), eq(contacts.atRisk, true)));
-
-  const staleDays = Math.max(0, Number(s.thresholds.unverifiedPaymentDays) || 0);
-  const staleCutoff = new Date(now.getTime() - staleDays * DAY_MS).toISOString();
-  const [unv] = await tx
-    .select({
-      n: count(),
-      inr: sql<number>`coalesce(sum(${payments.amountInr}), 0)`.mapWith(Number),
-      stale: sql<number>`count(*) filter (where coalesce(${payments.paidAt}, ${payments.createdAt}) <= ${staleCutoff}::timestamptz)`.mapWith(Number),
-    })
-    .from(payments)
-    .innerJoin(purchases, eq(purchases.id, payments.purchaseId))
-    .innerJoin(contacts, eq(contacts.id, payments.contactId))
-    .where(
-      and(
-        eq(payments.kind, "payment"),
-        eq(payments.status, "unverified"),
-        sql`${purchases.status} <> 'cancelled'`,
-        isNull(contacts.mergedIntoId),
-      ),
-    );
-
-  const advocates = await tx
-    .select({ id: contacts.id, name: contacts.name, referrals: contacts.referralCount, network: contacts.networkValueInr })
-    .from(contacts)
-    .where(and(isNull(contacts.mergedIntoId), gt(contacts.networkValueInr, 0)))
-    .orderBy(desc(contacts.networkValueInr), desc(contacts.referralCount), contacts.id)
-    .limit(5);
+  const [revenue, customers, leads, assisted, beyond, risk, health, checkouts, leaderboard] = await Promise.all([
+    revenueByFamily(week, tx),
+    dashboardNewCustomers(week, tx),
+    leadsAndConversionByChannel(week, tx),
+    assistedVsSelfServe(week, tx),
+    beyondUmerShare(week, tx),
+    atRiskPool(tx),
+    dataHealth(now, tx),
+    abandonedCheckoutsRecovered(week, tx),
+    referralLeaderboard(5, tx),
+  ]);
+  const byChannel = leads.rows
+    .filter((r) => r.leads > 0)
+    .map((r) => ({ key: r.channel || "unknown", label: r.label, count: r.leads }));
 
   const quietDays = Math.max(1, Number(s.thresholds.vipQuietDays) || 120);
   const lastSeen = sql<Date>`coalesce(${contacts.lastActivityAt}, ${contacts.lastPurchaseAt}, ${contacts.createdAt})`;
@@ -408,19 +339,20 @@ export async function buildWeeklySummary(now: Date, tx: Tx = db): Promise<Weekly
   return {
     weekKey: win.weekKey,
     range: { start: win.start, end: win.end, timeZone: tz },
-    revenue: { current, previous: num(rev?.previous) },
-    newCustomers,
-    leads: { total: byChannel.reduce((a, c) => a + c.count, 0), enquiries: num(enq?.total), byChannel },
-    assisted: { assistedInr: num(rev?.assisted), selfServeInr: num(rev?.self_serve) },
-    beyondUmer: {
-      share: num(rev?.beyond) + num(rev?.circle) > 0 ? num(rev?.beyond) / (num(rev?.beyond) + num(rev?.circle)) : null,
-      inr: num(rev?.beyond),
-      unratedInr: num(rev?.unrated),
-    },
-    atRisk: { count: risk.n, expectedInr: risk.inr },
-    unverified: { count: unv.n, inr: unv.inr, stale: unv.stale, staleDays },
-    checkouts: { abandoned: num(enq?.abandoned), recovered: num(enq?.recovered) },
-    topAdvocates: advocates.map((a) => ({ contactId: a.id, name: a.name, referrals: a.referrals, networkInr: Number(a.network) })),
+    revenue: { current: revenue.totals.current, previous: revenue.totals.previous },
+    newCustomers: customers.current,
+    leads: { total: leads.totals.leads, enquiries: leads.totals.enquiries, byChannel },
+    assisted: { assistedInr: assisted.assisted.inr, selfServeInr: assisted.selfServe.inr },
+    beyondUmer: { share: beyond.current.share, inr: beyond.current.beyondInr, unratedInr: beyond.current.unratedInr },
+    atRisk: { count: risk.count, expectedInr: risk.expectedInr },
+    unverified: health.unverified,
+    checkouts: { abandoned: checkouts.abandoned, recovered: checkouts.recovered },
+    topAdvocates: leaderboard.rows.map((a) => ({
+      contactId: a.contactId,
+      name: a.name,
+      referrals: a.referralCount,
+      networkInr: a.networkValueInr,
+    })),
     vipQuiet: {
       count: vipCount,
       quietDays,

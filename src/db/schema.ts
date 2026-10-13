@@ -172,6 +172,26 @@ export const sessions = pgTable(
   (t) => [index("sessions_user_idx").on(t.userId)],
 );
 
+/**
+ * Every sign-in attempt (src/lib/auth/login-limit.ts): the brute-force lockout counts recent failures per
+ * email + IP, per email and per IP. Rows older than a day are pruned nightly. The password is never stored.
+ */
+export const loginAttempts = pgTable(
+  "login_attempts",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    /** lower-cased email as typed (may not belong to any user) */
+    email: text("email").notNull(),
+    ip: text("ip").notNull(),
+    success: boolean("success").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("login_attempts_email_idx").on(t.email, t.createdAt),
+    index("login_attempts_ip_idx").on(t.ip, t.createdAt),
+  ],
+);
+
 // ---------------------------------------------------------------------------
 // People and accounts
 // ---------------------------------------------------------------------------
@@ -312,6 +332,16 @@ export const contacts = pgTable(
     index("contacts_org_idx").on(t.organisationId),
     // recent assignments: the untouched-lead alert (every 15 minutes) and the daily digest's new leads
     index("contacts_owner_assigned_idx").on(t.ownerAssignedAt),
+    // Contacts search ("anywhere in the name, email or number", src/lib/contacts/queries.ts contactSearchCondition):
+    // trigram GIN indexes need the pg_trgm extension, created by drizzle/custom/0000_extensions.sql BEFORE the
+    // schema push or migration (npm run db:push / db:migrate do it; see docs/PERFORMANCE.md).
+    index("contacts_name_trgm_idx").using("gin", sql`lower(${t.name}) gin_trgm_ops`),
+    index("contacts_email_trgm_idx").using("gin", sql`lower(coalesce(${t.email}, '')) gin_trgm_ops`),
+    index("contacts_phone_trgm_idx").using("gin", t.phoneE164.op("gin_trgm_ops")),
+    // the few contacts with alternate numbers / emails: lets the search's alternate-phone and alternate-email arms
+    // use an index too, so the whole OR becomes a bitmap scan instead of a sequential scan
+    index("contacts_has_alt_phones_idx").on(t.id).where(sql`cardinality(${t.altPhones}) > 0`),
+    index("contacts_has_alt_emails_idx").on(t.id).where(sql`cardinality(${t.altEmails}) > 0`),
   ],
 );
 
@@ -343,6 +373,8 @@ export const enquiries = pgTable(
     index("enquiries_contact_idx").on(t.contactId, t.receivedAt),
     index("enquiries_channel_idx").on(t.channel, t.receivedAt),
     index("enquiries_status_idx").on(t.status),
+    // Contacts list campaign filter (contacts that enquired through a campaign)
+    index("enquiries_campaign_idx").on(t.campaign),
   ],
 );
 
@@ -567,7 +599,7 @@ export const tasks = pgTable(
   (t) => [
     uniqueIndex("tasks_dedupe_uq").on(t.dedupeKey),
     index("tasks_user_status_idx").on(t.userId, t.status, t.dueAt),
-    index("tasks_contact_idx").on(t.contactId),
+    index("tasks_contact_idx").on(t.contactId, t.type, t.status),
     // open tasks of one type (alert rules run every 15 minutes: follow-up pings, untouched-lead cleanup)
     index("tasks_open_type_due_idx").on(t.type, t.dueAt).where(sql`${t.status} = 'open'`),
   ],

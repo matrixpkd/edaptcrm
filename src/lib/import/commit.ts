@@ -7,8 +7,9 @@ import "server-only";
  * - recordPurchase (source "import", verified, reference = order id) records the payment, when there is one;
  * - what changed is stored in import_rows.applied (created contact, or the matched contact's columns before and
  *   after, enquiry, purchase and payment ids) for review and for the one-click undo.
- * Calculated columns are recomputed once per chunk for every affected contact (and their referrers), not per
- * row. Resumable: a chunk that fails rolls back as a whole and the next call starts again from the same row.
+ * Calculated columns are recomputed once per transaction for every affected contact (and their referrers), not
+ * per row. A chunk commits in short transactions (COMMIT_ROWS_PER_TRANSACTION rows); each one moves the cursor, so
+ * a failure rolls back only that transaction and the next call starts again from its first row.
  */
 import { and, asc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 import { db, type Database, type Tx } from "@/db";
@@ -19,11 +20,14 @@ import { captureEnquiry } from "@/lib/contacts/capture";
 import { ContactError } from "@/lib/contacts/errors";
 import { lookupByEmail, lookupByPhone } from "@/lib/contacts/identity";
 import { getContact, resolveSurvivor } from "@/lib/contacts/internal";
+import { selectContacts } from "@/lib/contacts/rows";
 import { updateContactProfile } from "@/lib/contacts/profile";
 import { DuplicateReferenceError, isMoneyError } from "@/lib/money/errors";
 import { recordPurchase } from "@/lib/money/purchases";
+import type { MetricsContext } from "@/lib/metrics/compute";
 import { loadMetricsContext, recomputeContacts } from "@/lib/metrics/recompute";
 import { buildCohorts } from "@/lib/metrics/repeat";
+import { withSettingsSnapshot } from "@/lib/settings";
 import {
   addCounts,
   assertCanImport,
@@ -153,7 +157,7 @@ async function mergeTarget(
 ): Promise<Contact | null> {
   if (row.resolution !== "merge") return null;
   if (row.matchContactId) {
-    const [c] = await t.select().from(contacts).where(eq(contacts.id, row.matchContactId)).limit(1);
+    const [c] = await selectContacts(eq(contacts.id, row.matchContactId), t, { limit: 1 });
     return resolveSurvivor(c, t);
   }
   const leaderRow = clean.match?.sameAsRow ?? clean.match?.conflictRow;
@@ -169,7 +173,7 @@ async function mergeTarget(
     leaderContact = l?.contactId ?? null;
   }
   if (!leaderContact) return null;
-  const [c] = await t.select().from(contacts).where(eq(contacts.id, leaderContact)).limit(1);
+  const [c] = await selectContacts(eq(contacts.id, leaderContact), t, { limit: 1 });
   return resolveSurvivor(c, t);
 }
 
@@ -203,7 +207,8 @@ async function commitRowTx(
   let existing: Contact | null = target;
   let attachPhone = false;
   if (target) {
-    if (clean.phone) {
+    // the target's own main number needs no lookup: phone_e164 is unique and an exact match always wins
+    if (clean.phone && clean.phone !== target.phoneE164) {
       const holder = await lookupByPhone(clean.phone, s);
       if (!holder) attachPhone = true;
       else if (holder.contact.id !== target.id) {
@@ -216,12 +221,12 @@ async function commitRowTx(
     if (!holder) throw new ImportError("A new contact needs a phone number");
     existing = holder.contact;
     phone = holder.contact.phoneE164;
-  } else {
-    // the contact capture will land on (phone, then email), for the undo snapshot
-    existing = (await lookupByPhone(clean.phone, s))?.contact ?? (clean.email ? ((await lookupByEmail(clean.email, s))?.contact ?? null) : null);
   }
+  // capture finds the contact itself (phone, then email) and hands back how it was before the touch
+  // (CaptureResult.before), so it is not read twice here; only a merge that first adds the row's number as an
+  // alternate needs the state from before that change
   if (!phone) throw new ImportError("A new contact needs a phone number");
-  const before = existing ? snapshot(await getContact(existing.id, s)) : null;
+  let before = attachPhone && existing ? snapshot(await getContact(existing.id, s)) : null;
 
   // a conflict merged into a contact with another number: the number becomes its alternate, so capture finds it
   if (attachPhone && target && clean.phone) {
@@ -272,6 +277,10 @@ async function commitRowTx(
   );
   const contactId = captured.contact.id;
   if (captured.duplicateEnquiry) throw new ImportError("This row was already imported");
+  if (!before && captured.before) {
+    existing ??= captured.before;
+    if (captured.before.id === existing.id) before = snapshot(captured.before);
+  }
 
   // ---- 2b. the owner named in the file carries over onto a contact that already had one (Zoho), when asked
   let contactNow = captured.contact;
@@ -371,9 +380,17 @@ async function commitRowTx(
 }
 
 /**
- * Step 6, one chunk: imports up to `limit` rows (stopping early after `timeBudgetMs`), recomputes the contacts
- * they touched, and records the progress. The last call marks the batch committed, stores the unique-contact
- * count and rebuilds the repeat-purchase cohorts from the new history.
+ * Rows per database transaction inside a chunk. Every row runs in a savepoint and the services it calls open a few
+ * more; past 64 subtransactions in one transaction Postgres overflows its subtransaction cache and every
+ * visibility check slows down (a 500-row transaction ran about half as fast). So a chunk commits in short
+ * transactions of this many rows, each with its own recompute and progress cursor: still resumable at any point.
+ */
+export const COMMIT_ROWS_PER_TRANSACTION = 15;
+
+/**
+ * Step 6, one chunk: imports up to `limit` rows (stopping early after `timeBudgetMs`) in short transactions of
+ * COMMIT_ROWS_PER_TRANSACTION rows, recomputes the contacts each one touched, and records the progress. The last
+ * call marks the batch committed, stores the unique-contact count and rebuilds the repeat-purchase cohorts.
  */
 export async function runCommitChunk(
   batchId: string,
@@ -383,6 +400,31 @@ export async function runCommitChunk(
   assertCanImport(actor);
   const limit = Math.max(1, Math.min(opts.limit ?? 500, 2000));
   const deadline = Date.now() + (opts.timeBudgetMs ?? 20_000);
+  // settings (lists, thresholds, currency, teams...) and the scoring context are read once per chunk, not per row
+  return withSettingsSnapshot(async () => {
+    let ctx: MetricsContext | null = null;
+    let processed = 0;
+    for (;;) {
+      const step = await commitStep(batchId, actor, Math.min(COMMIT_ROWS_PER_TRANSACTION, limit - processed), deadline, async (t) => {
+        ctx ??= await loadMetricsContext(t);
+        return ctx;
+      });
+      processed += step.processed;
+      if (step.finished || step.busy || !step.processed || processed >= limit || Date.now() > deadline) {
+        return { ...step, processed };
+      }
+    }
+  });
+}
+
+/** One short transaction of the commit: up to `limit` rows from the cursor (or the finish when none are left). */
+async function commitStep(
+  batchId: string,
+  actor: Actor,
+  limit: number,
+  deadline: number,
+  metricsContext: (t: Tx) => Promise<MetricsContext>,
+): Promise<PhaseResult> {
   return db.transaction(async (t) => {
     const b = await loadBatch(batchId, t, { lock: "skip" });
     if (!b) return { processed: 0, done: 0, total: 0, finished: false, busy: true };
@@ -440,7 +482,7 @@ export async function runCommitChunk(
     }
     await bulkUpdateRows(batchId, patches, ["contactId", "applied", "issues"], t);
 
-    // calculated columns: once per chunk for every touched contact and the people who referred them
+    // calculated columns: once per transaction for every touched contact and the people who referred them
     if (touched.size) {
       const ids = [...touched];
       const refs = await t
@@ -448,7 +490,7 @@ export async function runCommitChunk(
         .from(contacts)
         .where(and(inArray(contacts.id, ids), isNotNull(contacts.referredById)));
       for (const r of refs) if (r.referredById) touched.add(r.referredById);
-      const ctx = await loadMetricsContext(t);
+      const ctx = await metricsContext(t);
       const all = [...touched];
       for (let i = 0; i < all.length; i += 500) await recomputeContacts(all.slice(i, i + 500), t, { ctx });
     }

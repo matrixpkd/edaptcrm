@@ -5,6 +5,17 @@ import { auditLog, contacts, enquiries, notifications, purchases, type NewContac
 import { createTask } from "@/lib/alerts/core";
 import { buildDailyDigest, buildWeeklySummary, sendDailyDigests, sendWeeklySummary } from "@/lib/alerts/digest";
 import { sendPendingNotificationEmails } from "@/lib/alerts/mailer";
+import {
+  abandonedCheckoutsRecovered,
+  assistedVsSelfServe,
+  atRiskPool,
+  beyondUmerShare,
+  dataHealth,
+  leadsAndConversionByChannel,
+  newCustomers,
+  referralLeaderboard,
+  revenueByFamily,
+} from "@/lib/dashboard/metrics";
 import { recordPurchase, recordRefund } from "@/lib/money/purchases";
 import { DEFAULT_SETTINGS, setSetting } from "@/lib/settings";
 import { makeUser, resetDb } from "../support/db";
@@ -289,6 +300,33 @@ describe("weekly summary", () => {
     expect(s.topAdvocates).toEqual([{ contactId: a.id, name: "Anil", referrals: 2, networkInr: 5000 }]);
     expect(s.vipQuiet.count).toBe(1);
     expect(s.vipQuiet.items[0]).toMatchObject({ name: "Quiet VIP", ltvInr: 50000 });
+  });
+
+  it("every figure the dashboard also shows equals the dashboard's own number for that week", async () => {
+    await fixture();
+    const s = await buildWeeklySummary(NOW);
+    const week = { start: s.range.start, end: s.range.end, prevStart: new Date(s.range.start.getTime() - 7 * D), prevEnd: s.range.start, prevToDateEnd: s.range.start };
+    const [rev, cust, leads, assisted, beyond, risk, health, checkouts, board] = await Promise.all([
+      revenueByFamily(week),
+      newCustomers(week),
+      leadsAndConversionByChannel(week),
+      assistedVsSelfServe(week),
+      beyondUmerShare({ ...week, timeZone: "Asia/Kolkata" }),
+      atRiskPool(),
+      dataHealth(NOW),
+      abandonedCheckoutsRecovered(week),
+      referralLeaderboard(5),
+    ]);
+    expect(s.revenue).toEqual({ current: rev.totals.current, previous: rev.totals.previous });
+    expect(s.newCustomers).toBe(cust.current);
+    expect(s.leads.total).toBe(leads.totals.leads);
+    expect(s.leads.enquiries).toBe(leads.totals.enquiries);
+    expect(s.assisted).toEqual({ assistedInr: assisted.assisted.inr, selfServeInr: assisted.selfServe.inr });
+    expect(s.beyondUmer).toEqual({ share: beyond.current.share, inr: beyond.current.beyondInr, unratedInr: beyond.current.unratedInr });
+    expect(s.atRisk).toEqual({ count: risk.count, expectedInr: risk.expectedInr });
+    expect(s.unverified).toEqual(health.unverified);
+    expect(s.checkouts).toEqual({ abandoned: checkouts.abandoned, recovered: checkouts.recovered });
+    expect(s.topAdvocates.map((x) => x.contactId)).toEqual(board.rows.map((x) => x.contactId));
   });
 
   it("goes to every admin and digest.weeklyRecipients, once per week", async () => {

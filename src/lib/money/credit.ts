@@ -27,8 +27,14 @@ export type SalesCredit = {
  * (interactions.user_id = owner) within thresholds.salesCreditDays days before the purchase (inclusive).
  * Interactions by anyone else (support, a previous owner, the system) do not count. Otherwise self-serve.
  */
-export async function computeSalesCredit(contactId: string, purchasedAt: Date, tx: Tx = db): Promise<SalesCredit> {
-  const [c] = await tx.select({ ownerId: contacts.ownerId }).from(contacts).where(eq(contacts.id, contactId)).limit(1);
+export async function computeSalesCredit(
+  contactId: string,
+  purchasedAt: Date,
+  tx: Tx = db,
+  /** the contact's current owner when the caller already holds the row (saves reading it again) */
+  known?: { ownerId: string | null },
+): Promise<SalesCredit> {
+  const [c] = known ? [known] : await tx.select({ ownerId: contacts.ownerId }).from(contacts).where(eq(contacts.id, contactId)).limit(1);
   if (!c?.ownerId) return { creditedUserId: null, assisted: false, interactionId: null };
   const { salesCreditDays } = await getSetting("thresholds", tx);
   const from = new Date(purchasedAt.getTime() - salesCreditDays * DAY_MS);

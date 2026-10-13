@@ -24,6 +24,8 @@ import {
   listAssignableUsers,
   searchContactsForPicker,
 } from "@/lib/contacts/queries";
+import { nboProducts } from "@/lib/admin/nbo";
+import { offerRung } from "@/lib/metrics/ladder";
 import { getContactPurchases } from "@/lib/money";
 import { formatPhone } from "@/lib/phone";
 import { activeItems, getSettings } from "@/lib/settings";
@@ -111,6 +113,7 @@ export default async function ContactPage({
     "lists.tags",
     "ladder.rungs",
     "ladder.families",
+    "nbo.rules",
     "thresholds",
   ]);
   const labels = makeLabels({
@@ -127,19 +130,21 @@ export default async function ContactPage({
   });
 
   const needsPeople = ownerMode === "reassign" || ownerMode === "handover";
-  const [footprint, people, timeline, purchases, ratings, referrals, history, pickResults, otherRaw] =
+  const [footprint, people, timeline, purchases, ratings, referrals, history, pickResults, otherRaw, catalogue] =
     await Promise.all([
       getContactFootprint(c.id),
       needsPeople ? listAssignableUsers() : Promise.resolve([]),
       tab === "timeline" ? getContactTimeline(c.id, { page: timelinePage }) : null,
       tab === "purchases" ? getContactPurchases(c.id) : null,
       tab === "ratings" ? getContactRatings(c.id) : null,
-      tab === "referrals" ? getContactReferrals(c.id) : null,
+      tab === "referrals" ? getContactReferrals(c.id, user) : null,
       tab === "merge" ? getMergeHistory(c.id) : null,
       tab === "merge" && mergeQuery && !mergeWith
         ? searchContactsForPicker(user, mergeQuery, { excludeId: c.id })
         : null,
       tab === "merge" && mergeWith && isUuid(mergeWith) && mergeWith !== c.id ? loadContact(mergeWith) : null,
+      // the catalogue is small: it places the next best offer on the ladder
+      nboProducts(),
     ]);
   // the other side of a merge must be live and visible to this manager
   const other = otherRaw && !otherRaw.mergedIntoId && canViewContact(user, otherRaw) ? otherRaw : null;
@@ -285,6 +290,10 @@ export default async function ContactPage({
           families={settings["ladder.families"]}
           bought={c.families}
           nextOffer={c.nextOffer}
+          offerRung={offerRung(
+            { productId: c.nextOfferProductId, text: c.nextOffer },
+            { products: catalogue, families: settings["ladder.families"], rules: settings["nbo.rules"] },
+          )}
           expected90dInr={c.expected90dInr}
           repeatProb90d={c.repeatProb90d}
           nextExpectedAt={c.nextExpectedAt}
@@ -361,7 +370,6 @@ export default async function ContactPage({
               referrer={c.referrer}
               referrerVisible={referrerVisible}
               referred={referrals}
-              visibleIds={new Set(referrals.filter((r) => canViewContact(user, r)).map((r) => r.id))}
               networkValueInr={c.networkValueInr}
               referralCount={c.referralCount}
               tz={tz}

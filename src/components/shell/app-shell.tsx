@@ -13,6 +13,7 @@ import {
   Settings,
   Upload,
   UserPlus,
+  UserRound,
   Users,
   Wallet,
   X,
@@ -97,12 +98,22 @@ export function AppShell({
               <span className="ml-auto rounded-full bg-danger px-1.5 text-xs font-semibold text-white">{unread}</span>
             )}
           </Link>
-          <div className="flex items-center gap-2 rounded-lg px-2 py-2">
-            <Avatar name={user.name} />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium">{user.name}</p>
-              <p className="truncate text-xs text-muted">{ROLE_LABELS[user.role]}</p>
-            </div>
+          <div className="flex items-center gap-1 rounded-lg">
+            <Link
+              href="/account"
+              aria-current={isActive(pathname, "/account") ? "page" : undefined}
+              title="Your account"
+              className={cn(
+                "flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                isActive(pathname, "/account") ? "bg-surface-muted" : "hover:bg-surface-muted",
+              )}
+            >
+              <Avatar name={user.name} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium">{user.name}</span>
+                <span className="block truncate text-xs text-muted">{ROLE_LABELS[user.role]} · Your account</span>
+              </span>
+            </Link>
             <form action={logoutAction}>
               <button className="rounded-lg p-2 text-muted hover:bg-surface-muted" aria-label="Sign out" title="Sign out">
                 <LogOut className="h-4 w-4" />
@@ -142,9 +153,23 @@ export function AppShell({
         <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true">
           <div className="absolute inset-0 bg-black/40" onClick={() => setMenuOpen(false)} />
           <div className="absolute right-0 top-0 flex h-full w-72 flex-col bg-surface shadow-xl">
-            <div className="flex h-14 items-center justify-between border-b border-border px-4">
-              <span className="text-sm font-semibold">{user.name}</span>
-              <button className="rounded-lg p-2 hover:bg-surface-muted" onClick={() => setMenuOpen(false)} aria-label="Close menu">
+            <div className="flex h-16 items-center justify-between gap-2 border-b border-border pl-2 pr-3">
+              <Link
+                href="/account"
+                onClick={() => setMenuOpen(false)}
+                className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Avatar name={user.name} />
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-semibold">{user.name}</span>
+                  <span className="block truncate text-xs text-muted">Your account</span>
+                </span>
+              </Link>
+              <button
+                className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg hover:bg-surface-muted"
+                onClick={() => setMenuOpen(false)}
+                aria-label="Close menu"
+              >
                 <X className="h-5 w-5" />
               </button>
             </div>
@@ -167,11 +192,24 @@ export function AppShell({
                 );
               })}
             </nav>
-            <form action={logoutAction} className="border-t border-border p-3">
-              <button className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium hover:bg-surface-muted">
-                <LogOut className="h-4 w-4" /> Sign out
-              </button>
-            </form>
+            <div className="space-y-0.5 border-t border-border p-3">
+              <Link
+                href="/account"
+                onClick={() => setMenuOpen(false)}
+                aria-current={isActive(pathname, "/account") ? "page" : undefined}
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium",
+                  isActive(pathname, "/account") ? "bg-foreground text-white" : "hover:bg-surface-muted",
+                )}
+              >
+                <UserRound className="h-4 w-4" /> Your account
+              </Link>
+              <form action={logoutAction}>
+                <button className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium hover:bg-surface-muted">
+                  <LogOut className="h-4 w-4" /> Sign out
+                </button>
+              </form>
+            </div>
           </div>
         </div>
       )}

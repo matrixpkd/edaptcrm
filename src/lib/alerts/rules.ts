@@ -563,6 +563,36 @@ export async function closeRepurchasedTasks(now: Date, tx: Tx = db): Promise<{ c
   return { closed: rows.length };
 }
 
+/**
+ * Existing tasks of one type for a page of contacts, as a set of keys: "<contactId>" when `part` is null, else
+ * "<contactId>|<epoch ms of the part's timestamp>".
+ */
+async function contactTaskKeys(
+  contactIds: string[],
+  type: string,
+  part: ReturnType<typeof sql> | null,
+  tx: Tx,
+  opts: { openOnly?: boolean } = {},
+): Promise<Set<string>> {
+  if (!contactIds.length) return new Set();
+  const rows = await tx.execute<{ contact_id: string; part: string | null }>(sql`
+    select t.contact_id, ${part ?? sql`null`} as part
+    from tasks t
+    where t.contact_id = any(${`{${contactIds.join(",")}}`}::uuid[])
+      and t.type = ${type}
+      ${opts.openOnly ? sql`and t.status = 'open'` : sql``}
+  `);
+  const out = new Set<string>();
+  for (const r of rows) {
+    if (part === null) out.add(r.contact_id);
+    else if (r.part) {
+      const ms = new Date(r.part).getTime();
+      if (Number.isFinite(ms)) out.add(`${r.contact_id}|${ms}`);
+    }
+  }
+  return out;
+}
+
 /** Customer rows for the repeat-purchase rules, page by page (keyset on id). */
 async function* customerPages(where: ReturnType<typeof and>, tx: Tx) {
   let after: string | null = null;
@@ -608,15 +638,19 @@ export async function dueForNextRung(now: Date, tx: Tx = db): Promise<{ created:
     isNotNull(contacts.lastPurchaseAt),
     sql`${contacts.nextExpectedAt} between ${new Date(now.getTime() - days * DAY_MS).toISOString()}::timestamptz
       and ${new Date(now.getTime() + days * DAY_MS).toISOString()}::timestamptz`,
-    sql`not exists (
-      select 1 from tasks t
-      where t.contact_id = ${contacts.id} and t.type = 'next_rung'
-        and (t.payload->>'lastPurchaseAt')::timestamptz = date_trunc('milliseconds', ${contacts.lastPurchaseAt})
-    )`,
   );
   let created = 0;
   return inTx(tx, async (t) => {
-    for await (const page of customerPages(where, t)) {
+    for await (const all of customerPages(where, t)) {
+      // One task per purchase cycle. Checked per page with an indexed lookup rather than a correlated NOT EXISTS:
+      // after a big import the planner's statistics on tasks are stale and the correlated form degrades badly.
+      const seen = await contactTaskKeys(
+        all.map((c) => c.id),
+        "next_rung",
+        sql`(t.payload->>'lastPurchaseAt')`,
+        t,
+      );
+      const page = all.filter((c) => !seen.has(`${c.id}|${c.lastPurchaseAt!.getTime()}`));
       const list: NewTask[] = page.map((c) => {
         const { userId, tz } = routeTo(c, w);
         const expected = c.nextExpectedAt!;
@@ -644,7 +678,7 @@ export async function dueForNextRung(now: Date, tx: Tx = db): Promise<{ created:
 /**
  * "30 days past the expected next purchase -> owner, Today." Customers flagged at_risk (by the metrics module,
  * thresholds.atRiskDays) get an "at_risk" task with the next best offer, at most once a month and never while an
- * earlier at-risk task for them is still open.
+ * earlier at-risk task for them is still open. Dormant customers are left out (see below).
  */
 export async function atRisk(now: Date, tx: Tx = db): Promise<{ created: number }> {
   const w = await wording(tx);
@@ -653,13 +687,18 @@ export async function atRisk(now: Date, tx: Tx = db): Promise<{ created: number 
     isNull(contacts.mergedIntoId),
     gt(contacts.purchaseCount, 0),
     ne(contacts.stage, "lost"),
+    // Dormant customers (no activity for thresholds.dormantDays) stay in the dashboard's at-risk pool but get no
+    // call task: after the history import they would bury Today. Grade A ones are covered by "VIP gone quiet".
+    ne(contacts.stage, "dormant"),
     eq(contacts.atRisk, true),
     isNotNull(contacts.lastPurchaseAt),
-    sql`not exists (select 1 from tasks t where t.contact_id = ${contacts.id} and t.type = 'at_risk' and t.status = 'open')`,
   );
   let created = 0;
   return inTx(tx, async (t) => {
-    for await (const page of customerPages(where, t)) {
+    for await (const all of customerPages(where, t)) {
+      // never while an earlier at-risk task is still open (indexed lookup per page; see dueForNextRung)
+      const open = await contactTaskKeys(all.map((c) => c.id), "at_risk", null, t, { openOnly: true });
+      const page = all.filter((c) => !open.has(c.id));
       const list: NewTask[] = page.map((c) => {
         const { userId } = routeTo(c, w);
         const past = c.nextExpectedAt ? wholeDaysBetween(c.nextExpectedAt, now) : null;

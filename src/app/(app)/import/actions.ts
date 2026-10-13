@@ -12,6 +12,7 @@ import {
   discardBatch,
   getBatchView,
   ImportError,
+  prepareImportUpload,
   ImportFileError,
   resolveAllConflictsAsNew,
   resolveConflict,
@@ -51,19 +52,46 @@ function refresh(batchId?: string) {
 // Step 1
 // ---------------------------------------------------------------------------
 
+/**
+ * Before uploading: with Supabase Storage, a signed URL the browser PUTs the file to directly (a big export does
+ * not fit in a serverless request body); `data` is null when files are stored locally and the file is posted to
+ * uploadImportAction instead.
+ */
+export async function prepareImportUploadAction(input: {
+  fileName: string;
+  size: number;
+}): Promise<ActionResult<{ key: string; uploadUrl: string } | null>> {
+  const user = await importer();
+  if (!user) return fail(DENIED);
+  try {
+    return ok(await prepareImportUpload({ fileName: String(input?.fileName ?? ""), size: Number(input?.size) }, user));
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+/** Step 1: the file itself (`file`), or the key of a file the browser already uploaded to Storage (`storageKey`). */
 export async function uploadImportAction(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   const user = await importer();
   if (!user) return fail(DENIED);
   const file = fd.get("file");
+  const storageKey = str(fd, "storageKey");
   const source = str(fd, "source");
   if (!source) return fail("Choose where the file comes from.", { source: "Choose a source" });
-  if (!(file instanceof File) || file.size === 0) return fail("Choose a file to upload.", { file: "Choose a file" });
   let batchId: string;
   try {
-    batchId = await createImportBatch(
-      { fileName: file.name, fileType: file.type, bytes: new Uint8Array(await file.arrayBuffer()), source },
-      user,
-    );
+    if (storageKey) {
+      batchId = await createImportBatch(
+        { fileName: str(fd, "fileName") ?? "import", fileType: str(fd, "fileType") ?? "", storedKey: storageKey, source },
+        user,
+      );
+    } else {
+      if (!(file instanceof File) || file.size === 0) return fail("Choose a file to upload.", { file: "Choose a file" });
+      batchId = await createImportBatch(
+        { fileName: file.name, fileType: file.type, bytes: new Uint8Array(await file.arrayBuffer()), source },
+        user,
+      );
+    }
   } catch (e) {
     return actionError(e);
   }

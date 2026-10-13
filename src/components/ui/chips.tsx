@@ -81,7 +81,7 @@ export function StarInput({
 }) {
   const [value, setValue] = useState<number | null>(defaultValue ?? null);
   return (
-    <div className="flex items-center gap-1" role="radiogroup" aria-label="Gut rating">
+    <div className="-ml-1.5 flex items-center" role="radiogroup" aria-label="Gut rating">
       {[1, 2, 3, 4, 5].map((n) => (
         <button
           key={n}
@@ -94,7 +94,10 @@ export function StarInput({
             setValue(next);
             onChange?.(next);
           }}
-          className={cn("text-3xl leading-none transition-transform active:scale-90", value && n <= value ? "text-warning" : "text-border")}
+          className={cn(
+            "inline-flex h-11 w-11 items-center justify-center rounded-lg text-3xl leading-none transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-90",
+            value && n <= value ? "text-warning" : "text-border",
+          )}
         >
           ★
         </button>

@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { Lock } from "lucide-react";
-import type { ContactHeader } from "@/lib/contacts/queries";
+import { HIDDEN_CONTACT_LABEL, type ContactHeader } from "@/lib/contacts/queries";
 import { GradeBadge } from "@/components/ui/badge";
 import { ButtonLink } from "@/components/ui/button";
 import { CONTACT_TYPE_LABELS, SPENDING_BAND_LABELS, countryName } from "@/components/contacts/labels";
+import { daysSince } from "@/lib/metrics/scoring";
 import { formatPhone } from "@/lib/phone";
 import { formatDate, formatDateTime, formatINR, pct } from "@/lib/utils";
 import type { Labels } from "./labels";
@@ -63,6 +64,7 @@ export function DetailsTab({
   referrerVisible: boolean;
   tz: string;
 }) {
+  const now = new Date();
   const fs = c.fieldSources ?? {};
   const level = (v: number | null) => (v == null ? null : `${v} / 5`);
   return (
@@ -151,7 +153,7 @@ export function DetailsTab({
                   {c.referrer.name}
                 </Link>
               ) : (
-                c.referrer.name
+                <span className="text-muted">{HIDDEN_CONTACT_LABEL}</span>
               )
             ) : null,
           },
@@ -199,6 +201,11 @@ export function DetailsTab({
           },
           { label: "First purchase", value: c.firstPurchaseAt ? formatDate(c.firstPurchaseAt, tz) : null },
           { label: "Last purchase", value: c.lastPurchaseAt ? formatDate(c.lastPurchaseAt, tz) : null },
+          {
+            // spec "Repeat purchase": days since last purchase = today minus the last paid purchase date
+            label: "Days since last purchase",
+            value: c.lastPurchaseAt ? <span className="tabular">{daysSince(c.lastPurchaseAt, now)}</span> : null,
+          },
           { label: "Average gap", value: c.avgGapDays != null ? `${Math.round(c.avgGapDays)} days` : null },
           {
             label: "Expected next purchase",

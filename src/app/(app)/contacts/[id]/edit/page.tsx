@@ -9,7 +9,8 @@ import { countryOptions } from "@/components/contacts/countries";
 import { can, canEditContact, canViewContact } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import { resolveSurvivor } from "@/lib/contacts/internal";
-import { getContactHeader, listOrganisationOptions } from "@/lib/contacts/queries";
+import { HIDDEN_CONTACT_LABEL, getContactHeader, listOrganisationOptions } from "@/lib/contacts/queries";
+import { placeSuggestions } from "@/lib/contacts/places";
 import { formatPhone } from "@/lib/phone";
 import { activeItems, getSettings, type ListItem } from "@/lib/settings";
 import { alternateAction, referrerAction } from "./actions";
@@ -54,9 +55,10 @@ export default async function EditContactPage({ params }: { params: Promise<{ id
     );
   }
 
-  const [s, orgs] = await Promise.all([
+  const [s, orgs, places] = await Promise.all([
     getSettings(["lists.languages", "lists.ageBands", "lists.industries", "lists.tags", "lists.firstDoors"]),
     listOrganisationOptions(),
+    placeSuggestions(),
   ]);
   const tagOptions = options(s["lists.tags"]);
   for (const t of c.tags) if (!tagOptions.some((o) => o.value === t)) tagOptions.push({ value: t, label: t });
@@ -97,6 +99,7 @@ export default async function EditContactPage({ params }: { params: Promise<{ id
         industries={options(s["lists.industries"], c.industry)}
         tags={tagOptions}
         firstDoors={user.role === "admin" ? options(s["lists.firstDoors"], c.firstDoor) : null}
+        places={places}
       />
 
       <section className="rounded-xl border border-border bg-surface p-4 sm:p-5" aria-labelledby="alt-title">
@@ -149,7 +152,11 @@ export default async function EditContactPage({ params }: { params: Promise<{ id
         <p className="mt-0.5 text-xs text-muted">Their LTV counts toward the referrer&apos;s network value.</p>
         {c.referrer ? (
           <div className="mt-3 flex items-center justify-between gap-3 rounded-lg bg-surface-muted px-3 py-2">
-            <span className="text-sm font-medium">{c.referrer.name}</span>
+            {canViewContact(user, { ownerId: c.referrer.ownerId }) ? (
+              <span className="text-sm font-medium">{c.referrer.name}</span>
+            ) : (
+              <span className="text-sm text-muted">{HIDDEN_CONTACT_LABEL}</span>
+            )}
             <ActionForm action={referrerAction}>
               <input type="hidden" name="contactId" value={c.id} />
               <input type="hidden" name="clear" value="1" />

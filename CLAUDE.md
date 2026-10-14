@@ -26,6 +26,7 @@ npm run db:seed                   # first admin + starter products  (add `-- --d
 npm run typecheck && npm run lint
 npm test                          # vitest; global setup pushes the schema into edapt_test (TEST_DATABASE_URL overrides)
 npm run test:e2e                  # playwright
+npm run cron:schedule             # production: 15-minute cron from Supabase pg_cron (Vercel Hobby allows only daily crons)
 ```
 
 ## Layout

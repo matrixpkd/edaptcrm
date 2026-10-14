@@ -71,7 +71,25 @@ describe("cron routes", () => {
     const res = await call(nightly, "/api/cron/nightly", `Bearer ${SECRET}`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(Object.keys(body.steps)).toEqual(["recomputeAll", "closeRepurchasedTasks", "dueForNextRung", "atRisk", "vipGoneQuiet", "pruneWebhookEvents", "pruneLoginAttempts", "pruneExpiredSessions"]);
+    expect(Object.keys(body.steps)).toEqual([
+      "recomputeAll",
+      "closeRepurchasedTasks",
+      "dueForNextRung",
+      "atRisk",
+      "vipGoneQuiet",
+      "pruneWebhookEvents",
+      "pruneLoginAttempts",
+      "pruneExpiredSessions",
+      // safety net when the 15-minute schedule (Supabase pg_cron) is missing: the frequent steps run once more
+      "catchUp.abandonedCheckouts",
+      "catchUp.releaseStaleLeads",
+      "catchUp.untouchedLeads",
+      "catchUp.followUpsDue",
+      "catchUp.instalmentsDue",
+      "catchUp.unverifiedPayments",
+      "catchUp.sendPendingNotificationEmails",
+      "catchUp.sendDailyDigests",
+    ]);
     expect(body.steps.recomputeAll.result).toEqual({ contacts: 0 });
     expect(body.steps.pruneWebhookEvents.result.deleted).toBe(1);
     const left = (await db.select({ k: webhookEvents.eventKey }).from(webhookEvents)).map((r) => r.k).sort();

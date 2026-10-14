@@ -11,12 +11,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "db:push": "tsx scripts/db-custom.ts && drizzle-kit push --force",
+    "db:push": "tsx scripts/db-custom.ts && drizzle-kit push --force && tsx scripts/db-custom.ts --after",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:seed": "tsx --conditions=react-server scripts/seed.ts",
     "db:seed:scale": "tsx --conditions=react-server scripts/seed-scale.ts --contacts 50000",
-    "db:reset": "tsx --conditions=react-server scripts/reset.ts"
+    "db:reset": "tsx --conditions=react-server scripts/reset.ts",
+    "cron:schedule": "tsx scripts/schedule-cron.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",

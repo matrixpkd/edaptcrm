@@ -1,12 +1,14 @@
 import "server-only";
 /**
- * Scheduled jobs (vercel.json -> src/app/api/cron/*) and "Run alerts now".
+ * Scheduled jobs (src/app/api/cron/*) and "Run alerts now".
  *
- * - frequent (every 15 minutes): abandoned checkouts, untouched leads, lead release, follow-up pings,
- *   instalments due, unverified payments, alert emails, daily digests (each user at their own local 8:30).
- * - nightly (02:00 IST): recompute every contact (rebuilds cohorts first), then next rung, at risk, VIPs gone quiet,
- *   then prune webhook_events older than 180 days that were processed without an error, sign-in attempts older
- *   than a day and expired sessions.
+ * - frequent (every 15 minutes, from Supabase pg_cron: `npm run cron:schedule`; Vercel Hobby allows only daily
+ *   crons): abandoned checkouts, untouched leads, lead release, follow-up pings, instalments due, unverified
+ *   payments, alert emails, daily digests (each user at their own local 8:30).
+ * - nightly (02:00 IST, vercel.json): recompute every contact (rebuilds cohorts first), then next rung, at risk, VIPs
+ *   gone quiet, then prune webhook_events older than 180 days that were processed without an error, sign-in attempts
+ *   older than a day and expired sessions; finally the frequent steps once more, so alerts still go out (a day late)
+ *   if the 15-minute schedule is missing or down. Every rule is idempotent, so the extra pass never duplicates.
  * - weekly (Monday 09:00 IST): the weekly summary.
  *
  * Steps run one after another; a failing step is logged and reported (the route answers 500) but does not stop
@@ -68,9 +70,8 @@ async function runSteps(job: string, now: Date, steps: Step[]): Promise<JobRepor
   return report;
 }
 
-/** Every 15 minutes. */
-export function runFrequentJobs(now: Date = new Date()): Promise<JobReport> {
-  return runSteps("frequent", now, [
+function frequentSteps(now: Date): Step[] {
+  return [
     ["abandonedCheckouts", () => abandonedCheckouts(now)],
     // release first, so a released lead's untouched alert is dismissed in the same run
     ["releaseStaleLeads", () => releaseStaleLeads(now)],
@@ -80,10 +81,18 @@ export function runFrequentJobs(now: Date = new Date()): Promise<JobReport> {
     ["unverifiedPayments", () => unverifiedPayments(now)],
     ["sendPendingNotificationEmails", () => sendPendingNotificationEmails(now)],
     ["sendDailyDigests", () => sendDailyDigests(now)],
-  ]);
+  ];
 }
 
-/** Nightly at 02:00 IST: scores, repeat metrics and cohorts first, then the alerts that read them. */
+/** Every 15 minutes. */
+export function runFrequentJobs(now: Date = new Date()): Promise<JobReport> {
+  return runSteps("frequent", now, frequentSteps(now));
+}
+
+/**
+ * Nightly at 02:00 IST: scores, repeat metrics and cohorts first, then the alerts that read them, then a catch-up
+ * pass of the frequent steps (reported as "catchUp.<step>").
+ */
 export function runNightlyJobs(now: Date = new Date()): Promise<JobReport> {
   return runSteps("nightly", now, [
     ["recomputeAll", async () => ({ contacts: await recomputeAll({ now }) })],
@@ -94,6 +103,7 @@ export function runNightlyJobs(now: Date = new Date()): Promise<JobReport> {
     ["pruneWebhookEvents", () => pruneWebhookEvents(now)],
     ["pruneLoginAttempts", () => pruneLoginAttempts(now)],
     ["pruneExpiredSessions", () => pruneExpiredSessions(now)],
+    ...frequentSteps(now).map(([name, run]): Step => [`catchUp.${name}`, run]),
   ]);
 }
 

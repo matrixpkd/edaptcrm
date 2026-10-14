@@ -123,23 +123,53 @@ nightly recompute and the alert rules, timing each phase (about 2.5 minutes loca
    ```
    (Or create the admin in the app: on the empty database `/setup` makes the first admin; then run the seed with
    `ADMIN_EMAIL` set to that admin's email and it only adds the starter products.)
-3. **Vercel** (Pro): import the GitHub repository and set these environment variables:
+3. **Vercel**: import the GitHub repository and set these environment variables. (The spec plans for Vercel Pro;
+   the free Hobby plan works too, see step 5, but Vercel's terms limit Hobby to non-commercial use.)
 
    | Variable | Value |
    | --- | --- |
    | `DATABASE_URL` | Supabase *transaction pooler* URL (port 6543) |
    | `DATABASE_POOL_MAX` | optional — connections per function instance (default 5) |
    | `APP_URL` | e.g. `https://crm.edapt.in` |
-   | `CRON_SECRET` | a long random string (Vercel sends it to the cron routes) |
+   | `CRON_SECRET` | a long random string (Vercel Cron and the Supabase schedule send it to the cron routes) |
    | `TAGMANGO_WEBHOOK_SECRET`, `LIBROMI_WEBHOOK_SECRET`, `PABBLY_WEBHOOK_SECRET` | long random strings, one per integration |
    | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET` | from Supabase (bucket `crm-files`) |
    | `ANTHROPIC_API_KEY` | optional — AI column mapping and row extraction in the import wizard |
    | `RESEND_API_KEY`, `EMAIL_FROM` | optional — digests and alert emails (without it they are only logged) |
 
-   Set the Vercel project's function region to **Mumbai (bom1)** so the app sits next to the database.
+   `vercel.json` sets the function region (`regions`): keep it next to the Supabase project, `sin1` for Singapore
+   (ap-southeast-1, the current project) or `bom1` for Mumbai (ap-south-1, the spec's choice for keeping data in India).
 4. **Domain**: add `crm.<yourdomain>` in Vercel.
-5. **Scheduled jobs** are declared in `vercel.json` and start automatically on Vercel Pro. The nightly job also
-   deletes webhook deliveries older than 180 days that were processed without an error (failed ones stay for review).
+5. **Scheduled jobs.** Three cron routes keep the alerts and scores moving:
+
+   | Route | When | Run by |
+   | --- | --- | --- |
+   | `/api/cron/frequent` | every 15 minutes: abandoned checkouts, untouched leads, lead release, instalments, unverified payments, alert emails, the 8:30 digests | **Supabase** (pg_cron), set up below |
+   | `/api/cron/nightly` | 02:00 IST: recompute every score, next rung, at risk, VIPs gone quiet, clean-up | Vercel Cron (`vercel.json`) |
+   | `/api/cron/weekly` | Monday ≈ 09:00 IST: the weekly summary | Vercel Cron (`vercel.json`) |
+
+   Vercel's Hobby plan allows only two cron jobs that each run at most once a day, so `vercel.json` holds the
+   nightly and weekly jobs (Hobby may fire them at any minute within the scheduled hour), and the 15-minute job runs
+   from inside Supabase:
+
+   1. In Supabase, open **Database → Extensions** and enable **pg_cron** and **pg_net**.
+   2. From your laptop, with the session connection string (port 5432) and the same `CRON_SECRET` as on Vercel:
+      ```bash
+      DATABASE_URL="postgres://postgres.<ref>:<password>@aws-0-ap-south-1.pooler.supabase.com:5432/postgres" \
+      APP_URL="https://crm.edapt.in" CRON_SECRET="<same value as on Vercel>" npm run cron:schedule
+      ```
+      The URL and secret are stored in Supabase Vault. Run it again whenever the domain or `CRON_SECRET` changes.
+   3. After 15 minutes, `npm run cron:schedule -- --status` (same env) should show HTTP 200 responses. A 401 means
+      the secret differs from Vercel's.
+
+   As a safety net, the nightly job also runs every 15-minute step once, so alerts still arrive (a day late) if the
+   Supabase schedule is missing. On Vercel Pro you may instead add `{ "path": "/api/cron/frequent", "schedule":
+   "*/15 * * * *" }` to `vercel.json` and remove the Supabase job with `npm run cron:schedule -- --remove`.
+   Any other scheduler (e.g. cron-job.org) also works: a GET to `/api/cron/frequent` with
+   `Authorization: Bearer <CRON_SECRET>` every 15 minutes.
+
+   The nightly job also deletes webhook deliveries older than 180 days that were processed without an error (failed
+   ones stay for review).
 6. **Integrations**: follow [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) to point TagMango, Libromi and Pabbly at the
    webhook URLs shown in *Settings → Integrations*.
 7. **Import history**: in *Import*, load TagMango customers and orders first, then Zoho, the delegation list, MLA and

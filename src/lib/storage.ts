@@ -69,6 +69,14 @@ function supabase() {
   return url && key ? { url: url.replace(/\/$/, ""), key, bucket } : null;
 }
 
+/**
+ * Works with both kinds of Supabase server key: the legacy service_role JWT (read from Authorization) and the new
+ * sb_secret_... keys (read from apikey).
+ */
+function authHeaders(key: string): Record<string, string> {
+  return { Authorization: `Bearer ${key}`, apikey: key };
+}
+
 function safeName(name: string) {
   return name.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(-80) || "file";
 }
@@ -101,7 +109,7 @@ export async function createSignedUpload(folder: string, fileName: string): Prom
   const key = newStorageKey(folder, fileName);
   const res = await fetch(`${sb.url}/storage/v1/object/upload/sign/${sb.bucket}/${key}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${sb.key}`, "Content-Type": "application/json", "x-upsert": "false" },
+    headers: { ...authHeaders(sb.key), "Content-Type": "application/json", "x-upsert": "false" },
     body: "{}",
   });
   if (!res.ok) throw new Error(`Could not prepare the upload: ${res.status} ${await res.text()}`);
@@ -132,7 +140,7 @@ export async function saveFile(
     const res = await fetch(`${sb.url}/storage/v1/object/${sb.bucket}/${key}`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${sb.key}`,
+        ...authHeaders(sb.key),
         "Content-Type": file.type || "application/octet-stream",
         "x-upsert": "false",
       },
@@ -156,7 +164,7 @@ export async function readStoredFile(
   if (sb) {
     const res = await fetch(`${sb.url}/storage/v1/object/sign/${sb.bucket}/${key}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${sb.key}`, "Content-Type": "application/json" },
+      headers: { ...authHeaders(sb.key), "Content-Type": "application/json" },
       body: JSON.stringify({ expiresIn: 300 }),
     });
     if (!res.ok) return null;

@@ -80,8 +80,11 @@ export async function recordPaymentAction(contactId: string, _prev: ActionResult
   const listPrice = num(fd, "listPrice");
   const discount = num(fd, "discount");
   const amount = num(fd, "amount");
-  if (listPrice !== null && listPrice < 0) errors.listPrice = "The list price can't be negative.";
-  if (discount !== null && discount < 0) errors.discount = "The discount can't be negative.";
+  // typed but not a number ("abc") is refused, not silently dropped
+  if (listPrice === null && str(fd, "listPrice")) errors.listPrice = "Enter the list price as a number, or leave it empty.";
+  else if (listPrice !== null && listPrice < 0) errors.listPrice = "The list price can't be negative.";
+  if (discount === null && str(fd, "discount")) errors.discount = "Enter the discount as a number, or leave it empty.";
+  else if (discount !== null && discount < 0) errors.discount = "The discount can't be negative.";
   if (amount === null || !(amount > 0)) errors.amount = "Enter the final amount.";
 
   // Date and mode

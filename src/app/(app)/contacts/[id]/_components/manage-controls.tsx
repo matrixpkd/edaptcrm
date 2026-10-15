@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Select, type Option } from "@/components/ui/form";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { ActionForm } from "@/components/contacts/action-form";
-import { reassignAction, reopenAction, requestTransferAction, setStageAction } from "../actions";
+import { AssignOwnerForm } from "@/components/contacts/assign-owner";
+import { reopenAction, requestTransferAction, setStageAction } from "../actions";
 
 type Panel = null | "lost" | "owner";
 
@@ -22,6 +23,7 @@ export function ManageControls({
   ownerMode,
   people,
   currentOwnerId,
+  meId,
 }: {
   contactId: string;
   canQualify: boolean;
@@ -31,15 +33,20 @@ export function ManageControls({
   ownerMode: "reassign" | "request" | "handover" | null;
   people: Option[];
   currentOwnerId: string | null;
+  meId: string;
 }) {
   const [panel, setPanel] = useState<Panel>(null);
   const toggle = (p: Panel) => setPanel((cur) => (cur === p ? null : p));
   const close = () => setPanel(null);
   const ownerLabel =
     ownerMode === "reassign"
-      ? "Reassign"
+      ? currentOwnerId
+        ? "Assign to someone else"
+        : "Assign to…"
       : ownerMode === "request"
-        ? "Request transfer"
+        ? currentOwnerId
+          ? "Request transfer"
+          : "Request this lead"
         : ownerMode === "handover"
           ? "Hand over"
           : null;
@@ -113,45 +120,19 @@ export function ManageControls({
       )}
 
       {panel === "owner" && ownerMode === "reassign" && (
-        <ActionForm
-          action={reassignAction}
-          onSuccess={close}
-          className="space-y-3 rounded-lg bg-surface-muted p-3"
-          aria-label="Reassign"
-        >
-          <input type="hidden" name="contactId" value={contactId} />
-          <Field label="New owner" htmlFor="reassign-to">
-            <Select id="reassign-to" name="toUserId" required defaultValue="">
-              <option value="" disabled>
-                Choose…
-              </option>
-              {currentOwnerId && <option value="pool">Back to the pool</option>}
-              {people
-                .filter((p) => p.value !== currentOwnerId)
-                .map((p) => (
-                  <option key={p.value} value={p.value}>
-                    {p.label}
-                  </option>
-                ))}
-            </Select>
-          </Field>
-          <Field label="Reason" htmlFor="reassign-reason" hint="Kept in the ownership log.">
-            <Input id="reassign-reason" name="reason" required placeholder="e.g. Speaks Arabic, better fit for Dubai" />
-          </Field>
-          <div className="flex gap-2">
-            <SubmitButton size="md" pendingText="Reassigning…">
-              Reassign
-            </SubmitButton>
-            <Button variant="ghost" size="md" onClick={close}>
-              Cancel
-            </Button>
-          </div>
-        </ActionForm>
+        <AssignOwnerForm
+          contactId={contactId}
+          people={people}
+          currentOwnerId={currentOwnerId}
+          meId={meId}
+          onDone={close}
+        />
       )}
 
       {panel === "owner" && (ownerMode === "request" || ownerMode === "handover") && (
         <ActionForm
           action={requestTransferAction}
+          onSuccess={close}
           className="space-y-3 rounded-lg bg-surface-muted p-3"
           aria-label={ownerLabel ?? undefined}
         >

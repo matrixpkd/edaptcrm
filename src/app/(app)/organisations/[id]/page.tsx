@@ -22,10 +22,14 @@ import {
   getOrganisation,
   getOrganisationPeople,
   getOrganisationPurchases,
+  searchContactsForPicker,
 } from "@/lib/contacts/queries";
 import { formatPhone } from "@/lib/phone";
 import { formatDate, formatINR } from "@/lib/utils";
-import { updateOrganisationAction } from "../actions";
+import { linkPersonAction, updateOrganisationAction } from "../actions";
+import { ActionForm } from "@/components/contacts/action-form";
+import { SubmitButton } from "@/components/ui/submit-button";
+import { Input } from "@/components/ui/form";
 import { OrganisationForm } from "../org-form";
 
 type SP = Record<string, string | string[] | undefined>;
@@ -51,10 +55,13 @@ export default async function OrganisationPage({
   const tz = user.timezone || "Asia/Kolkata";
   const canManage = canManageOrganisations(user);
   const editing = canManage && sp.edit === "1";
-  const [{ people, hidden }, purchases] = await Promise.all([
+  const personQuery = (typeof sp.pq === "string" ? sp.pq : "").trim().slice(0, 100);
+  const [{ people, hidden }, purchases, picks] = await Promise.all([
     getOrganisationPeople(user, org.id),
     getOrganisationPurchases(org.id, user),
+    canManage && personQuery ? searchContactsForPicker(user, personQuery, { limit: 8 }) : Promise.resolve([]),
   ]);
+  const linkedIds = new Set(people.map((p) => p.id));
   const paid = purchases.filter((p) => p.status !== "cancelled");
 
   return (
@@ -136,11 +143,18 @@ export default async function OrganisationPage({
           description={
             hidden > 0
               ? `${hidden} owned by colleagues: their LTV counts, their details stay private`
-              : "Linked from each contact's Edit page"
+              : canManage
+                ? "Find a person below to link them, or pick this organisation on their Edit page"
+                : "The people who work here"
           }
         />
         {people.length === 0 ? (
-          <EmptyState title="No people linked" description="Open a contact, choose Edit, and pick this organisation." />
+          <EmptyState
+            title="No people linked"
+            description={
+              canManage ? "Search for the principal, MLA or owner below and link them." : "Nobody is linked yet."
+            }
+          />
         ) : (
           <ul className="divide-y divide-border">
             {people.map((p) =>
@@ -169,10 +183,75 @@ export default async function OrganisationPage({
                     <StageBadge stage={p.stage} />
                   </div>
                   <p className="tabular w-24 text-right text-sm font-semibold">{formatINR(p.ltvInr)}</p>
+                  {canManage && (
+                    <ActionForm action={linkPersonAction} confirm={`Unlink ${p.name} from ${org.name}?`}>
+                      <input type="hidden" name="orgId" value={org.id} />
+                      <input type="hidden" name="contactId" value={p.id} />
+                      <input type="hidden" name="unlink" value="1" />
+                      <SubmitButton variant="ghost" size="sm" pendingText="…" aria-label={`Unlink ${p.name}`}>
+                        Unlink
+                      </SubmitButton>
+                    </ActionForm>
+                  )}
                 </li>
               ),
             )}
           </ul>
+        )}
+        {canManage && (
+          <div className="border-t border-border px-4 py-4">
+            <form method="get" action={`/organisations/${org.id}`} role="search" className="flex gap-2">
+              <label htmlFor="org-person-q" className="sr-only">
+                Find a person to link
+              </label>
+              <Input
+                id="org-person-q"
+                name="pq"
+                type="search"
+                defaultValue={personQuery}
+                placeholder="Link a person: name, phone or email"
+                autoComplete="off"
+                className="flex-1"
+              />
+              <SubmitButton variant="outline">Find</SubmitButton>
+            </form>
+            {personQuery && (
+              <ul className="mt-3 divide-y divide-border rounded-lg border border-border" aria-label="People found">
+                {picks.length === 0 && (
+                  <li className="px-3 py-3 text-sm text-muted">
+                    Nobody matches. Add them with{" "}
+                    <Link href="/contacts/new" className="font-medium text-foreground underline">
+                      Quick Add
+                    </Link>{" "}
+                    first.
+                  </li>
+                )}
+                {picks.map((c) => (
+                  <li key={c.id} className="flex items-center gap-3 px-3 py-2">
+                    <GradeBadge grade={c.grade} size="sm" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{c.name}</p>
+                      <p className="tabular truncate text-xs text-muted">
+                        {formatPhone(c.phoneE164)}
+                        {c.city ? ` · ${c.city}` : ""} · {c.ownerName ?? "Pool"}
+                      </p>
+                    </div>
+                    {linkedIds.has(c.id) ? (
+                      <span className="text-xs text-muted">Linked</span>
+                    ) : (
+                      <ActionForm action={linkPersonAction}>
+                        <input type="hidden" name="orgId" value={org.id} />
+                        <input type="hidden" name="contactId" value={c.id} />
+                        <SubmitButton size="sm" pendingText="Linking…">
+                          Link
+                        </SubmitButton>
+                      </ActionForm>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
       </Card>
 

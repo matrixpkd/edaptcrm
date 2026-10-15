@@ -31,8 +31,9 @@ import {
 import { can, canViewContact } from "@/lib/auth/permissions";
 import { contactScope } from "@/lib/auth/scope";
 import { normalizePhone } from "@/lib/phone";
+import { getSetting } from "@/lib/settings";
 import { ContactForbiddenError, ContactValidationError } from "./errors";
-import { cleanText, isUuid } from "./rules";
+import { assigneeLabel, cleanText, isUuid } from "./rules";
 import { unratedCondition } from "./unrated";
 
 /**
@@ -395,6 +396,15 @@ export async function listContacts(
   return { rows: rows as ContactListRow[], total, page, pageSize, pageCount };
 }
 
+/** Live contacts with no owner that the viewer can see: the "Pool" chip's count on the Contacts list. */
+export async function countPoolContacts(user: Viewer, tx: Tx = db): Promise<number> {
+  const [{ n }] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(contacts)
+    .where(contactListWhere(user, { owner: "pool" }));
+  return n;
+}
+
 /** Countries present among the contacts the viewer can see, most common first (for the country filter). */
 export async function listContactCountries(user: Viewer, tx: Tx = db): Promise<{ country: string; n: number }[]> {
   const rows = await tx
@@ -435,13 +445,25 @@ export async function listOwnerOptions(tx: Tx = db): Promise<TeamMember[]> {
     .orderBy(desc(users.active), asc(users.name));
 }
 
-/** Active salespeople and managers: who a manager may hand a contact to. */
+/**
+ * Everyone a manager may hand a contact to: active salespeople first, then managers and admins (an admin who sells,
+ * such as the founder on a small team, can own contacts too). Support never owns.
+ */
 export async function listAssignableUsers(tx: Tx = db): Promise<TeamMember[]> {
   return tx
     .select({ id: users.id, name: users.name, role: users.role, team: users.team, active: users.active })
     .from(users)
-    .where(and(eq(users.active, true), inArray(users.role, ["sales", "manager"])))
-    .orderBy(asc(users.name));
+    .where(and(eq(users.active, true), inArray(users.role, ["sales", "manager", "admin"])))
+    .orderBy(sql`case ${users.role} when 'sales' then 0 when 'manager' then 1 else 2 end`, asc(users.name));
+}
+
+export type AssigneeOption = { value: string; label: string; role: Role };
+
+/** listAssignableUsers as picker options: "Kiran (Sales, Kerala)", team names from settings. */
+export async function assigneeOptions(tx: Tx = db): Promise<AssigneeOption[]> {
+  const [people, teams] = await Promise.all([listAssignableUsers(tx), getSetting("teams", tx)]);
+  const teamLabel = (k: string) => teams.find((t) => t.key === k)?.label ?? k;
+  return people.map((p) => ({ value: p.id, label: assigneeLabel(p, teamLabel), role: p.role }));
 }
 
 // ---------------------------------------------------------------------------

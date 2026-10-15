@@ -495,5 +495,28 @@ describe("money: verification, refunds and cancellation", () => {
       expect((await listPaymentsQueue("unverified", db, now, { ownerId: null }))[0].contactName).toBe("Basil");
       await expect(listPaymentsQueue("bogus" as never, db, now)).rejects.toBeInstanceOf(ValidationError);
     });
+
+    it("a paid instalment is 'recorded by' whoever took the payment, not whoever set up the schedule", async () => {
+      const sales = await makeUser({ role: "sales", name: "Scheduler" });
+      const manager = await makeUser({ role: "manager", name: "Collector" });
+      const c = await makeContact({ ownerId: sales.id });
+      const emi = await recordPurchase(
+        base(c.id, {
+          amount: 2000,
+          instalments: [
+            { amount: 1000, dueAt: new Date(Date.now() + 86400_000) },
+            { amount: 1000, dueAt: new Date(Date.now() + 31 * 86400_000) },
+          ],
+        }),
+        sales,
+      );
+      await recordInstalmentPayment(emi.paymentIds[0], { mode: "upi_qr", reference: utr() }, manager);
+      expect((await paymentRow(emi.paymentIds[0])).createdById).toBe(manager.id);
+      const [row] = await listPaymentsQueue("unverified", db);
+      expect(row).toMatchObject({ paymentId: emi.paymentIds[0], recordedByName: "Collector" });
+      // the schedule's author is still in the purchase's audit trail
+      const log = await db.select().from(auditLog).where(and(eq(auditLog.tableName, "purchases"), eq(auditLog.rowId, emi.purchaseId)));
+      expect(log.some((l) => l.userId === sales.id)).toBe(true);
+    });
   });
 });

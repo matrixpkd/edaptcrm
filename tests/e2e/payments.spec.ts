@@ -1,8 +1,8 @@
 import { randomInt } from "node:crypto";
-import { eq } from "drizzle-orm";
-import { payments, purchases } from "@/db/schema";
+import { and, eq } from "drizzle-orm";
+import { payments, purchases, users } from "@/db/schema";
 import { formatINR } from "@/lib/utils";
-import { test, expect, db, getContact, makeContact } from "./support/fixtures";
+import { test, expect, db, getContact, makeContact, userId } from "./support/fixtures";
 import type { Page } from "@playwright/test";
 
 // laptop project only (playwright.config.ts)
@@ -107,4 +107,55 @@ test("an AED purchase shows and stores its INR value at the month's rate", async
   await expect(page.getByText(`${formatINR(1000 * rate)} at ₹${rate} per AED`)).toBeVisible();
   const [p] = await db.select().from(purchases).where(eq(purchases.id, purchaseId));
   expect(p).toMatchObject({ currency: "AED", amount: 1000, fxRate: rate, amountInr: 1000 * rate });
+});
+
+test("a typed list price or discount that is not a number is refused, not silently dropped", async ({ pageAs }) => {
+  const contact = await makeContact({ owner: "sales" });
+  const page = await pageAs("sales");
+  await page.goto(`/contacts/${contact.id}/payment`);
+  const product = page.getByLabel(/^Product/);
+  await product.selectOption((await product.locator("optgroup option").first().getAttribute("value"))!);
+  await page.getByLabel(/^List price/).fill("abc");
+  await page.getByLabel(/^Discount/).fill("ten");
+  await page.getByLabel(/^Final amount/).fill("999");
+  await page.locator("label").filter({ hasText: /^Cash$/ }).click();
+  await page.getByRole("button", { name: "Record payment" }).click();
+  await expect(page.getByText("Enter the list price as a number, or leave it empty.")).toBeVisible();
+  await expect(page.getByText("Enter the discount as a number, or leave it empty.")).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/contacts/${contact.id}/payment$`));
+  expect(await db.select().from(purchases).where(eq(purchases.contactId, contact.id))).toHaveLength(0);
+});
+
+test("an instalment paid later shows who took the payment, not who set up the schedule", async ({ pageAs }) => {
+  const contact = await makeContact({ owner: "sales" });
+  const sales = await pageAs("sales");
+  await sales.goto(`/contacts/${contact.id}/payment`);
+  const product = sales.getByLabel(/^Product/);
+  await product.selectOption((await product.locator("optgroup option").first().getAttribute("value"))!);
+  await sales.getByLabel(/^Final amount/).fill("6000");
+  await sales.locator("label").filter({ hasText: /^Bank transfer$/ }).click();
+  await sales.getByRole("switch").check({ force: true });
+  await sales.getByLabel("Instalments", { exact: true }).selectOption("2");
+  await sales.getByLabel(/first instalment is paid now/).uncheck();
+  await sales.getByRole("button", { name: "Save purchase and schedule" }).click();
+  await expect(sales).toHaveURL(/\/payments\/[0-9a-f-]{36}/);
+  const purchaseId = /\/payments\/([0-9a-f-]{36})/.exec(sales.url())![1];
+
+  const manager = await pageAs("manager");
+  const managerId = await userId("manager");
+  const [{ name: managerName }] = await db.select({ name: users.name }).from(users).where(eq(users.id, managerId));
+  await manager.goto(`/payments/${purchaseId}`);
+  await manager.getByRole("button", { name: "Record payment" }).first().click();
+  const sheet = manager.getByRole("dialog");
+  await sheet.locator("label").filter({ hasText: /^UPI QR$/ }).click();
+  await sheet.getByLabel(/^UTR/).fill(newUtr());
+  await sheet.getByRole("button", { name: "Save payment" }).click();
+  await expect(sheet).toBeHidden();
+  const paid = manager.getByRole("listitem").filter({ hasText: /^No proof\s*Instalment 1/ });
+  await expect(paid).toContainText(`Recorded by ${managerName}`);
+  const [row] = await db
+    .select()
+    .from(payments)
+    .where(and(eq(payments.purchaseId, purchaseId), eq(payments.status, "unverified")));
+  expect(row.createdById).toBe(managerId);
 });

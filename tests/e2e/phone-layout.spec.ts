@@ -51,7 +51,8 @@ test("the contact page fits the phone and its actions are easy to tap", async ({
   await page.goto(`/contacts/${contact.id}`);
   await expectNoHorizontalScroll(page);
   for (const name of ["Call", "WhatsApp", "Log", "Rate", "Record payment", "Edit"]) {
-    const link = page.getByRole("link", { name, exact: true });
+    // WhatsApp is a button when message templates exist (it asks which message to start with)
+    const link = name === "WhatsApp" ? page.getByRole("button", { name, exact: true }) : page.getByRole("link", { name, exact: true });
     await expect(link).toBeInViewport();
     await expectTapTarget(link);
   }

@@ -2,7 +2,9 @@ import { and, count, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { notifications } from "@/db/schema";
 import { requireUser } from "@/lib/auth/session";
+import { Suspense } from "react";
 import { AppShell } from "@/components/shell/app-shell";
+import { Toaster } from "@/components/ui/toast";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +17,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <AppShell user={{ name: user.name, email: user.email, role: user.role }} unread={n}>
       {children}
+      <Suspense fallback={null}>
+        <Toaster />
+      </Suspense>
     </AppShell>
   );
 }

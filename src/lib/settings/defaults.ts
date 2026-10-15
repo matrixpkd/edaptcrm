@@ -15,6 +15,9 @@ import {
 
 export type ListItem = { key: string; label: string; active?: boolean };
 
+/** A WhatsApp message template (Settings -> Message templates). */
+export type MessageTemplate = { id: string; name: string; body: string; active?: boolean };
+
 /** A threshold table: the first row whose condition matches wins. */
 export type MinRow = { min: number; points: number };
 export type WithinDaysRow = { withinDays: number; points: number };
@@ -553,6 +556,29 @@ export const DEFAULT_SETTINGS = {
   /** Self-ratings at the door: TagMango custom fields, form answers and WhatsApp button replies. */
   "integrations.selfRatings": DEFAULT_SELF_RATING_CONFIG as SelfRatingConfig,
   "integrations.options": DEFAULT_INTEGRATION_OPTIONS as IntegrationOptions,
+
+  /**
+   * WhatsApp message templates (Settings -> Message templates; src/lib/templates/whatsapp.ts). The WhatsApp button on
+   * a contact opens wa.me with the chosen text filled in; sending stays manual (spec "Later"). Placeholders:
+   * {name}, {first_name}, {offer}, {owner}.
+   */
+  "templates.whatsapp": [
+    {
+      id: "intro",
+      name: "Introduce yourself",
+      body: "Hi {first_name}, this is {owner} from Edapt. Thank you for reaching out! When is a good time for a quick call?",
+    },
+    {
+      id: "next_offer",
+      name: "Next offer",
+      body: "Hi {first_name}, {owner} from Edapt here. Based on what you have done with us so far, I think {offer} would suit you well. Shall I share the details?",
+    },
+    {
+      id: "missed_call",
+      name: "Missed your call",
+      body: "Hi {first_name}, I tried calling you just now. Please let me know a convenient time to talk. – {owner}, Edapt",
+    },
+  ] as MessageTemplate[],
 };
 
 export type Settings = typeof DEFAULT_SETTINGS;

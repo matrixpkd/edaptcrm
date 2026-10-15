@@ -44,7 +44,7 @@ export default async function AccountPage() {
           </dl>
         </CardBody>
         <p className="border-t border-border px-4 py-3 text-xs text-muted">
-          Name, email, role and team are set by an admin in Settings → Users. Ask your admin to change them.
+          Name, email, role and team are set by an admin under Team. Ask your admin to change them.
         </p>
       </Card>
 

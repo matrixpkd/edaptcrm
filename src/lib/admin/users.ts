@@ -5,6 +5,7 @@ import { db, type Tx } from "@/db";
 import { ROLES, contacts, sessions, tasks, users, type Role, type User } from "@/db/schema";
 import { audit, auditDiff } from "@/lib/audit";
 import { hashPassword } from "@/lib/auth/password";
+import { voidResetLinks } from "@/lib/auth/password-reset";
 import { handoverAllContacts } from "@/lib/contacts/assignment";
 import { ContactError } from "@/lib/contacts/errors";
 import { normalizePhone } from "@/lib/phone";
@@ -15,7 +16,7 @@ import { assertAdmin, inTx, type AdminActor } from "./settings";
 import { isTimeZone, normalizeUserEmail } from "./validate";
 
 /**
- * Team members (Settings > Users): create, edit, reset password, deactivate with handover, reactivate.
+ * Team members (the Team page, /team): create, edit, reset password, deactivate with handover, reactivate.
  * Admin only. Every change is written to audit_log (table "users"); password hashes never are.
  * The last active admin can never be removed (deactivated or given another role).
  */
@@ -263,6 +264,7 @@ export async function resetUserPassword(id: string, actor: AdminActor, tx: Tx = 
   return inTx(tx, async (t) => {
     const u = await lockUser(id, t);
     await t.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, u.id));
+    await voidResetLinks(u.id, new Date(), t);
     const ended = await t.delete(sessions).where(eq(sessions.userId, u.id)).returning({ id: sessions.id });
     await audit({ table: "users", rowId: u.id, action: "update", field: "password", newValue: "reset", userId: actor.id }, t);
     return { tempPassword, sessionsEnded: ended.length };

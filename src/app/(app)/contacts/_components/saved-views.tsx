@@ -24,29 +24,46 @@ export function SavedViews({
   currentQuery,
   canShare,
   canDeleteShared,
+  builtIn = [],
 }: {
+  /** fixed views next to All contacts, e.g. My contacts and Pool (with its count) */
+  builtIn?: { query: string; label: string; count: number | null }[];
   views: ViewChip[];
   currentQuery: string;
   canShare: boolean;
   canDeleteShared: boolean;
 }) {
   const [saving, setSaving] = useState(false);
-  const isSaved = views.some((v) => v.query === currentQuery);
+  const isSaved = views.some((v) => v.query === currentQuery) || builtIn.some((b) => b.query === currentQuery);
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <Link
-          href="/contacts"
-          aria-current={currentQuery === "" ? "true" : undefined}
-          className={cn(
-            "inline-flex h-8 items-center rounded-full border px-3 text-sm font-medium",
-            currentQuery === ""
-              ? "border-foreground bg-foreground text-white"
-              : "border-border bg-surface hover:bg-surface-muted",
-          )}
-        >
-          All contacts
-        </Link>
+        {[{ query: "", label: "All contacts", count: null as number | null }, ...builtIn].map((b) => {
+          const active = currentQuery === b.query;
+          return (
+            <Link
+              key={b.query || "all"}
+              href={b.query ? `/contacts?${b.query}` : "/contacts"}
+              aria-current={active ? "true" : undefined}
+              className={cn(
+                "inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-sm font-medium",
+                active ? "border-foreground bg-foreground text-white" : "border-border bg-surface hover:bg-surface-muted",
+              )}
+            >
+              {b.label}
+              {b.count !== null && b.count > 0 && (
+                <span
+                  className={cn(
+                    "tabular rounded-full px-1.5 text-xs font-semibold",
+                    active ? "bg-white text-foreground" : "bg-warning/15 text-warning",
+                  )}
+                >
+                  {b.count.toLocaleString("en-IN")}
+                </span>
+              )}
+            </Link>
+          );
+        })}
         {views.map((v) => {
           const active = v.query === currentQuery;
           return (

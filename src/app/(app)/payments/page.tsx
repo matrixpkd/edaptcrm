@@ -69,7 +69,14 @@ export default async function PaymentsPage({ searchParams }: { searchParams: Pro
       <EmptyState
         icon={<ShieldCheck className="h-8 w-8" aria-hidden />}
         title={page > 1 ? "No more payments on this page" : "Nothing waiting for verification"}
-        description="Bank, UPI and cash payments recorded by the team wait here until a manager checks them against the bank."
+        description="Bank, UPI and cash payments recorded by the team wait here until a manager checks them against the bank. To record one, open the contact and tap Payment."
+        action={
+          page > 1 ? undefined : (
+            <Link href="/contacts" className={buttonClass("outline", "sm")}>
+              Find a contact
+            </Link>
+          )
+        }
       />
     );
   } else if (tab === "due") {

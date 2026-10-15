@@ -1,7 +1,7 @@
 import "server-only";
-import { and, desc, eq, gt, ne } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, ne } from "drizzle-orm";
 import { db, type Tx } from "@/db";
-import { sessions, users } from "@/db/schema";
+import { passwordResets, sessions, users } from "@/db/schema";
 import { isTimeZone } from "@/lib/admin/validate";
 import { audit } from "@/lib/audit";
 import { hashPassword, verifyPassword } from "./password";
@@ -9,7 +9,7 @@ import { hashPassword, verifyPassword } from "./password";
 /**
  * The signed-in person's own account (/account): see their details, change their password and time zone, and
  * sign out their other sessions. Every function acts on `userId` only, which callers take from the session; an
- * admin manages other people in Settings > Users (src/lib/admin/users.ts).
+ * admin manages other people on the Team page (src/lib/admin/users.ts).
  */
 
 /** Shortest password a person may choose for themselves. */
@@ -53,6 +53,8 @@ export async function changeOwnPassword(
   const passwordHash = await hashPassword(next);
   const sessionsEnded = await tx.transaction(async (t) => {
     await t.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, userId));
+    // an emailed "forgot password" link must not undo this change (src/lib/auth/password-reset.ts)
+    await t.update(passwordResets).set({ usedAt: new Date() }).where(and(eq(passwordResets.userId, userId), isNull(passwordResets.usedAt)));
     const ended = await endOtherSessions(userId, keepSessionId, t);
     await audit({ table: "users", rowId: userId, action: "update", field: "password", newValue: "changed by the user", userId }, t);
     return ended;

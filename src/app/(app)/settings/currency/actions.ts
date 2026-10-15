@@ -1,6 +1,7 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { fail, num, ok, str, type ActionResult } from "@/lib/action";
+import { monthKeyLabel } from "@/lib/money/fx";
 import { editCurrency, type CurrencyEdit } from "@/lib/admin/currency";
 import { adminForAction, failFrom, NOT_ADMIN } from "../_lib/guard";
 
@@ -31,11 +32,11 @@ export async function toggleCurrencyAction(_prev: ActionResult, fd: FormData): P
 export async function setRateAction(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   const currency = str(fd, "currency") ?? "";
   const month = str(fd, "month") ?? "";
-  return run({ op: "setRate", currency, month, rate: num(fd, "rate") }, `${currency} rate for ${month} saved. Payments already saved keep their own rate.`);
+  return run({ op: "setRate", currency, month, rate: num(fd, "rate") }, `${currency} rate for ${monthKeyLabel(month)} saved. Payments already saved keep their own rate.`);
 }
 
 export async function deleteRateAction(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   const currency = str(fd, "currency") ?? "";
   const month = str(fd, "month") ?? "";
-  return run({ op: "deleteRate", currency, month }, `${currency} rate for ${month} deleted.`);
+  return run({ op: "deleteRate", currency, month }, `${currency} rate for ${monthKeyLabel(month)} deleted.`);
 }

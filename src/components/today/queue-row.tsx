@@ -5,6 +5,7 @@ import { AlarmClock, Check, Loader2, NotebookPen, ThumbsDown, ThumbsUp, X } from
 import { queueTaskAction, transferDecisionAction } from "@/app/(app)/today/actions";
 import { ContactQuickActions } from "@/components/contacts/quick-actions";
 import { Badge, GradeBadge, StageBadge } from "@/components/ui/badge";
+import { toast } from "@/components/ui/toast";
 import type { ActionResult } from "@/lib/action";
 import { SNOOZE_OPTIONS } from "@/lib/today/rules";
 import { cn } from "@/lib/utils";
@@ -59,6 +60,10 @@ export function QueueRowCard({
         setHidden(false);
         setSnoozing(false);
         setError(r?.error ?? "Something went wrong");
+      } else {
+        // the row is gone: say what happened to it
+        const who = c?.name ?? "the contact";
+        toast(r.message ? `${r.message}: ${who}` : `Saved: ${who}`);
       }
     });
   }
@@ -72,8 +77,9 @@ export function QueueRowCard({
   }
 
   const tone = row.band === "abandoned" ? "danger" : row.band === "overdue" ? "warning" : "neutral";
-  const name = c?.name ?? "No contact";
-  const href = c ? `/contacts/${c.id}` : null;
+  // a task with no contact (e.g. "Prepare the Dubai price list") leads with its own title and opens /tasks
+  const name = c?.name ?? row.reason;
+  const href = c ? `/contacts/${c.id}` : row.typeLabel === "Task" || row.typeLabel === "Overdue task" ? "/tasks" : null;
   const logHref = c ? `/contacts/${c.id}/log?return=${encodeURIComponent(returnTo)}` : null;
 
   return (
@@ -114,7 +120,7 @@ export function QueueRowCard({
       </div>
 
       <div className="mt-2.5 space-y-1 sm:pl-11">
-        <p className="text-sm font-medium leading-snug">{row.reason}</p>
+        {c && <p className="text-sm font-medium leading-snug">{row.reason}</p>}
         {row.context.length > 0 && <p className="text-xs leading-relaxed text-muted">{row.context.join(" · ")}</p>}
         {row.alsoReasons.map((r) => (
           <p key={r} className="text-xs leading-relaxed text-muted">

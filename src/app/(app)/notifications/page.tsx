@@ -46,6 +46,7 @@ const ICONS: Record<string, { icon: React.ComponentType<{ className?: string }>;
   unverified_payment: { icon: ShieldAlert, tone: "bg-warning/10 text-warning" },
   at_risk: { icon: TriangleAlert, tone: "bg-warning/10 text-warning" },
   follow_up_due: { icon: CalendarClock, tone: "bg-accent/10 text-accent" },
+  task_assigned: { icon: CalendarClock, tone: "bg-accent/10 text-accent" },
   next_rung: { icon: TrendingUp, tone: "bg-success/10 text-success" },
   new_advocate: { icon: HeartHandshake, tone: "bg-success/10 text-success" },
   vip_quiet: { icon: Crown, tone: "bg-warning/10 text-warning" },

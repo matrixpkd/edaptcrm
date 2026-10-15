@@ -12,6 +12,7 @@ import { canManageOrganisations, listOrganisations } from "@/lib/contacts/querie
 import { formatINR } from "@/lib/utils";
 import { createOrganisationAction } from "./actions";
 import { OrganisationForm } from "./org-form";
+import { isUuid } from "@/lib/utils";
 
 export const metadata = { title: "Organisations" };
 
@@ -42,6 +43,9 @@ export default async function OrganisationsPage({ searchParams }: { searchParams
   const page = Math.max(1, Number.parseInt(one(sp, "page") ?? "1", 10) || 1);
   const canManage = canManageOrganisations(user);
   const creating = canManage && one(sp, "new") === "1";
+  // "Not listed? Add an organisation" on a contact's Edit page: the new organisation is linked to them
+  const forRaw = one(sp, "for");
+  const forContactId = forRaw && isUuid(forRaw) ? forRaw : null;
   const result = await listOrganisations({ q, kind, page });
 
   return (
@@ -60,15 +64,23 @@ export default async function OrganisationsPage({ searchParams }: { searchParams
 
       {creating && (
         <Card>
-          <CardHeader title="New organisation" description="People are linked from their contact's Edit page." />
+          <CardHeader
+            title="New organisation"
+            description={
+              forContactId
+                ? "Saved and linked to the contact you were editing; you go straight back to them."
+                : "Link people from its page once it is saved."
+            }
+          />
           <CardBody>
             <OrganisationForm
               action={createOrganisationAction}
               values={{ name: "", kind: "company", city: "", state: "", country: "IN", phone: "", notes: "" }}
               kinds={KIND_OPTIONS}
               countries={countryOptions()}
-              submitLabel="Add organisation"
-              cancelHref="/organisations"
+              submitLabel={forContactId ? "Add and link" : "Add organisation"}
+              cancelHref={forContactId ? `/contacts/${forContactId}/edit` : "/organisations"}
+              forContactId={forContactId}
             />
           </CardBody>
         </Card>

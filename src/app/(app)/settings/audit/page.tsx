@@ -35,7 +35,7 @@ const ACTION_TONE: Record<string, "neutral" | "info" | "success" | "warning" | "
 function rowLink(r: AuditRow): string | null {
   if (!r.rowId) return null;
   if (r.tableName === "contacts" && isUuid(r.rowId)) return `/contacts/${r.rowId}`;
-  if (r.tableName === "users" && isUuid(r.rowId)) return `/settings/users/${r.rowId}`;
+  if (r.tableName === "users" && isUuid(r.rowId)) return `/team/${r.rowId}`;
   if (r.tableName === "products" && isUuid(r.rowId)) return `/settings/products/${r.rowId}`;
   if (r.tableName === "organisations" && isUuid(r.rowId)) return `/organisations/${r.rowId}`;
   return null;

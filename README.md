@@ -5,7 +5,8 @@
 Edapt's attention allocator: with ~2,000 new paid customers a month across five salespeople, the CRM decides
 **who deserves a human, when, and with which offer**. The product spec lives in [`docs/SPEC.md`](docs/SPEC.md);
 the domain services are documented in [`docs/DOMAIN_API.md`](docs/DOMAIN_API.md); integrations in
-[`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
+[`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md); what was added beyond the spec, and why, in
+[`docs/CRM_GAP_ANALYSIS.md`](docs/CRM_GAP_ANALYSIS.md).
 
 ## What's inside
 
@@ -21,6 +22,11 @@ the domain services are documented in [`docs/DOMAIN_API.md`](docs/DOMAIN_API.md)
 | **Alerts** | Abandoned checkout, hot lead, new lead, untouched lead, follow-up due, due for next rung, at risk, instalment due, unverified payment, new advocate, VIP gone quiet, lead released; daily digest at 8:30 in each user's time zone and a Monday summary. |
 | **Cockpit** | Revenue by product family, conversion by channel, LTV by First Door, repeat rate, rung moves, forecast, at-risk pool, recovered checkouts, assisted vs self-serve, team view, Beyond-Umer share, language mix, referral leaderboard, data health, and the calibration report. |
 | **Roles** | Admin (everything, settings, imports, exports), Manager (all contacts, reassign, verify payments, team dashboard), Sales (own contacts + the unassigned pool), Support (all contacts, logs notes/issues without owning). |
+| **Tasks and agenda** | Reminders with a due date and time, an assignee (managers give tasks to anyone) and an optional contact, from /tasks, Today or a contact page; My tasks, Overdue, Upcoming, Team tasks, Done and a day/week agenda. Due tasks land on Today. |
+| **Pipeline** | A board of the eight lifecycle stages (grade, owner, next offer, LTV per card; filters by owner, grade and first door). Only Qualified, Lost (with a reason) and Reopen are set by hand, by drag or Move; the rest move by themselves. |
+| **Search** | One box in the sidebar (Ctrl/Cmd+K, or the search icon on phones) for contacts by name, phone or email, organisations and screens, within what the person may see. |
+| **Notes, templates, privacy** | Quick notes with one pinned note at the top of a contact; admin-defined WhatsApp templates ({first_name}, {offer}, {owner}) that pre-fill the chat; one-tap marketing consent; an admin can erase a person's data on request (money rows kept, anonymised). |
+| **Activity** | Managers see what the team did, newest first: calls and messages, leads added, payments, stage and owner changes, tasks done. |
 
 The five screens the team uses all day (Today, Quick Add, Contact page, Log interaction, Rate customer) are designed
 for phones first, and the app installs on a phone's home screen.
@@ -135,7 +141,7 @@ nightly recompute and the alert rules, timing each phase (about 2.5 minutes loca
    | `TAGMANGO_WEBHOOK_SECRET`, `LIBROMI_WEBHOOK_SECRET`, `PABBLY_WEBHOOK_SECRET` | long random strings, one per integration |
    | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET` | from Supabase (bucket `crm-files`) |
    | `ANTHROPIC_API_KEY` | optional — AI column mapping and row extraction in the import wizard |
-   | `RESEND_API_KEY`, `EMAIL_FROM` | optional — digests and alert emails (without it they are only logged) |
+   | `RESEND_API_KEY`, `EMAIL_FROM` | optional — digests, alert emails and "Forgot password?" links (those also need `APP_URL`); without it emails are only logged and an admin resets passwords under Team |
 
    `vercel.json` sets the function region (`regions`): keep it next to the Supabase project, `sin1` for Singapore
    (ap-southeast-1, the current project) or `bom1` for Mumbai (ap-south-1, the spec's choice for keeping data in India).

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { sql } from "drizzle-orm";
 import { AlertTriangle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -64,7 +65,10 @@ export default async function TeamsAssignmentPage() {
                     </div>
                     {list.length === 0 ? (
                       <p className="px-3 py-3 text-sm text-muted">
-                        {gets.length ? "No active salespeople: its new leads go to the pool." : "No active salespeople."}
+                        {gets.length ? "No active salespeople: its new leads go to the pool." : "No active salespeople."}{" "}
+                        <Link href="/team/new" className="font-medium text-foreground underline underline-offset-2">
+                          Add a salesperson
+                        </Link>
                       </p>
                     ) : (
                       <ol className="divide-y divide-border">
@@ -89,7 +93,7 @@ export default async function TeamsAssignmentPage() {
             </div>
             {noTeam.length > 0 && (
               <p className="text-xs text-muted">
-                Not in any team (they get no automatic leads): {noTeam.map((m) => m.name).join(", ")}. Set their team in Users.
+                Not in any team (they get no automatic leads): {noTeam.map((m) => m.name).join(", ")}. Set their team in Team.
               </p>
             )}
           </CardBody>

@@ -170,7 +170,8 @@ export async function computeActivityFactsBulk(contactIds: string[], tx: Tx = db
     select c.id,
       (select max(e.received_at) from enquiries e where e.contact_id = c.id) as last_enquiry_at,
       (select max(i.occurred_at) from interactions i where i.contact_id = c.id) as last_interaction_at,
-      exists (select 1 from interactions i where i.contact_id = c.id and i.user_id is not null) as has_outbound,
+      -- Contacted: a team member reached out; an internal note (the contact page's quick notes) is not contact
+      exists (select 1 from interactions i where i.contact_id = c.id and i.user_id is not null and i.type <> 'note') as has_outbound,
       (select max(i.occurred_at) from interactions i where i.contact_id = c.id
         and i.type in ('call', 'whatsapp', 'meeting', 'email')
         and (i.direction = 'in' or coalesce(i.outcome, '') not in ('no_answer', 'busy', 'wrong_number'))) as last_chat_at,

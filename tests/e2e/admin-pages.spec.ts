@@ -96,3 +96,18 @@ test("a scoring weight change shows at once in the worked-example preview (nothi
   expect(after).toBeLessThan(before);
   await expect(example).toContainText(`(spec ${before}`);
 });
+
+test("saving the JSON editors in Integrations works without a browser error", async ({ pageAs }) => {
+  const page = await pageAs("admin");
+  const errors = await watchErrors(page);
+  await page.goto("/settings/integrations");
+  // the matchers form has a "Restore defaults" submit button; a control named "reset" there used to hide
+  // form.reset(), so React threw "stateNode.reset is not a function" after every save
+  const matchers = page.locator("form").filter({ has: page.getByLabel("Matchers (JSON)") });
+  await matchers.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(matchers.getByText("Self-rating matchers saved.")).toBeVisible();
+  const paths = page.locator("form").filter({ has: page.getByLabel("Your field paths (JSON)") });
+  await paths.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(paths.getByText(/Field paths saved/)).toBeVisible();
+  expect(errors).toEqual([]);
+});

@@ -590,6 +590,9 @@ async function recordInstalmentPaymentTx(
       reference,
       proofUrl: input.proofUrl ?? null,
       status,
+      // the money row is recorded now, by whoever took the payment (the desk and the purchase page show "Recorded
+      // by" from it); who set up the schedule stays in the purchase's audit trail
+      createdById: actor?.id ?? null,
       verifiedById: verified ? (actor?.id ?? null) : null,
       verifiedAt: verified ? now : null,
       updatedAt: now,

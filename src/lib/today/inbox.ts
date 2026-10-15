@@ -105,6 +105,17 @@ export async function getNotification(userId: string, id: string, tx: Tx = db) {
       readAt: notifications.readAt,
       contactOwnerId: contacts.ownerId,
       contactMerged: sql<boolean>`${contacts.mergedIntoId} is not null`,
+      // money alerts carry their payment in the dedupe key ("unverified_payment:<payment id>",
+      // "instalment_due:<payment id>[:...]", "instalment_overdue:<payment id>"): the purchase it belongs to
+      purchaseId: sql<string | null>`(
+        select p.purchase_id::text from payments p
+        where ${notifications.type} in (${sql.join(
+          MONEY_ALERT_TYPES.map((t) => sql`${t}`),
+          sql`, `,
+        )})
+          and split_part(${notifications.dedupeKey}, ':', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          and p.id = split_part(${notifications.dedupeKey}, ':', 2)::uuid
+      )`,
     })
     .from(notifications)
     .leftJoin(contacts, eq(contacts.id, notifications.contactId))
@@ -113,11 +124,22 @@ export async function getNotification(userId: string, id: string, tx: Tx = db) {
   return rows[0] ?? null;
 }
 
+/** Alerts about one payment: they open its purchase, where it is verified or recorded. */
+export const MONEY_ALERT_TYPES = ["unverified_payment", "instalment_due"] as const;
+
 /**
- * Where a notification leads: its contact, else Today for task alerts, else the contacts list for
- * "contacts assigned to you", else the inbox itself.
+ * Where a notification leads: a money alert to its purchase (Verify / Record payment are there), else its contact,
+ * else Today for task alerts, else the contacts list for "contacts assigned to you", else the inbox itself.
  */
-export function notificationHref(n: { contactId: string | null; taskId: string | null; type: string }): string {
+export function notificationHref(n: {
+  contactId: string | null;
+  taskId: string | null;
+  type: string;
+  purchaseId?: string | null;
+}): string {
+  if (n.purchaseId && (MONEY_ALERT_TYPES as readonly string[]).includes(n.type)) return `/payments/${n.purchaseId}`;
+  // a task someone gave you (src/lib/tasks/service.ts): your task list shows it with who it is from
+  if (n.type === "task_assigned") return "/tasks";
   if (n.contactId) return `/contacts/${n.contactId}`;
   if (n.taskId) return "/today";
   if (n.type === "contacts_assigned") return "/contacts";

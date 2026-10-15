@@ -92,7 +92,13 @@ export function BandCounts({ counts, idPrefix = "" }: { counts: QueueCounts; idP
     { key: "abandoned", label: "Checkouts", value: counts.abandoned, href: `#${idPrefix}abandoned`, hot: true },
     { key: "overdue", label: "Overdue", value: counts.overdue, href: `#${idPrefix}overdue` },
     { key: "customers", label: "Customers", value: counts.customers, href: `#${idPrefix}next` },
-    { key: "leads", label: "Leads", value: counts.leads + counts.other, href: `#${idPrefix}next` },
+    {
+      key: "leads",
+      // rows without a contact are tasks someone set by hand (/tasks)
+      label: counts.other === 0 ? "Leads" : counts.leads === 0 ? "Tasks" : "Leads, tasks",
+      value: counts.leads + counts.other,
+      href: `#${idPrefix}next`,
+    },
   ];
   return (
     <ul className="grid grid-cols-4 gap-2" aria-label="Today by band">

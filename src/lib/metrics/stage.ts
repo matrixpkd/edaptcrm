@@ -15,7 +15,7 @@ export type StageFacts = {
   purchaseCount: number;
   /** referred contacts who have paid */
   referralCount: number;
-  /** any interaction logged by a team member */
+  /** any interaction other than an internal note logged by a team member */
   hasOutboundInteraction: boolean;
   /** max of enquiry, interaction, purchase and verified payment */
   lastActivityAt: Date | null;
@@ -33,7 +33,7 @@ const DAY_MS = 24 * 3600 * 1000;
  * 3. Paid and referred a paying customer -> Advocate; 2+ purchases -> Repeat; 1 purchase -> First purchase
  *    (checkout buyers jump from New straight to First purchase).
  * 4. Qualified stays Qualified (set by hand).
- * 5. A team member has logged an interaction -> Contacted; otherwise New.
+ * 5. A team member has logged an interaction (a note does not count) -> Contacted; otherwise New.
  */
 export function computeAutoStage(f: StageFacts, now: Date, dormantDays: number): Stage {
   if (f.currentStage === "lost") {

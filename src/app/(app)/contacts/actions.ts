@@ -3,7 +3,8 @@ import { revalidatePath } from "next/cache";
 import { bool, fail, list, ok, str, type ActionResult } from "@/lib/action";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
-import { reassignContacts } from "@/lib/contacts/assignment";
+import { reassignContacts, requestTransfer } from "@/lib/contacts/assignment";
+import { getContact } from "@/lib/contacts/internal";
 import { CONTACTS_PAGE_SIZE, createSavedView, deleteSavedView } from "@/lib/contacts/queries";
 import { isUuid } from "@/lib/utils";
 import { actionError } from "./_components/action-errors";
@@ -22,8 +23,8 @@ export async function bulkReassignAction(
   if (!to) return fail("Choose who gets these contacts", { toUserId: "Choose someone" });
   const toUserId = to === "pool" ? null : to;
   if (toUserId !== null && !isUuid(toUserId)) return fail("Choose someone from the list");
-  const reason = str(fd, "reason");
-  if (!reason) return fail("Give a reason for the reassignment", { reason: "Give a reason" });
+  // optional: an empty reason still leaves a clear line in the ownership log
+  const reason = str(fd, "reason") ?? (toUserId ? "Assigned in bulk by a manager" : "Unassigned to the pool by a manager");
   let changed = 0;
   try {
     changed = await reassignContacts(ids, toUserId, user, reason);
@@ -31,6 +32,7 @@ export async function bulkReassignAction(
     return actionError(e);
   }
   revalidatePath("/contacts");
+  revalidatePath("/today");
   return ok(
     { changed },
     changed === 0
@@ -61,4 +63,25 @@ export async function deleteViewAction(_prev: ActionResult, fd: FormData): Promi
   if (!id || !(await deleteSavedView(user, id))) return fail("You can only delete your own views");
   revalidatePath("/contacts");
   return ok(undefined, "View deleted");
+}
+
+/**
+ * Salesperson, Contacts list: one tap asks the manager for a lead in the pool (rule 5: salespeople request, they
+ * never take). Asking twice while a request is open changes nothing.
+ */
+export async function requestPoolLeadAction(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
+  const user = await requireUser();
+  if (!can(user, "contacts.requestTransfer")) return fail("Managers assign pool leads directly");
+  const contactId = str(fd, "contactId");
+  if (!contactId || !isUuid(contactId)) return fail("Contact not found");
+  let created = false;
+  try {
+    const c = await getContact(contactId);
+    if (c.ownerId) return fail(c.ownerId === user.id ? "This lead is already yours" : "Someone already owns this lead");
+    created = (await requestTransfer(contactId, user, "Asked for this pool lead from the contacts list")).created;
+  } catch (e) {
+    return actionError(e);
+  }
+  revalidatePath("/contacts");
+  return ok(undefined, created ? "Requested. Your manager will assign it." : "You already asked for this lead.");
 }

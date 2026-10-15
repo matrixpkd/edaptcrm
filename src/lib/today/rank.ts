@@ -5,7 +5,8 @@
  * Every row on Today is one or more open tasks for one contact. The ranking:
  *
  *   1. Abandoned checkouts sit at the very top: they are the hottest leads Edapt has.
- *   2. Overdue follow-ups (due before the start of the user's local today) come next, on top of the rest.
+ *   2. Overdue follow-ups and overdue tasks someone set by hand (due before the start of the user's local today)
+ *      come next, on top of the rest.
  *   3. Everything else is ranked by ONE combined score, `rankScore`, on the 0-100 scale of the Edapt Score:
  *        - a lead's rankScore is its Edapt Score (unscored = 0);
  *        - a customer's rankScore comes from their expected 90-day revenue (repeat probability x price of the
@@ -138,10 +139,13 @@ export function rankScore(
   return contact.edaptScore ?? 0;
 }
 
-/** Abandoned checkout > overdue follow-up > the rest. `dayStart` is 00:00 of the user's local today. */
+/** Task types with a real deadline set by a person: overdue ones sit just under abandoned checkouts. */
+export const OVERDUE_BAND_TYPES: TaskType[] = ["follow_up", "task"];
+
+/** Abandoned checkout > overdue follow-up or task > the rest. `dayStart` is 00:00 of the user's local today. */
 export function bandOf(task: Pick<QueueTask, "type" | "dueAt">, dayStart: Date): QueueBand {
   if (task.type === "abandoned_checkout") return "abandoned";
-  if (task.type === "follow_up" && task.dueAt.getTime() < dayStart.getTime()) return "overdue";
+  if (OVERDUE_BAND_TYPES.includes(task.type) && task.dueAt.getTime() < dayStart.getTime()) return "overdue";
   return "next";
 }
 
@@ -193,13 +197,13 @@ export function contextFor(
   if (task.synthetic) return out;
   const days = localDaysBetween(task.dueAt, now, timeZone);
   const plural = `${days} day${days === 1 ? "" : "s"}`;
-  // only a follow-up or an instalment has a real deadline; an alert's due time is when it was raised
+  // only a follow-up, a task or an instalment has a real deadline; an alert's due time is when it was raised
   if (days > 0) out.push(DEADLINE_TYPES.includes(task.type) ? `Overdue ${plural}` : `Open for ${plural}`);
   else if (task.dueAt.getTime() > now.getTime()) out.push(`Due ${localTime(task.dueAt, timeZone)}`);
   return out;
 }
 
-const DEADLINE_TYPES: TaskType[] = ["follow_up", "instalment_due"];
+const DEADLINE_TYPES: TaskType[] = ["follow_up", "instalment_due", "task"];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const AT_RISK_DAYS = /^At risk: \d+ days past/;
@@ -316,4 +320,5 @@ export const TASK_TYPE_LABELS: Record<TaskType, string> = {
   lead_released: "Lead released",
   transfer_request: "Transfer request",
   duplicate_review: "Possible duplicate",
+  task: "Task",
 };

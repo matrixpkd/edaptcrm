@@ -3,18 +3,22 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Activity,
   Bell,
   Building2,
   Copy,
   Gauge,
   ListChecks,
+  SquareCheckBig,
   LogOut,
   Menu,
   Settings,
+  SquareKanban,
   Upload,
   UserPlus,
   UserRound,
   Users,
+  UsersRound,
   Wallet,
   X,
 } from "lucide-react";
@@ -26,10 +30,12 @@ import { Avatar } from "@/components/ui/avatar";
 import { ROLE_LABELS } from "@/lib/auth/permissions";
 import { logoutAction } from "@/app/(auth)/actions";
 import { CallReturnWatcher } from "@/components/contacts/call-return-watcher";
+import { GlobalSearch } from "./global-search";
 
 const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   "list-checks": ListChecks,
   users: Users,
+  "users-round": UsersRound,
   "user-plus": UserPlus,
   wallet: Wallet,
   building: Building2,
@@ -37,6 +43,9 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   upload: Upload,
   copy: Copy,
   settings: Settings,
+  "list-todo": SquareCheckBig,
+  kanban: SquareKanban,
+  activity: Activity,
 };
 
 function isActive(pathname: string, href: string) {
@@ -66,6 +75,9 @@ export function AppShell({
           <Link href="/today" aria-label="Edapt CRM home">
             <Image src="/brand/edapt-logo.png" alt="Edapt" width={96} height={27} priority />
           </Link>
+        </div>
+        <div className="px-3 pb-1">
+          <GlobalSearch variant="sidebar" />
         </div>
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-2">
           {items.map((item) => {
@@ -129,6 +141,7 @@ export function AppShell({
           <Image src="/brand/edapt-logo.png" alt="Edapt" width={80} height={22} priority />
         </Link>
         <div className="flex items-center gap-1">
+          <GlobalSearch variant="icon" />
           <Link href="/notifications" className="relative rounded-lg p-2 hover:bg-surface-muted" aria-label="Alerts">
             <Bell className="h-5 w-5" />
             {unread > 0 && (

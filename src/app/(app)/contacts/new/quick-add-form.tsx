@@ -23,7 +23,7 @@ type Check =
 
 const MIN_DIGITS = 6;
 const FORM_ID = "quick-add-form";
-const MORE_FIELDS = ["email", "campaign", "language", "tags", "note", "referrerPhone", "ownerId"];
+const MORE_FIELDS = ["email", "campaign", "language", "tags", "note", "referrerPhone"];
 
 export function QuickAddForm({
   commonChannels,
@@ -33,6 +33,7 @@ export function QuickAddForm({
   languages,
   tags,
   owners,
+  autoAssignHint = null,
   canRequestTransfer,
   defaultPhone,
   cities = [],
@@ -45,6 +46,8 @@ export function QuickAddForm({
   tags: Option[];
   /** manager/admin only: who may own the new lead */
   owners: Option[] | null;
+  /** manager/admin: replaces the Assign to hint, e.g. when nobody is there to auto-assign to */
+  autoAssignHint?: string | null;
   canRequestTransfer: boolean;
   defaultPhone?: string;
   /** city search dropdown suggestions (free text still allowed) */
@@ -98,7 +101,9 @@ export function QuickAddForm({
   // a known number the user may open: the enquiry can be added to that record (rule 2: the owner stays)
   const attachTo = existing?.visible ? existing.id : null;
   const digits = phone.replace(/\D/g, "");
-  const showInvalid = fresh && !check.result.valid && (phoneBlurred || digits.length >= 10);
+  // too short to look up at all: say so once they move on, instead of leaving the "as you type" hint up
+  const tooShort = phoneBlurred && digits.length > 0 && digits.length < MIN_DIGITS;
+  const showInvalid = tooShort || (fresh && !check.result.valid && (phoneBlurred || digits.length >= 10));
   const fe = state && !state.ok ? (state.fieldErrors ?? {}) : {};
   const otherSelected = otherChannels.some((o) => o.value === channel);
 
@@ -144,7 +149,7 @@ export function QuickAddForm({
           className="h-12 text-lg tracking-wide"
         />
         <div id={`${ids.phone}-status`} aria-live="polite" className="min-h-5 text-sm">
-          {check.status === "idle" && !fe.phone && (
+          {check.status === "idle" && !fe.phone && !tooShort && (
             <span className="text-muted">Known numbers show up here as you type, before anything is saved.</span>
           )}
           {check.status === "checking" && !existing && (
@@ -272,6 +277,27 @@ export function QuickAddForm({
           </Field>
         </div>
 
+        {owners && !attachTo && (
+          <Field
+            label="Assign to"
+            htmlFor="qa-owner"
+            error={fe.ownerId}
+            hint={
+              autoAssignHint ?? "Auto-assign follows the team and round robin rules."
+            }
+          >
+            <Select id="qa-owner" name="ownerId" defaultValue="auto" className="h-12">
+              <option value="auto">Auto-assign (round robin)</option>
+              <option value="me">Me</option>
+              {owners.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
+
         {/* More */}
         <div className="rounded-xl border border-border">
           <button
@@ -347,24 +373,6 @@ export function QuickAddForm({
             >
               <Input id="qa-ref" name="referrerPhone" type="tel" inputMode="tel" autoComplete="off" />
             </Field>
-            {owners && (
-              <Field
-                label="Owner"
-                htmlFor="qa-owner"
-                error={fe.ownerId}
-                hint="Auto-assign follows the team and round robin rules."
-              >
-                <Select id="qa-owner" name="ownerId" defaultValue="auto">
-                  <option value="auto">Auto-assign</option>
-                  <option value="me">Me</option>
-                  {owners.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            )}
           </div>
         </div>
 

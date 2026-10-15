@@ -38,7 +38,8 @@ const ANSWERED_TASK_TYPES: TaskType[] = ["follow_up", "new_lead", "untouched_lea
  * Logs one interaction and returns its id (the existing id when externalRef was seen before: nothing changes).
  * - actor null = the system (e.g. an inbound WhatsApp reply from a webhook).
  * - Updates last_interaction_at / last_activity_at (never backwards).
- * - Completes the actor's open follow-up / new lead / untouched lead tasks for this contact.
+ * - Completes the actor's open follow-up / new lead / untouched lead tasks for this contact (a note leaves
+ *   follow-ups open: writing down "call back Friday" is not the call).
  * - nextFollowUpAt creates a "follow_up" task for the owner (the actor when they own it, or when the contact is
  *   in the pool and the actor is a salesperson; otherwise the pool), due then, with the reason shown on Today.
  * - Recomputes the contact.
@@ -119,7 +120,9 @@ export async function logInteraction(
         .where(eq(contacts.id, c.id));
     }
 
-    // what this touch answers on the actor's Today list (done before a new follow-up is raised)
+    // what this touch answers on the actor's Today list (done before a new follow-up is raised). A note is not a
+    // touch with the person, so it never answers a follow-up ("call back on Friday" stays on Today).
+    const answered = input.type === "note" ? ANSWERED_TASK_TYPES.filter((x) => x !== "follow_up") : ANSWERED_TASK_TYPES;
     if (actor) {
       await t
         .update(tasks)
@@ -129,7 +132,7 @@ export async function logInteraction(
             eq(tasks.contactId, c.id),
             eq(tasks.userId, actor.id),
             eq(tasks.status, "open"),
-            inArray(tasks.type, ANSWERED_TASK_TYPES),
+            inArray(tasks.type, answered),
           ),
         );
     }

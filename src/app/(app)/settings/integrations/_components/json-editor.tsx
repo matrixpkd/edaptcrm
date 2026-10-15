@@ -25,7 +25,7 @@ export function JsonEditor({
   label: string;
   hint?: React.ReactNode;
   rows?: number;
-  /** show "Restore defaults" (submits reset=1) */
+  /** show "Restore defaults" (submits restoreDefaults=1) */
   allowReset?: boolean;
   placeholder?: string;
 }) {
@@ -104,7 +104,8 @@ export function JsonEditor({
           <Button
             type="submit"
             variant="ghost"
-            name="reset"
+            // never name a form control "reset": it hides form.reset(), which React calls after every action
+            name="restoreDefaults"
             value="1"
             onClick={(e) => {
               if (!window.confirm("Replace the matchers with the defaults?")) e.preventDefault();

@@ -1,11 +1,12 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { fail, ok, str, type ActionResult } from "@/lib/action";
+import { bool, fail, ok, str, type ActionResult } from "@/lib/action";
 import { can, canEditContact } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import { reassignContacts, requestTransfer } from "@/lib/contacts/assignment";
-import { getContact } from "@/lib/contacts/internal";
+import { getContact, userName } from "@/lib/contacts/internal";
+import { assignReason } from "@/lib/contacts/rules";
 import { reopenContact, setManualStage } from "@/lib/contacts/lifecycle";
 import { mergeContacts, undoMerge } from "@/lib/contacts/merge";
 import { isUuid } from "@/lib/utils";
@@ -58,29 +59,33 @@ export async function reopenAction(_prev: ActionResult, fd: FormData): Promise<A
   return ok(undefined, "Reopened");
 }
 
-/** Manager/admin: hand the contact to someone else, or back to the pool. */
+/**
+ * Manager/admin: assign the contact to someone, or back to the pool (`toUserId=pool`, or the Unassign button's
+ * `unassign=1`). The reason is optional here: left empty, the ownership log says what kind of move it was.
+ */
 export async function reassignAction(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   const user = await requireUser();
-  if (!can(user, "contacts.reassign")) return fail("Only a manager or admin can reassign contacts");
+  if (!can(user, "contacts.reassign")) return fail("Only a manager or admin can assign contacts");
   const contactId = contactIdFrom(fd);
   if (!contactId) return fail("Contact not found");
-  const to = str(fd, "toUserId");
+  const to = bool(fd, "unassign") ? "pool" : str(fd, "toUserId");
+  if (!to) return fail("Choose who gets this contact", { toUserId: "Choose who gets this contact" });
   const toUserId = to === "pool" ? null : to;
   if (toUserId !== null && !isUuid(toUserId))
     return fail("Choose who gets this contact", { toUserId: "Choose who gets this contact" });
-  const reason = str(fd, "reason");
-  if (!reason) return fail("Give a reason for the reassignment", { reason: "Give a reason" });
   let changed = 0;
+  let toName: string | null = null;
   try {
-    changed = await reassignContacts([contactId], toUserId, user, reason);
+    const c = await getContact(contactId);
+    changed = await reassignContacts([contactId], toUserId, user, assignReason(str(fd, "reason"), c.ownerId, toUserId));
+    toName = toUserId ? await userName(toUserId) : null;
   } catch (e) {
     return actionError(e);
   }
   refresh(contactId);
-  return ok(
-    undefined,
-    changed ? (toUserId ? "Reassigned" : "Moved to the pool") : "Nothing changed: they already own it",
-  );
+  revalidatePath("/today");
+  if (!changed) return ok(undefined, toUserId ? `Already with ${toName ?? "them"}` : "Already in the pool");
+  return ok(undefined, toUserId ? `Assigned to ${toName ?? "them"}` : "Unassigned. Back in the pool.");
 }
 
 /** Salesperson: ask a manager for this contact (or to hand one of theirs to a colleague). */

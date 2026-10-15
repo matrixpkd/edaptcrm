@@ -94,6 +94,8 @@ export const TASK_TYPES = [
   "lead_released",
   "transfer_request",
   "duplicate_review",
+  /** a to-do or reminder someone created by hand (/tasks, contact page, Today): title in `reason`, notes in payload */
+  "task",
 ] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
 
@@ -151,6 +153,8 @@ export const users = pgTable(
     /** Round-robin cursor: the least recently assigned active salesperson gets the next lead. */
     lastAssignedAt: ts("last_assigned_at"),
     lastLoginAt: ts("last_login_at"),
+    /** An admin hid the "Getting started" checklist on Today (src/lib/admin/onboarding.ts). */
+    onboardingDismissedAt: ts("onboarding_dismissed_at"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -170,6 +174,27 @@ export const sessions = pgTable(
     createdAt: createdAt(),
   },
   (t) => [index("sessions_user_idx").on(t.userId)],
+);
+
+/**
+ * "Forgot password?" email links (src/lib/auth/password-reset.ts). Only the sha256 of the token is stored; a link
+ * works once and for one hour. Rows are pruned nightly a day after they expire.
+ */
+export const passwordResets = pgTable(
+  "password_resets",
+  {
+    /** sha256 of the emailed token */
+    id: text("id").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    expiresAt: ts("expires_at").notNull(),
+    usedAt: ts("used_at"),
+    /** the address the request came from (rate limit) */
+    ip: text("ip"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("password_resets_user_idx").on(t.userId, t.createdAt), index("password_resets_ip_idx").on(t.ip, t.createdAt)],
 );
 
 /**
@@ -312,6 +337,11 @@ export const contacts = pgTable(
     /** id of the import batch that created this contact, for one-click undo */
     importBatchId: uuid("import_batch_id"),
 
+    // --- erasure on request (DPDP / UAE PDPL; src/lib/contacts/privacy.ts) ---
+    /** personal data was erased: the row stays (anonymised) so money rows keep their contact */
+    erasedAt: ts("erased_at"),
+    erasedById: uuid("erased_by_id").references(() => users.id, { onDelete: "set null" }),
+
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -397,6 +427,8 @@ export const interactions = pgTable(
     occurredAt: ts("occurred_at").notNull().defaultNow(),
     /** idempotency key for interactions created by webhooks */
     externalRef: text("external_ref"),
+    /** set on the one note pinned to the top of the contact page (src/lib/contacts/notes.ts); null otherwise */
+    pinnedAt: ts("pinned_at"),
     createdAt: createdAt(),
   },
   (t) => [

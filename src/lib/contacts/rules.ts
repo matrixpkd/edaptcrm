@@ -282,3 +282,45 @@ export function placeSuggestionList(builtIn: readonly string[], used: readonly s
   }
   return [...out.values()].sort((a, b) => a.localeCompare(b)).slice(0, max);
 }
+
+// ---------------------------------------------------------------------------
+// Assignment reasons
+// ---------------------------------------------------------------------------
+
+/**
+ * The ownership-log reason for a manager's assign when they leave the reason box empty. Every owner change keeps a
+ * reason; the log also records who made it, so these say only what kind of move it was.
+ */
+export function assignReason(typed: string | null | undefined, fromOwnerId: string | null, toUserId: string | null): string {
+  const t = typed?.trim();
+  if (t) return t.slice(0, 500);
+  if (!toUserId) return "Unassigned to the pool by a manager";
+  if (!fromOwnerId) return "Assigned from the pool by a manager";
+  return "Reassigned by a manager";
+}
+
+/** "Kiran (Sales, Kerala)": who a contact can be assigned to, as shown in the assign pickers. */
+export function assigneeLabel(
+  m: { name: string; role: string; team: string | null },
+  teamLabel?: (key: string) => string,
+): string {
+  const role = m.role === "sales" ? "Sales" : m.role === "manager" ? "Manager" : m.role === "admin" ? "Admin" : m.role;
+  const team = m.team ? (teamLabel ? teamLabel(m.team) : m.team.charAt(0).toUpperCase() + m.team.slice(1)) : null;
+  return `${m.name} (${team ? `${role}, ${team}` : role})`;
+}
+
+/**
+ * What Auto-assign will do with a new lead, for the Quick Add hint: GCC numbers to one team, the rest to another,
+ * in turn; or the pool when auto-assign is off or there is no active salesperson yet (a brand-new CRM).
+ */
+export function autoAssignHint(
+  cfg: { autoAssign: boolean; gccTeam: string; defaultTeam: string },
+  teams: readonly { key: string; label: string }[],
+  hasActiveSales: boolean,
+): string {
+  if (!cfg.autoAssign) return "Auto-assign is off in Settings, so new leads wait in the pool until a manager assigns them.";
+  if (!hasActiveSales)
+    return "No salespeople yet, so Auto-assign leaves new leads in the pool. Add them on the Team page.";
+  const label = (k: string) => teams.find((t) => t.key === k)?.label ?? k;
+  return `Auto-assign: GCC numbers go to the ${label(cfg.gccTeam)} team, the rest to ${label(cfg.defaultTeam)}, in turn. A known number stays with its owner.`;
+}

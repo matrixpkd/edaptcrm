@@ -1,11 +1,15 @@
 import Link from "next/link";
-import { ChevronDown, PartyPopper, ShieldAlert, UserPlus, Users } from "lucide-react";
+import { ChevronDown, PartyPopper, Plus, ShieldAlert, Users } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { ButtonLink } from "@/components/ui/button";
+import { GettingStarted } from "@/components/today/getting-started";
+import { NextSteps, PaymentsDeskStrip, nextSteps } from "@/components/today/next-steps";
 import { BandCounts, QueueList } from "@/components/today/queue-list";
+import { getOnboarding, onboardingDismissed } from "@/lib/admin/onboarding";
 import { ROLE_LABELS, can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
+import { countPoolContacts } from "@/lib/contacts/queries";
+import { paymentsDesk } from "@/lib/today/desk";
 import { getTeamQueues, getTodayQueue, type TeamQueueGroup } from "@/lib/today/queue";
 import { greetingFor, validTimeZone } from "@/lib/today/time";
 import { cn } from "@/lib/utils";
@@ -46,12 +50,31 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
           </h1>
           <p className="mt-0.5 text-sm text-muted">{dateLine}</p>
         </div>
-        {isLead && <ViewToggle view={view} />}
+        <div className="flex shrink-0 items-center gap-2">
+          {/* a reminder for anything not on the list yet (beyond the spec: /tasks) */}
+          <Link
+            href="/tasks/new?return=%2Ftoday"
+            className="inline-flex h-9 items-center gap-1 rounded-lg border border-border bg-surface px-3 text-sm font-medium hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Add a task"
+          >
+            <Plus className="h-4 w-4" aria-hidden /> <span className="hidden sm:inline">Add task</span>
+          </Link>
+          {isLead && <ViewToggle view={view} />}
+        </div>
       </header>
+
+      {can(user, "settings.manage") && <AdminChecklist userId={user.id} />}
 
       {view === "team" ? <TeamView user={user} now={now} /> : <MyQueue user={user} now={now} />}
     </div>
   );
+}
+
+/** The admin's set-up checklist, until every step is done or they hide it. */
+async function AdminChecklist({ userId }: { userId: string }) {
+  const [onboarding, hidden] = await Promise.all([getOnboarding(), onboardingDismissed(userId)]);
+  if (hidden || onboarding.complete) return null;
+  return <GettingStarted onboarding={onboarding} />;
 }
 
 function ViewToggle({ view }: { view: "mine" | "team" }) {
@@ -78,37 +101,30 @@ function ViewToggle({ view }: { view: "mine" | "team" }) {
 type PageUser = Awaited<ReturnType<typeof requireUser>>;
 
 async function MyQueue({ user, now }: { user: PageUser; now: Date }) {
-  const queue = await getTodayQueue(user, now);
   const isLead = user.role === "admin" || user.role === "manager";
+  const [queue, desk] = await Promise.all([getTodayQueue(user, now), paymentsDesk(user, now)]);
+  const strip = desk ? <PaymentsDeskStrip desk={desk} /> : null;
 
   if (queue.total === 0) {
+    const poolCount = user.role === "support" ? 0 : await countPoolContacts(user);
+    const steps = nextSteps({
+      canCreate: can(user, "contacts.create"),
+      canImport: can(user, "import.run"),
+      isLead,
+      isSupport: user.role === "support",
+      poolCount,
+    });
     return (
-      <div className="rounded-2xl border border-border bg-surface px-6 py-14 text-center">
-        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-foreground text-white">
-          <PartyPopper className="h-7 w-7" aria-hidden />
-        </div>
-        <h2 className="text-lg font-semibold">All clear for today</h2>
-        <p className="mx-auto mt-1 max-w-sm text-sm text-muted">
-          Nothing is waiting for you. New leads, follow-ups and alerts land here the moment they are due.
-        </p>
-        <div className="mt-5 flex flex-wrap justify-center gap-2">
-          {can(user, "contacts.create") && (
-            <ButtonLink href="/contacts/new" variant="primary">
-              <UserPlus className="h-4 w-4" aria-hidden /> Add a lead
-            </ButtonLink>
-          )}
-          {isLead && (
-            <ButtonLink href="/today?view=team" variant="outline">
-              <Users className="h-4 w-4" aria-hidden /> See the team
-            </ButtonLink>
-          )}
-        </div>
-      </div>
+      <>
+        {strip}
+        <NextSteps steps={steps} deskWaiting={!!desk && desk.unverified + desk.overdueInstalments > 0} />
+      </>
     );
   }
 
   return (
     <>
+      {strip}
       <p className="mb-3 text-sm">
         <span className="font-semibold">
           {queue.total} {queue.total === 1 ? "action" : "actions"}

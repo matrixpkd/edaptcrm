@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Search, UserPlus } from "lucide-react";
+import { Download, Search, UserPlus } from "lucide-react";
 import { GradeBadge, StageBadge, STAGE_LABELS } from "@/components/ui/badge";
 import { ButtonLink, buttonClass } from "@/components/ui/button";
 import { EmptyState, PageHeader } from "@/components/ui/card";
@@ -15,7 +15,8 @@ import {
   activeFilterCount,
   canShareViews,
   filtersToQuery,
-  listAssignableUsers,
+  assigneeOptions,
+  countPoolContacts,
   listContactCountries,
   listContacts,
   listOwnerOptions,
@@ -32,6 +33,7 @@ import { activeItems, getSettings, labelFor } from "@/lib/settings";
 import { cn, formatINR, formatRelative } from "@/lib/utils";
 import { BULK_FORM_ID, BulkReassignBar } from "./_components/bulk-reassign";
 import { FilterForm } from "./_components/filter-form";
+import { OwnerCell } from "./_components/owner-cell";
 import { SavedViews } from "./_components/saved-views";
 
 export const metadata = { title: "Contacts" };
@@ -100,7 +102,7 @@ export default async function ContactsPage({ searchParams }: { searchParams: Pro
   const canReassign = can(user, "contacts.reassign");
   const tz = user.timezone || "Asia/Kolkata";
 
-  const [result, settings, views, countries, owners, assignable, productOptions] = await Promise.all([
+  const [result, settings, views, countries, owners, assignable, productOptions, poolCount] = await Promise.all([
     listContacts(user, filters, { page }),
     getSettings([
       "lists.channels",
@@ -113,9 +115,12 @@ export default async function ContactsPage({ searchParams }: { searchParams: Pro
     listSavedViews(user),
     listContactCountries(user),
     viewAll ? listOwnerOptions() : Promise.resolve([]),
-    canReassign ? listAssignableUsers() : Promise.resolve([]),
+    canReassign ? assigneeOptions() : Promise.resolve([]),
     listProductOptions(),
+    countPoolContacts(user),
   ]);
+  const people = assignable.map(({ value, label }) => ({ value, label }));
+  const ownerMode = canReassign ? "assign" : can(user, "contacts.requestTransfer") ? "request" : null;
   const opt = (key: "lists.channels" | "lists.firstDoors" | "lists.campaigns" | "lists.languages" | "lists.tags") =>
     activeItems(settings[key]).map((i) => ({ value: i.key, label: i.label }));
   const doors = settings["lists.firstDoors"];
@@ -262,9 +267,21 @@ export default async function ContactsPage({ searchParams }: { searchParams: Pro
         title="Contacts"
         description={viewAll ? "Everyone in the CRM." : "Your contacts and the unassigned pool."}
         actions={
-          <ButtonLink href="/contacts/new">
-            <UserPlus className="h-4 w-4" aria-hidden /> Quick Add
-          </ButtonLink>
+          <div className="flex flex-wrap gap-2">
+            {can(user, "export.run") && (
+              // a plain link: the browser downloads the CSV of exactly this filtered list (the export is audited)
+              <a
+                href={`/api/export/contacts${query ? `?${query}` : ""}`}
+                className={buttonClass("outline", "md")}
+                download
+              >
+                <Download className="h-4 w-4" aria-hidden /> Export CSV
+              </a>
+            )}
+            <ButtonLink href="/contacts/new">
+              <UserPlus className="h-4 w-4" aria-hidden /> Quick Add
+            </ButtonLink>
+          </div>
         }
       />
 
@@ -273,6 +290,10 @@ export default async function ContactsPage({ searchParams }: { searchParams: Pro
         currentQuery={query}
         canShare={canShareViews(user)}
         canDeleteShared={user.role === "admin"}
+        builtIn={[
+          ...(user.role !== "support" ? [{ query: "owner=mine", label: "My contacts", count: null }] : []),
+          { query: "owner=pool", label: "Pool", count: poolCount },
+        ]}
       />
 
       {/* keyed by the query so the fields show the URL's values after every navigation (e.g. Clear filters) */}
@@ -325,7 +346,25 @@ export default async function ContactsPage({ searchParams }: { searchParams: Pro
           {/* phones: cards */}
           <ul className="space-y-2 md:hidden">
             {result.rows.map((r) => (
-              <ContactCard key={r.id} r={r} doorLabel={labelFor(doors, r.firstDoor)} meId={user.id} />
+              <ContactCard
+                key={r.id}
+                r={r}
+                doorLabel={labelFor(doors, r.firstDoor)}
+                meId={user.id}
+                owner={
+                  ownerMode ? (
+                    <OwnerCell
+                      contactId={r.id}
+                      ownerId={r.ownerId}
+                      ownerName={r.ownerName}
+                      meId={user.id}
+                      mode={ownerMode}
+                      people={people}
+                      className="mt-2 border-t border-border pt-2 text-sm"
+                    />
+                  ) : null
+                }
+              />
             ))}
           </ul>
 
@@ -392,15 +431,14 @@ export default async function ContactsPage({ searchParams }: { searchParams: Pro
                         </div>
                       </Td>
                       <Td className="text-sm">
-                        {r.ownerName ? (
-                          r.ownerId === user.id ? (
-                            "You"
-                          ) : (
-                            r.ownerName
-                          )
-                        ) : (
-                          <span className="text-muted">Pool</span>
-                        )}
+                        <OwnerCell
+                          contactId={r.id}
+                          ownerId={r.ownerId}
+                          ownerName={r.ownerName}
+                          meId={user.id}
+                          mode={ownerMode}
+                          people={people}
+                        />
                       </Td>
                       <Td className="tabular text-right font-medium">{formatINR(r.ltvInr)}</Td>
                       <Td className="hidden max-w-56 xl:table-cell">
@@ -424,7 +462,7 @@ export default async function ContactsPage({ searchParams }: { searchParams: Pro
                 </tbody>
               </Table>
             </div>
-            {canReassign && <BulkReassignBar people={assignable.map((p) => ({ value: p.id, label: p.name }))} />}
+            {canReassign && <BulkReassignBar people={people} />}
           </div>
         </>
       )}
@@ -454,7 +492,18 @@ export default async function ContactsPage({ searchParams }: { searchParams: Pro
   );
 }
 
-function ContactCard({ r, doorLabel, meId }: { r: ContactListRow; doorLabel: string; meId: string }) {
+function ContactCard({
+  r,
+  doorLabel,
+  meId,
+  owner,
+}: {
+  r: ContactListRow;
+  doorLabel: string;
+  meId: string;
+  /** the owner with Assign (managers) or Request (sales, pool leads) */
+  owner: React.ReactNode;
+}) {
   return (
     <li className="rounded-xl border border-border bg-surface p-3">
       <div className="flex items-start gap-3">
@@ -474,13 +523,18 @@ function ContactCard({ r, doorLabel, meId }: { r: ContactListRow; doorLabel: str
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
         <StageBadge stage={r.stage} />
         {r.atRisk && <span className="font-medium text-danger">At risk</span>}
-        <span className="text-muted">{r.ownerName ? (r.ownerId === meId ? "You" : r.ownerName) : "Pool"}</span>
-        <span className="text-muted">·</span>
+        {!owner && (
+          <>
+            <span className="text-muted">{r.ownerName ? (r.ownerId === meId ? "You" : r.ownerName) : "Pool"}</span>
+            <span className="text-muted">·</span>
+          </>
+        )}
         <span className="tabular font-medium">{formatINR(r.ltvInr)}</span>
         <span className="text-muted">·</span>
         <span className="text-muted">{r.lastActivityAt ? formatRelative(r.lastActivityAt) : doorLabel}</span>
       </div>
       {r.nextOffer && <p className="mt-1.5 truncate text-xs text-foreground/80">Next: {r.nextOffer}</p>}
+      {owner}
     </li>
   );
 }

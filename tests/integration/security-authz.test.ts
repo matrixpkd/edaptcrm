@@ -27,6 +27,9 @@ type U = { id: string; name: string; email: string; role: Role; team: string | n
 const session = vi.hoisted(() => ({ user: null as null | U }));
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
+// the one-time toast message a redirecting action leaves in a cookie (no request scope here)
+const flash = vi.hoisted(() => vi.fn(async (_message: string) => {}));
+vi.mock("@/lib/flash", () => ({ flash }));
 vi.mock("next/navigation", () => ({
   redirect: (url: string) => {
     throw new Error(`NEXT_REDIRECT:${url}`);
@@ -171,6 +174,7 @@ describe("server actions refuse other people's ids and the wrong roles", () => {
     for (const c of [theirs, pool]) {
       const r = await run(() => logInteractionAction(c.id, null, form({ type: "support_issue", direction: "in", summary: "asked for the recording" })));
       expect(r).toMatchObject({ redirect: `/contacts/${c.id}` });
+      expect(flash).toHaveBeenLastCalledWith("Support issue logged.");
       const [after] = await db.select().from(contacts).where(eq(contacts.id, c.id));
       expect(after.ownerId).toBe(c.ownerId);
     }

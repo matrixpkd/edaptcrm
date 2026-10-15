@@ -9,6 +9,7 @@ import { applyRating } from "@/lib/contacts/profile";
 import type { RatingInput } from "@/lib/contacts/rules";
 import { safeReturnPath } from "@/lib/today/rules";
 import { rateAccess } from "@/lib/today/screens";
+import { flash } from "@/lib/flash";
 
 const MAX_NOTES = 2000;
 const INT_FIELDS = ["aiLevel", "umerLevel", "spendingBand", "gutStars"] as const;
@@ -45,5 +46,6 @@ export async function rateContactAction(contactId: string, _prev: ActionResult, 
   }
   revalidatePath(`/contacts/${access.contactId}`);
   revalidatePath("/today");
+  await flash("Rating saved. Scores updated.");
   redirect(safeReturnPath(str(fd, "return"), `/contacts/${access.contactId}`));
 }

@@ -107,12 +107,12 @@ const liveOpen = (): SQL => and(eq(tasks.status, "open"), or(isNull(tasks.contac
 
 /**
  * The ranking of ./rank.ts in SQL (used to ORDER the fetch so a safety limit only drops the tail):
- * band (abandoned checkout, follow-up due before `overdueBefore`, the rest), then the combined score
+ * band (abandoned checkout, follow-up or task due before `overdueBefore`, the rest), then the combined score
  * (customers: 20 x log10(1 + expected 90-day revenue) up to 100; otherwise the Edapt Score), then priority and
  * due date. Keep in step with rankScore() / compareRanked() in ./rank.ts.
  */
 function rankOrder(overdueBefore: Date): SQL[] {
-  const band = sql`case when ${tasks.type} = 'abandoned_checkout' then 0 when ${tasks.type} = 'follow_up' and ${tasks.dueAt} < ${overdueBefore.toISOString()}::timestamptz then 1 else 2 end`;
+  const band = sql`case when ${tasks.type} = 'abandoned_checkout' then 0 when ${tasks.type} in ('follow_up', 'task') and ${tasks.dueAt} < ${overdueBefore.toISOString()}::timestamptz then 1 else 2 end`;
   // float8, not numeric: log() of a numeric is computed to full precision and made this sort ~10x slower
   // (docs/PERFORMANCE.md); rank.ts uses a JS double for the same score anyway
   const score = sql`case when coalesce(${contacts.purchaseCount}, 0) > 0 and ${contacts.expected90dInr} is not null then least(100, 20 * log(1 + greatest(${contacts.expected90dInr}, 0)::float8)) else coalesce(${contacts.edaptScore}, 0) end`;
@@ -252,6 +252,14 @@ async function loadNewLeads(ownerIds: string[], now: Date, windowHours: number, 
         sql`not exists (
           select 1 from interactions i
           where i.contact_id = ${contacts.id} and i.user_id = ${contacts.ownerId} and i.occurred_at >= ${contacts.ownerAssignedAt}
+        )`,
+        // snoozed: an open task of theirs on this contact moved to a later day takes the person off Today until
+        // then (otherwise Snooze on an abandoned checkout would bring the same person straight back as a new lead)
+        sql`not exists (
+          select 1 from tasks st
+          where st.contact_id = ${contacts.id} and st.status = 'open'
+            and (st.user_id = ${contacts.ownerId} or st.user_id is null)
+            and st.due_at > ${now.toISOString()}::timestamptz
         )`,
       ),
     )

@@ -9,13 +9,17 @@ import {
   History,
   ListChecks,
   MapPin,
+  MessageSquareText,
   Package,
   PlugZap,
   Sparkles,
   UsersRound,
   Waypoints,
 } from "lucide-react";
+import { GettingStarted } from "@/components/today/getting-started";
 import { PageHeader } from "@/components/ui/card";
+import { getOnboarding, onboardingDismissed } from "@/lib/admin/onboarding";
+import { onboardingVisibilityAction } from "../today/actions";
 import { db } from "@/db";
 import { products, settings as settingsTable, users } from "@/db/schema";
 import { requireUser } from "@/lib/auth/session";
@@ -35,10 +39,10 @@ type Section = {
 };
 
 export default async function SettingsPage() {
-  await requireUser(["admin"]);
+  const me = await requireUser(["admin"]);
   const now = new Date();
-  const [s, [counts], saved] = await Promise.all([
-    getSettings(["teams", "assignment", "currency", "nbo.rules"]),
+  const [s, [counts], saved, onboarding, hiddenOnToday] = await Promise.all([
+    getSettings(["teams", "assignment", "currency", "nbo.rules", "templates.whatsapp"]),
     db.execute<{ activeUsers: number; inactiveUsers: number; activeProducts: number }>(sql`
       select
         (select count(*)::int from ${users} where ${users.active}) as "activeUsers",
@@ -46,6 +50,8 @@ export default async function SettingsPage() {
         (select count(*)::int from ${products} where ${products.active}) as "activeProducts"
     `),
     db.select({ key: settingsTable.key, updatedAt: settingsTable.updatedAt }).from(settingsTable),
+    getOnboarding(),
+    onboardingDismissed(me.id),
   ]);
   const changedAt = new Map(saved.map((r) => [r.key, r.updatedAt]));
   const lastChange = (keys: SettingKey[] = []) => {
@@ -60,9 +66,9 @@ export default async function SettingsPage() {
       group: "Team",
       items: [
         {
-          href: "/settings/users",
-          title: "Users",
-          description: "Add people, change roles and teams, reset passwords, and hand over a leaver's contacts.",
+          href: "/team",
+          title: "Users (Team)",
+          description: "Add people, change roles and teams, reset passwords, and hand over a leaver's contacts. Also under Team in the menu.",
           icon: UsersRound,
           meta: `${counts.activeUsers} active${counts.inactiveUsers ? `, ${counts.inactiveUsers} deactivated` : ""}`,
         },
@@ -146,6 +152,14 @@ export default async function SettingsPage() {
             "lists.outcomes",
           ],
         },
+        {
+          href: "/settings/templates",
+          title: "Message templates",
+          description: "Ready-made WhatsApp messages with {name} and {offer} filled in, offered by the WhatsApp button on a contact.",
+          icon: MessageSquareText,
+          meta: `${s["templates.whatsapp"].filter((t) => t.active !== false).length} in use`,
+          keys: ["templates.whatsapp"],
+        },
       ],
     },
     {
@@ -183,6 +197,19 @@ export default async function SettingsPage() {
   return (
     <div className="mx-auto max-w-5xl">
       <PageHeader title="Settings" description="Everything here changes how the CRM behaves, with no code change. Every save is logged." />
+      {!onboarding.complete && (
+        <div className="mb-8">
+          <GettingStarted onboarding={onboarding} dismissible={false} />
+          {hiddenOnToday && (
+            <form action={onboardingVisibilityAction} className="-mt-3">
+              <input type="hidden" name="show" value="1" />
+              <button type="submit" className="text-xs font-medium text-muted underline-offset-2 hover:text-foreground hover:underline">
+                Show this checklist on Today again
+              </button>
+            </form>
+          )}
+        </div>
+      )}
       <div className="flex flex-col gap-8">
         {sections.map((g) => (
           <section key={g.group} aria-labelledby={`group-${g.group}`}>

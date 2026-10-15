@@ -6,7 +6,8 @@ import { audit, auditDiff } from "@/lib/audit";
 import { can } from "@/lib/auth/permissions";
 import { normalizePhone } from "@/lib/phone";
 import { ContactConflictError, ContactForbiddenError, ContactNotFoundError, ContactValidationError } from "./errors";
-import { withTx, type Actor } from "./internal";
+import { getLiveContact, withTx, type Actor } from "./internal";
+import { updateContactProfile } from "./profile";
 import { cleanText, countryCode, isUuid } from "./rules";
 
 /**
@@ -119,5 +120,32 @@ export async function updateOrganisation(
       .returning();
     await auditDiff("organisations", id, before as unknown as Record<string, unknown>, o, actor.id, t);
     return row;
+  });
+}
+
+/**
+ * Links a person to an organisation from the organisation's page (they become a Business contact), or unlinks
+ * them (`orgId` null: back to Individual, since a business contact needs its organisation). Goes through
+ * updateContactProfile, so the edit rights, the audit trail and the recompute are the same as the Edit page's.
+ */
+export async function linkContactToOrganisation(
+  contactId: string,
+  orgId: string | null,
+  actor: Actor,
+  tx: Tx = db,
+): Promise<{ changed: boolean }> {
+  return withTx(tx, async (t) => {
+    const before = await getLiveContact(contactId, t);
+    if (orgId) {
+      if (!isUuid(orgId)) throw new ContactNotFoundError("Organisation");
+      const o = await t.select({ id: organisations.id }).from(organisations).where(eq(organisations.id, orgId)).limit(1);
+      if (!o[0]) throw new ContactNotFoundError("Organisation");
+      if (before.organisationId === orgId && before.type === "business") return { changed: false };
+      await updateContactProfile(contactId, { organisationId: orgId, type: "business" }, actor, t);
+      return { changed: true };
+    }
+    if (!before.organisationId) return { changed: false };
+    await updateContactProfile(contactId, { organisationId: null, type: "individual" }, actor, t);
+    return { changed: true };
   });
 }

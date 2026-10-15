@@ -6,7 +6,7 @@ import { currentSessionId, requireUser } from "@/lib/auth/session";
 
 /**
  * The signed-in person's own account. Every action acts on the session's user only: nobody can change someone
- * else's password or time zone from here (admins do that in Settings > Users).
+ * else's password or time zone from here (admins do that on the Team page).
  */
 
 function failure(e: unknown, what: string): ActionResult<never> {

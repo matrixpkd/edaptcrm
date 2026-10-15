@@ -277,3 +277,17 @@ rendering.
   budget; `unratedCondition()` is shared with the contacts filter and the export, so it was left alone.
 - **Alerts in a new month** send about 2,900 statements, because tasks and notifications are written alert by alert.
   That takes 3.5 s locally and is fine at 15-minute and nightly cadences.
+
+## Beyond-the-spec screens at 50,000 contacts
+
+Measured on the scale database (`npm run db:seed:scale`), median of three warm runs, October 2026. All within the
+300 ms interactive budget without new indexes.
+
+| Query | Time |
+| --- | --- |
+| Pipeline board, admin (8 grouped counts + top 25 cards per column, `src/lib/pipeline/board.ts`) | 142 ms |
+| Pipeline board, salesperson (own + pool) | 58 ms |
+| Activity feed, everything (seven newest-first arms, `src/lib/activity/feed.ts`) | 207 ms (each arm 9–42 ms) |
+| Activity feed, one person | 91 ms |
+| Global search, name / phone digits (`src/lib/search/global.ts`) | 3–5 ms |
+| Team tasks / My tasks / tab counts / week agenda (`src/lib/tasks/service.ts`) | 64 / 25 / 55 / 19 ms |

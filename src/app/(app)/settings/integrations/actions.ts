@@ -58,13 +58,14 @@ export async function saveFieldPathsAction(_prev: ActionResult<string>, fd: Form
   return ok(JSON.stringify(v.value, null, 2), "Field paths saved. New events use them; reprocess failed ones to apply them.");
 }
 
-/** Saves `integrations.selfRatings`; `reset` restores the defaults. */
+/** Saves `integrations.selfRatings`; `restoreDefaults` puts the defaults back. */
 export async function saveSelfRatingsAction(_prev: ActionResult<string>, fd: FormData): Promise<ActionResult<string>> {
   const user = await admin();
   if (!user) return fail("Only an admin can change integrations.");
   const doors = await getSetting("lists.firstDoors");
   let value: unknown;
-  if (str(fd, "reset")) {
+  const restore = !!str(fd, "restoreDefaults");
+  if (restore) {
     value = DEFAULT_SELF_RATING_CONFIG;
   } else {
     const parsed = parseJson(str(fd, "json"));
@@ -74,7 +75,7 @@ export async function saveSelfRatingsAction(_prev: ActionResult<string>, fd: For
   const v = validateSelfRatingConfig(value, doors);
   if (!v.ok) return fail(v.error);
   await saveSetting("integrations.selfRatings", v.value, user.id);
-  return ok(JSON.stringify(v.value, null, 2), str(fd, "reset") ? "Self-rating matchers reset to the defaults." : "Self-rating matchers saved.");
+  return ok(JSON.stringify(v.value, null, 2), restore ? "Self-rating matchers reset to the defaults." : "Self-rating matchers saved.");
 }
 
 /** Saves `integrations.options`. */

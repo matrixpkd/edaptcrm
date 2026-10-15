@@ -454,7 +454,13 @@ export function TeamSection({ rows, range, className }: { rows: TeamRow[]; range
     >
       {rows.length === 0 ? (
         <div className="p-4">
-          <SectionEmpty title="No salespeople yet">Add the team in Settings, then their numbers show up here.</SectionEmpty>
+          <SectionEmpty title="No salespeople yet">
+            Add your salespeople on the{" "}
+            <Link href="/team" className="font-medium text-foreground underline underline-offset-2">
+              Team page
+            </Link>
+            , then their numbers show up here.
+          </SectionEmpty>
         </div>
       ) : (
         <>
@@ -708,7 +714,7 @@ export function DataHealthSection({ data, className }: { data: DataHealth; class
       icon: Star,
       label: UNRATED_LABEL,
       value: count(data.unrated),
-      hint: data.unrated ? `${plural(data.unratedCustomers, "paying customer")} among them` : "Everyone has a rating",
+      hint: data.unrated ? `${plural(data.unratedCustomers, "paying customer")} among them` : data.contacts ? "Everyone has a rating" : "No contacts yet",
       href: "/contacts?unrated=1" as string | null,
       warn: data.unratedCustomers > 0,
     },

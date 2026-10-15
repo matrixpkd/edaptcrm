@@ -371,6 +371,8 @@ export function validateAssignment(input: unknown, teams: Team[]): Validated<Ass
     const gccCountries: string[] = [];
     for (const c of raw.map((x) => String(x ?? "").trim().toUpperCase()).filter(Boolean)) {
       if (!/^[A-Z]{2}$/.test(c)) throw new Invalid(`"${c}" is not a two-letter country code (such as AE)`, "gccCountries");
+      if (c === "UK") throw new Invalid('Use "GB" for the United Kingdom (phone numbers use GB)', "gccCountries");
+      if (!isKnownRegion(c)) throw new Invalid(`"${c}" is not a country code (such as AE or SA)`, "gccCountries");
       if (!gccCountries.includes(c)) gccCountries.push(c);
     }
     const keys = teams.map((t) => t.key);
@@ -576,6 +578,16 @@ export function validateNboRules(
 // ---------------------------------------------------------------------------
 // Users
 // ---------------------------------------------------------------------------
+
+/** A real ISO 3166 region code: the runtime knows its name (unknown codes come back unchanged or as "Unknown Region"). */
+export function isKnownRegion(code: string): boolean {
+  try {
+    const name = new Intl.DisplayNames(["en"], { type: "region" }).of(code);
+    return !!name && name !== code && name !== "Unknown Region";
+  } catch {
+    return false;
+  }
+}
 
 export function normalizeUserEmail(raw: unknown): string | null {
   const s = typeof raw === "string" ? raw.trim().toLowerCase() : "";

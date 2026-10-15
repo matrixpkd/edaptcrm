@@ -8,10 +8,18 @@ import { requireUser } from "@/lib/auth/session";
 import { ContactError } from "@/lib/contacts/errors";
 import { logFromSheet } from "@/lib/today/log";
 import { loadLogScreen } from "@/lib/today/screens";
-import { FollowUpError, resolveFollowUp, safeReturnPath, suggestedLostReason } from "@/lib/today/rules";
+import { FollowUpError, LOG_TYPES, resolveFollowUp, safeReturnPath, suggestedLostReason } from "@/lib/today/rules";
 import { validTimeZone } from "@/lib/today/time";
+import { flash } from "@/lib/flash";
 
 const MAX_NOTE = 2000;
+
+/** "Call logged. Follow-up set." for the toast on the page the user goes back to. */
+function loggedMessage(type: InteractionType, markLost: boolean, followUp: boolean): string {
+  const what = `${LOG_TYPES.find((t) => t.value === type)?.label ?? "Interaction"} logged`;
+  if (markLost) return `${what}. Marked as lost.`;
+  return followUp ? `${what}. Follow-up set.` : `${what}.`;
+}
 
 /**
  * Logs one interaction (and optionally marks the contact Lost) in one transaction, then goes back to where the
@@ -67,5 +75,6 @@ export async function logInteractionAction(contactId: string, _prev: ActionResul
 
   revalidatePath("/today");
   revalidatePath(`/contacts/${screen.contact.id}`);
+  await flash(loggedMessage(type as InteractionType, markLost, nextFollowUpAt !== null));
   redirect(safeReturnPath(str(fd, "return"), `/contacts/${screen.contact.id}`));
 }

@@ -1,6 +1,7 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { fail, list, ok, str, type ActionResult } from "@/lib/action";
+import { setOnboardingDismissed } from "@/lib/admin/onboarding";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import { resolveTransferRequest } from "@/lib/contacts/assignment";
@@ -46,9 +47,21 @@ export async function transferDecisionAction(_prev: ActionResult, fd: FormData):
     const r = await resolveTransferRequest(taskId, decision, user);
     revalidatePath("/today");
     revalidatePath("/contacts");
-    return ok(undefined, decision === "approve" ? (r.moved ? "Approved and moved" : "Approved") : "Declined");
+    return ok(
+      undefined,
+      decision === "approve" ? (r.moved ? "Transfer approved and moved" : "Transfer approved") : "Transfer declined",
+    );
   } catch (e) {
     if (e instanceof ContactError) return fail(e.message);
     throw e;
   }
+}
+
+/** Hides the admin's "Getting started" checklist on Today, or (show=1) brings it back. */
+export async function onboardingVisibilityAction(fd: FormData): Promise<void> {
+  const user = await requireUser();
+  if (!can(user, "settings.manage")) return;
+  await setOnboardingDismissed(user.id, str(fd, "show") !== "1");
+  revalidatePath("/today");
+  revalidatePath("/settings");
 }

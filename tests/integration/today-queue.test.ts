@@ -448,3 +448,26 @@ describe("getTodayQueue: review fixes", () => {
     expect(group?.queue.leftOut).toBe(N + 3 - 40);
   });
 });
+
+describe("getTodayQueue: snoozing a fresh lead's task", () => {
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  it("takes the person off Today until the snooze ends, instead of showing them again as a new lead", async () => {
+    const s = await makeUser({ role: "sales" });
+    const lead = await contact({ ownerId: s.id, name: "Checkout", ownerAssignedAt: new Date(NOW.getTime() - 2 * H) });
+    const t = await task(lead.id, s.id, { type: "abandoned_checkout", reason: "Started paying, did not finish" });
+    const before = await getTodayQueue(s, NOW);
+    expect(before.rows.map((r) => [r.contact?.name, r.primary.type])).toEqual([["Checkout", "abandoned_checkout"]]);
+
+    await actOnTasks([t], "snooze", s, { snooze: "tomorrow", now: NOW });
+    expect((await getTodayQueue(s, NOW)).rows).toEqual([]);
+
+    // tomorrow the task is due again, with the person
+    const tomorrow = new Date(NOW.getTime() + 26 * H);
+    const back = await getTodayQueue(s, tomorrow);
+    expect(back.rows.map((r) => r.contact?.name)).toEqual(["Checkout"]);
+    expect(back.rows[0].taskIds).toEqual([t]);
+  });
+});

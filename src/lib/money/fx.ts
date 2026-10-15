@@ -28,6 +28,15 @@ export function monthKeyOf(at: Date, timeZone: string = BOOKS_TIME_ZONE): string
   return `${year}-${month}`;
 }
 
+/** A "YYYY-MM" month key as people read it ("Oct 2026"); anything else comes back unchanged. */
+export function monthKeyLabel(key: string): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(key);
+  if (!m || Number(m[2]) < 1 || Number(m[2]) > 12) return key;
+  return new Intl.DateTimeFormat("en-IN", { month: "short", year: "numeric", timeZone: "UTC" }).format(
+    new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, 1)),
+  );
+}
+
 /**
  * INR per 1 unit of `currency` for a payment made at `at`.
  * - INR -> 1.

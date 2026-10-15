@@ -130,19 +130,7 @@ export function EditContactForm({
             />
           </div>
         </div>
-        <Field
-          label="Organisation"
-          htmlFor="ed-org"
-          error={fe.organisationId}
-          hint={
-            <>
-              For B2B. Not listed?{" "}
-              <Link href="/organisations?new=1" className="underline">
-                Add an organisation
-              </Link>
-            </>
-          }
-        >
+        <Field label="Organisation" htmlFor="ed-org" error={fe.organisationId}>
           <Select
             id="ed-org"
             name="organisationId"
@@ -150,6 +138,14 @@ export function EditContactForm({
             placeholder="None"
             options={organisations}
           />
+          {/* stays visible next to the error: a business contact needs one, and the list may still be empty */}
+          <p className="text-xs text-muted">
+            For B2B. {organisations.length ? "Not listed? " : "No organisations yet. "}
+            <Link href={`/organisations?new=1&for=${contactId}`} className="font-medium text-foreground underline">
+              Add an organisation
+            </Link>{" "}
+            (it is linked to this contact).
+          </p>
         </Field>
         <Field label="Company name" htmlFor="ed-company">
           <Input id="ed-company" name="companyName" defaultValue={values.companyName} />

@@ -10,10 +10,15 @@ test("Call and WhatsApp open the dialler and WhatsApp; coming back from a call o
   await page.goto(`/contacts/${contact.id}`);
 
   const call = page.getByRole("link", { name: "Call", exact: true });
-  const whatsapp = page.getByRole("link", { name: "WhatsApp", exact: true });
   await expect(call).toHaveAttribute("href", `tel:${contact.phoneE164}`);
+  // WhatsApp offers the message templates (Settings -> Message templates) and a plain chat
+  await page.getByRole("button", { name: "WhatsApp", exact: true }).tap();
+  const sheet = page.getByRole("dialog", { name: `WhatsApp ${contact.name}` });
+  const whatsapp = sheet.getByRole("link", { name: "Open the chat without a message" });
   await expect(whatsapp).toHaveAttribute("href", `https://wa.me/${contact.phoneE164.slice(1)}`);
   await expect(whatsapp).toHaveAttribute("target", "_blank");
+  await expect(sheet.getByRole("link", { name: /Introduce yourself/ })).toHaveAttribute("href", /^https:\/\/wa\.me\/\d+\?text=Hi%20/);
+  await sheet.getByRole("button", { name: "Close" }).tap();
 
   // the tap hands over to the dialler (the page stays put in a browser without one)...
   await page.evaluate(() => {

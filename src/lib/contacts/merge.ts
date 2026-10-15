@@ -280,6 +280,8 @@ export async function undoMerge(mergeId: string, actor: Actor, tx: Tx = db): Pro
     if (!winner || !loser) throw new ContactNotFoundError();
     if (loser.mergedIntoId !== winner.id) throw new ContactValidationError("The merged record has changed since; this merge cannot be undone");
     if (winner.mergedIntoId) throw new ContactValidationError("The surviving contact was merged again; undo that merge first");
+    // erasure on request wiped the snapshot this undo needs (src/lib/contacts/privacy.ts)
+    if (winner.erasedAt || loser.erasedAt) throw new ContactValidationError("This contact's data was erased, so the merge cannot be undone");
     const later = await t
       .select({ id: contactMerges.id })
       .from(contactMerges)

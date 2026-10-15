@@ -65,3 +65,18 @@ test("a new UAE 05X number becomes +971 and the saved lead is the salesperson's,
   expect(saved!.grade).toMatch(/^[ABCD]$/);
   expect(page.url()).toContain(saved!.id);
 });
+
+test("a number too short to look up says so once the person moves on, instead of the 'as you type' hint", async ({ pageAs }) => {
+  const page = await pageAs("sales");
+  await page.goto("/contacts/new");
+  const phone = page.getByRole("textbox", { name: /^Phone/ });
+  await phone.fill("12345");
+  // still typing: no complaint yet
+  await expect(page.getByText("Not a valid number yet")).toHaveCount(0);
+  await phone.blur();
+  await expect(page.getByText("Not a valid number yet. Add the country code for numbers outside India.")).toBeVisible();
+  await expect(page.getByText("Known numbers show up here as you type")).toHaveCount(0);
+  // typing again clears it until they leave the box
+  await phone.fill("123456");
+  await expect(page.getByText("Not a valid number yet")).toHaveCount(0);
+});

@@ -17,21 +17,25 @@ function input(fd: FormData): UserInput {
 }
 
 function touch(id?: string) {
-  revalidatePath("/settings/users");
+  revalidatePath("/team");
   revalidatePath("/settings/teams-assignment");
-  if (id) revalidatePath(`/settings/users/${id}`);
+  revalidatePath("/today");
+  if (id) revalidatePath(`/team/${id}`);
 }
 
 export async function createUserAction(
   _prev: ActionResult,
   fd: FormData,
-): Promise<ActionResult<{ id: string; name: string; tempPassword: string }>> {
+): Promise<ActionResult<{ id: string; name: string; email: string; phone: string | null; tempPassword: string }>> {
   const admin = await adminForAction();
   if (!admin) return fail(NOT_ADMIN);
   try {
     const { user, tempPassword } = await createUser(input(fd), admin);
     touch();
-    return ok({ id: user.id, name: user.name, tempPassword }, `${user.name} can now sign in with ${user.email}.`);
+    return ok(
+      { id: user.id, name: user.name, email: user.email, phone: user.phone, tempPassword },
+      `${user.name} can now sign in with ${user.email}.`,
+    );
   } catch (e) {
     return failFrom(e, "create user");
   }
@@ -82,7 +86,7 @@ export async function deactivateUserAction(_prev: ActionResult, fd: FormData): P
   touch(id);
   revalidatePath("/contacts");
   revalidatePath("/today");
-  redirect(`/settings/users/${id}?deactivated=${moved}`);
+  redirect(`/team/${id}?deactivated=${moved}`);
 }
 
 export async function reactivateUserAction(_prev: ActionResult, fd: FormData): Promise<ActionResult> {

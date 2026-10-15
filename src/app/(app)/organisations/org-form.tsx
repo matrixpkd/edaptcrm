@@ -25,6 +25,7 @@ export function OrganisationForm({
   countries,
   submitLabel,
   cancelHref,
+  forContactId,
 }: {
   action: (prev: ActionResult, fd: FormData) => Promise<ActionResult>;
   values: OrgFormValues;
@@ -32,6 +33,8 @@ export function OrganisationForm({
   countries: Option[];
   submitLabel: string;
   cancelHref: string;
+  /** create only: link this contact to the new organisation and go back to their Edit page */
+  forContactId?: string | null;
 }) {
   const [state, dispatch, pending] = useActionState(action, null);
   const fe = state && !state.ok ? (state.fieldErrors ?? {}) : {};
@@ -46,6 +49,7 @@ export function OrganisationForm({
       }}
     >
       {values.id && <input type="hidden" name="id" value={values.id} />}
+      {forContactId && <input type="hidden" name="for" value={forContactId} />}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Name" htmlFor="org-name" required error={fe.name} className="sm:col-span-2">
           <Input

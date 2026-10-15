@@ -14,7 +14,7 @@ export async function saveTeamsAction(_prev: ActionResult, fd: FormData): Promis
   try {
     const { changed } = await saveTeams(j.value, admin);
     revalidatePath(PAGE);
-    revalidatePath("/settings/users");
+    revalidatePath("/team");
     return ok(undefined, changed ? "Teams saved." : "No changes to save.");
   } catch (e) {
     return failFrom(e, "save teams");

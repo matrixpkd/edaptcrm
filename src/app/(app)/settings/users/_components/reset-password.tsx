@@ -2,15 +2,15 @@
 import { useState } from "react";
 import { KeyRound } from "lucide-react";
 import { FormSubmit, SettingsForm } from "../../_components/settings-form";
-import { TempPassword } from "../../_components/temp-password";
+import { TempPassword, type ShareDetails } from "../../_components/temp-password";
 import { resetPasswordAction } from "../actions";
 
 /** Resets someone's password and shows the new temporary one once. */
-export function ResetPassword({ id, name }: { id: string; name: string }) {
+export function ResetPassword({ id, name, share }: { id: string; name: string; share?: ShareDetails }) {
   const [password, setPassword] = useState<string | null>(null);
   return (
     <div className="flex flex-col gap-3">
-      {password && <TempPassword password={password} who={name} />}
+      {password && <TempPassword password={password} who={name} share={share ? { ...share, reset: true } : undefined} />}
       <SettingsForm<{ tempPassword: string }>
         action={resetPasswordAction}
         confirm={`Reset ${name}'s password? Their current password stops working and they are signed out everywhere.`}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { UnknownCurrencyError } from "@/lib/money/errors";
-import { currenciesWithRates, monthKeyOf, normalizeCurrency, rateFromTable, roundMoney, toInr } from "@/lib/money/fx";
+import { currenciesWithRates, monthKeyLabel, monthKeyOf, normalizeCurrency, rateFromTable, roundMoney, toInr } from "@/lib/money/fx";
 import { DEFAULT_SETTINGS } from "@/lib/settings/defaults";
 
 const rates = {
@@ -91,6 +91,15 @@ describe("toInr / roundMoney", () => {
   it("rejects non-finite amounts", () => {
     expect(() => roundMoney(Number.NaN)).toThrow();
     expect(() => roundMoney(Infinity)).toThrow();
+  });
+});
+
+describe("monthKeyLabel", () => {
+  it("shows a month key the way people read it, and leaves anything else alone", () => {
+    expect(monthKeyLabel("2026-10")).toBe("Oct 2026");
+    expect(monthKeyLabel("2027-01")).toBe("Jan 2027");
+    expect(monthKeyLabel("2026-13")).toBe("2026-13");
+    expect(monthKeyLabel("")).toBe("");
   });
 });
 

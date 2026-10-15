@@ -7,8 +7,10 @@ import { FormSubmit, SettingsForm, useFieldError } from "../../_components/setti
 import { TempPassword } from "../../_components/temp-password";
 import { createUserAction } from "../actions";
 
-type Created = { id: string; name: string; tempPassword: string };
+type Created = { id: string; name: string; email: string; phone: string | null; tempPassword: string };
 type Props = {
+  /** where teammates sign in, for the invite message */
+  loginUrl: string;
   roles: Option[];
   roleHelp: Record<string, string>;
   teams: (Option & { timezone: string })[];
@@ -20,13 +22,13 @@ export function NewUserForm(props: Props) {
   if (created) {
     return (
       <div className="flex flex-col gap-4">
-        <TempPassword password={created.tempPassword} who={created.name} />
+        <TempPassword password={created.tempPassword} who={created.name} share={{ email: created.email, phone: created.phone, loginUrl: props.loginUrl }} />
         <div className="flex flex-wrap gap-2">
-          <Link href={`/settings/users/${created.id}`} className={buttonClass("primary")}>
+          <Link href={`/team/${created.id}`} className={buttonClass("primary")}>
             Open {created.name}
           </Link>
-          <Link href="/settings/users" className={buttonClass("outline")}>
-            Back to users
+          <Link href="/team" className={buttonClass("outline")}>
+            Back to the team
           </Link>
           {/* a fresh form; the password above is gone for good */}
           <button type="button" className={buttonClass("ghost")} onClick={() => setCreated(null)}>
@@ -39,7 +41,7 @@ export function NewUserForm(props: Props) {
   return (
     <SettingsForm<Created>
       action={createUserAction}
-      aria-label="New user" inlineFieldErrors
+      aria-label="New teammate" inlineFieldErrors
       onSuccess={(s) => {
         if (s?.ok && s.data) setCreated(s.data);
       }}
@@ -49,7 +51,7 @@ export function NewUserForm(props: Props) {
   );
 }
 
-function Fields({ roles, roleHelp, teams, zones }: Props) {
+function Fields({ roles, roleHelp, teams, zones }: Omit<Props, "loginUrl">) {
   const [role, setRole] = useState("sales");
   const [team, setTeam] = useState(teams[0]?.value ?? "");
   const [zone, setZone] = useState(teams[0]?.timezone ?? "Asia/Kolkata");
@@ -93,8 +95,8 @@ function Fields({ roles, roleHelp, teams, zones }: Props) {
         <Input id="phone" name="phone" type="tel" autoComplete="off" inputMode="tel" aria-invalid={!!err.phone} />
       </Field>
       <div className="flex flex-wrap items-center gap-3 sm:col-span-2">
-        <FormSubmit pendingText="Adding…">Add user</FormSubmit>
-        <p className="text-xs text-muted">A strong temporary password is created and shown once.</p>
+        <FormSubmit pendingText="Adding…">Add teammate</FormSubmit>
+        <p className="text-xs text-muted">A strong temporary password is created and shown once, with a message to send them.</p>
       </div>
     </div>
   );

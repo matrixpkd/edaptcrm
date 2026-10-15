@@ -6,6 +6,8 @@ import { Building2, Pencil, Star, Wallet } from "lucide-react";
 import { Badge, GradeBadge, StageBadge } from "@/components/ui/badge";
 import { Tabs } from "@/components/ui/tabs";
 import { ContactQuickActions } from "@/components/contacts/quick-actions";
+import { ContactSideCards, ErasedContact, PinnedNote, loadContactExtras } from "@/components/contacts/contact-extras";
+import { templatesFor } from "@/lib/templates/whatsapp";
 import { ActiveTabIntoView } from "@/components/contacts/active-tab-into-view";
 import { FlashBanner } from "@/components/contacts/flash-banner";
 import { LadderCard } from "@/components/contacts/ladder";
@@ -21,7 +23,7 @@ import {
   getContactReferrals,
   getContactTimeline,
   getMergeHistory,
-  listAssignableUsers,
+  assigneeOptions,
   searchContactsForPicker,
 } from "@/lib/contacts/queries";
 import { nboProducts } from "@/lib/admin/nbo";
@@ -33,6 +35,7 @@ import { formatINR, isUuid } from "@/lib/utils";
 import { DetailsTab } from "./_components/details-tab";
 import { makeLabels } from "./_components/labels";
 import { ManageControls } from "./_components/manage-controls";
+import { OwnerLine } from "./_components/owner-line";
 import { MergeTab } from "./_components/merge-tab";
 import { PurchasesTab } from "./_components/purchases-tab";
 import { RatingsTab } from "./_components/ratings-tab";
@@ -81,6 +84,8 @@ export default async function ContactPage({
     notFound();
   }
   if (!canViewContact(user, c)) notFound();
+  // erased on request (src/lib/contacts/privacy.ts): no personal data left to show, only the kept money
+  if (c.erasedAt) return <ErasedContact contact={c} viewer={user} />;
 
   const tz = user.timezone || "Asia/Kolkata";
   const isOwner = c.ownerId !== null && c.ownerId === user.id;
@@ -115,6 +120,7 @@ export default async function ContactPage({
     "ladder.families",
     "nbo.rules",
     "thresholds",
+    "templates.whatsapp",
   ]);
   const labels = makeLabels({
     channels: settings["lists.channels"],
@@ -130,10 +136,12 @@ export default async function ContactPage({
   });
 
   const needsPeople = ownerMode === "reassign" || ownerMode === "handover";
+  // notes, tasks and the pinned note (beyond the spec), loaded alongside the rest
+  const extrasPromise = loadContactExtras(c.id, user);
   const [footprint, people, timeline, purchases, ratings, referrals, history, pickResults, otherRaw, catalogue] =
     await Promise.all([
       getContactFootprint(c.id),
-      needsPeople ? listAssignableUsers() : Promise.resolve([]),
+      needsPeople ? assigneeOptions() : Promise.resolve([]),
       tab === "timeline" ? getContactTimeline(c.id, { page: timelinePage }) : null,
       tab === "purchases" ? getContactPurchases(c.id) : null,
       tab === "ratings" ? getContactRatings(c.id) : null,
@@ -148,6 +156,7 @@ export default async function ContactPage({
     ]);
   // the other side of a merge must be live and visible to this manager
   const other = otherRaw && !otherRaw.mergedIntoId && canViewContact(user, otherRaw) ? otherRaw : null;
+  const extras = await extrasPromise;
   const otherFootprint = other ? await getContactFootprint(other.id) : null;
 
   const tabHref = (t: Tab) => `/contacts/${c.id}${t === "timeline" ? "" : `?tab=${t}`}`;
@@ -163,8 +172,8 @@ export default async function ContactPage({
   const referrerVisible = !!c.referrer && canViewContact(user, { ownerId: c.referrer.ownerId });
   const added = one(sp, "added");
   const people4Select = people
-    .filter((p) => p.id !== user.id || ownerMode === "reassign")
-    .map((p) => ({ value: p.id, label: p.name }));
+    .filter((p) => p.value !== user.id || ownerMode === "reassign")
+    .map((p) => ({ value: p.value, label: p.label }));
   const networkBeatsLtv = c.networkValueInr > c.ltvInr && c.networkValueInr > 0;
 
   return (
@@ -228,36 +237,46 @@ export default async function ContactPage({
               </Badge>
             ))}
           </div>
-          <p className="mt-2 text-sm">
-            <span className="text-muted">Owner </span>
-            <span className="font-medium">
-              {c.ownerName ? (isOwner ? `${c.ownerName} (you)` : c.ownerName) : "Pool"}
-            </span>
-            {c.ownerId && c.ownerActive === false && <span className="text-danger"> (inactive)</span>}
-            {c.firstOwnerName && c.firstOwnerId !== c.ownerId && (
+          <OwnerLine
+            ownerLabel={c.ownerName ? (isOwner ? `${c.ownerName} (you)` : c.ownerName) : "Unassigned (pool)"}
+            inPool={!c.ownerId}
+            ownerInactive={!!c.ownerId && c.ownerActive === false}
+            assign={canReassign ? { contactId: c.id, people: people4Select, currentOwnerId: c.ownerId, meId: user.id } : null}
+            extra={
               <>
-                <span className="text-muted"> · first owner </span>
-                <span className="font-medium">{c.firstOwnerName}</span>
+                {c.firstOwnerName && c.firstOwnerId !== c.ownerId && (
+                  <>
+                    <span className="text-muted"> · first owner </span>
+                    <span className="font-medium">{c.firstOwnerName}</span>
+                  </>
+                )}
+                {c.organisation && (
+                  <>
+                    <span className="text-muted"> · </span>
+                    <Link
+                      href={`/organisations/${c.organisation.id}`}
+                      className="inline-flex items-center gap-1 font-medium hover:underline"
+                    >
+                      <Building2 className="h-3.5 w-3.5" aria-hidden />
+                      {c.organisation.name}
+                    </Link>
+                  </>
+                )}
               </>
-            )}
-            {c.organisation && (
-              <>
-                <span className="text-muted"> · </span>
-                <Link
-                  href={`/organisations/${c.organisation.id}`}
-                  className="inline-flex items-center gap-1 font-medium hover:underline"
-                >
-                  <Building2 className="h-3.5 w-3.5" aria-hidden />
-                  {c.organisation.name}
-                </Link>
-              </>
-            )}
-          </p>
+            }
+          />
         </div>
+
+        <PinnedNote extras={extras} contactId={c.id} viewer={user} />
 
         <ScoreBars fit={c.fit} readiness={c.readiness} value={c.value} />
 
-        <ContactQuickActions contact={{ id: c.id, name: c.name, phoneE164: c.phoneE164 }} variant="full" />
+        <ContactQuickActions
+          contact={{ id: c.id, name: c.name, phoneE164: c.phoneE164 }}
+          variant="full"
+          /* {owner} is the person sending (Settings -> Message templates says so): the chat opens on their phone */
+          templates={templatesFor(settings["templates.whatsapp"], { name: c.name, offer: c.nextOffer, owner: user.name })}
+        />
         {(canRate || canRecord || canEdit) && (
           <div className="grid grid-cols-3 gap-2">
             {canRate && (
@@ -339,9 +358,11 @@ export default async function ContactPage({
               ownerMode={ownerMode}
               people={people4Select}
               currentOwnerId={c.ownerId}
+              meId={user.id}
             />
           </section>
         )}
+        <ContactSideCards extras={extras} contact={c} viewer={user} />
       </aside>
 
       {/* ---- tabs (phone: last; laptop: below the header) */}

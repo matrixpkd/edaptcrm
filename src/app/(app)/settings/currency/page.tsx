@@ -3,7 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Field, Input } from "@/components/ui/form";
 import { requireUser } from "@/lib/auth/session";
-import { monthKeyOf } from "@/lib/money/fx";
+import { monthKeyLabel, monthKeyOf } from "@/lib/money/fx";
 import { getSetting } from "@/lib/settings";
 import { FormSubmit, SettingsForm } from "../_components/settings-form";
 import { SettingsHeader } from "../_components/settings-header";
@@ -11,13 +11,7 @@ import { addCurrencyAction, deleteRateAction, setRateAction, toggleCurrencyActio
 
 export const metadata = { title: "Currency" };
 
-function monthLabel(key: string): string {
-  const [y, m] = key.split("-").map(Number);
-  if (!y || !m) return key;
-  return new Intl.DateTimeFormat("en-IN", { month: "short", year: "numeric", timeZone: "UTC" }).format(
-    new Date(Date.UTC(y, m - 1, 1)),
-  );
-}
+const monthLabel = monthKeyLabel;
 
 export default async function CurrencyPage() {
   await requireUser(["admin"]);

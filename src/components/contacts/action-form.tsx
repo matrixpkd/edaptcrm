@@ -2,6 +2,7 @@
 import { useActionState, useEffect, useRef } from "react";
 import type { ActionResult } from "@/lib/action";
 import { FormMessage } from "@/components/ui/form";
+import { toast } from "@/components/ui/toast";
 
 type FormAction = (prev: ActionResult, fd: FormData) => Promise<ActionResult>;
 
@@ -44,8 +45,9 @@ function restore(form: HTMLFormElement, snap: Snapshot) {
 
 /**
  * A small form bound to a server action through useActionState, showing the action's message under it.
- * Children are usually server-rendered fields plus a SubmitButton. When the action fails, the typed values are
- * restored; on success the form is cleared (React's default for form actions).
+ * Children are usually server-rendered fields plus a SubmitButton. When the action fails, the error shows under the
+ * form and the typed values are restored; on success the message shows as a toast and the form is cleared (React's
+ * default for form actions).
  */
 export function ActionForm({
   action,
@@ -65,7 +67,13 @@ export function ActionForm({
   confirm?: string;
   "aria-label"?: string;
 }) {
-  const [state, formAction] = useActionState(action, null);
+  // the success toast is raised as soon as the action answers, not in an effect: the form (or the list row holding
+  // it) is often gone after the refresh the action triggers, and an unmounted form would never announce anything
+  const [state, formAction] = useActionState(async (prev: ActionResult, fd: FormData) => {
+    const r = await action(prev, fd);
+    if (r?.ok && r.message) toast(r.message);
+    return r;
+  }, null);
   const seen = useRef<ActionResult>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const typed = useRef<Snapshot | null>(null);
@@ -91,7 +99,7 @@ export function ActionForm({
       }}
     >
       {children}
-      {state && (
+      {state && !state.ok && (
         <div className={messageClassName ?? "mt-2"}>
           <FormMessage state={state} />
         </div>

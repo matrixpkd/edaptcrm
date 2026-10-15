@@ -4,6 +4,8 @@ import { startTransition, useActionState, useCallback, useEffect, useState } fro
 import { Loader2 } from "lucide-react";
 import { FormMessage, Input, Select, type Option } from "@/components/ui/form";
 import { Button } from "@/components/ui/button";
+import { toast } from "@/components/ui/toast";
+import { cn } from "@/lib/utils";
 import { bulkReassignAction } from "../actions";
 
 export const BULK_FORM_ID = "bulk-reassign";
@@ -11,8 +13,9 @@ const BOX = `input[form="${BULK_FORM_ID}"][name="ids"]`;
 const ALL = "input[data-bulk-all]";
 
 /**
- * Manager/admin bulk reassign. The row checkboxes live in the server-rendered table and join this form through
- * the form="…" attribute; this bar counts them and appears once something is selected.
+ * Manager/admin bulk assign. The row checkboxes live in the server-rendered table and join this form through
+ * the form="…" attribute; this bar is always there (so managers know bulk assign exists) and wakes up once
+ * something is selected.
  */
 export function BulkReassignBar({ people }: { people: Option[] }) {
   const [count, setCount] = useState(0);
@@ -49,17 +52,13 @@ export function BulkReassignBar({ people }: { people: Option[] }) {
 
   useEffect(() => {
     if (!state?.ok) return;
+    if (state.message) toast(state.message);
     document.querySelector<HTMLFormElement>(`#${BULK_FORM_ID}`)?.reset();
     clear();
   }, [state, clear]);
 
   return (
     <div aria-live="polite">
-      {state && count === 0 && (
-        <div className="mt-3">
-          <FormMessage state={state} />
-        </div>
-      )}
       <form
         id={BULK_FORM_ID}
         onSubmit={(e) => {
@@ -69,44 +68,51 @@ export function BulkReassignBar({ people }: { people: Option[] }) {
           const fd = new FormData(e.currentTarget);
           startTransition(() => action(fd));
         }}
-        hidden={count === 0}
-        className="sticky bottom-4 z-20 mt-3 rounded-xl border border-border bg-surface p-3 shadow-lg"
-        aria-label="Reassign selected contacts"
+        className={cn(
+          "sticky bottom-4 z-20 mt-3 rounded-xl border bg-surface p-3",
+          count ? "border-foreground shadow-lg" : "border-dashed border-border",
+        )}
+        aria-label="Assign selected contacts"
       >
         <div className="flex flex-wrap items-center gap-2">
-          <p className="mr-auto text-sm font-semibold">
-            {count} selected
-            <Button variant="ghost" size="sm" className="ml-2" onClick={clear}>
-              Clear
-            </Button>
-          </p>
+          {count ? (
+            <p className="mr-auto text-sm font-semibold">
+              {count} selected
+              <Button variant="ghost" size="sm" className="ml-2" onClick={clear}>
+                Clear
+              </Button>
+            </p>
+          ) : (
+            <p className="w-full text-sm text-muted">
+              <span className="font-medium text-foreground">Bulk assign:</span> tick contacts in the list (or the box in
+              the header for the whole page), then choose who gets them.
+            </p>
+          )}
           <label htmlFor="bulk-to" className="sr-only">
             New owner
           </label>
-          <Select id="bulk-to" name="toUserId" required defaultValue="" className="w-48">
-            <option value="" disabled>
-              Reassign to…
-            </option>
-            <option value="pool">The pool</option>
-            {people.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
+          <div className="w-full sm:w-56">
+            <Select id="bulk-to" name="toUserId" required defaultValue="" disabled={!count}>
+              <option value="" disabled>
+                Assign to…
               </option>
-            ))}
-          </Select>
+              <option value="pool">Unassign (back to the pool)</option>
+              {people.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </Select>
+          </div>
           <label htmlFor="bulk-reason" className="sr-only">
             Reason
           </label>
-          <Input
-            id="bulk-reason"
-            name="reason"
-            required
-            placeholder="Reason, e.g. workload balance"
-            className="w-64 max-w-full"
-          />
-          <Button type="submit" disabled={pending} aria-busy={pending}>
+          <div className="w-full sm:w-64">
+            <Input id="bulk-reason" name="reason" placeholder="Reason (optional)" disabled={!count} />
+          </div>
+          <Button type="submit" disabled={pending || !count} aria-busy={pending}>
             {pending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
-            {pending ? "Reassigning…" : "Reassign"}
+            {pending ? "Assigning…" : count ? `Assign ${count}` : "Assign"}
           </Button>
         </div>
         {state && !state.ok && (

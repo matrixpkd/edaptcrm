@@ -34,7 +34,12 @@ export function toRowView(row: QueueRow): QueueRowView {
     taskIds: row.taskIds,
     band: row.band,
     kind: row.kind,
-    typeLabel: row.band === "overdue" ? "Overdue follow-up" : TASK_TYPE_LABELS[row.primary.type],
+    typeLabel:
+      row.band === "overdue"
+        ? row.primary.type === "task"
+          ? "Overdue task"
+          : "Overdue follow-up"
+        : TASK_TYPE_LABELS[row.primary.type],
     extraTypeLabels: row.types.filter((t) => t !== row.primary.type).map((t) => TASK_TYPE_LABELS[t]),
     reason: row.reason,
     alsoReasons: row.alsoReasons,

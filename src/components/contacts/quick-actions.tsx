@@ -1,6 +1,8 @@
 "use client";
 import Link from "next/link";
+import { useState } from "react";
 import { MessageCircle, NotebookPen, Phone } from "lucide-react";
+import { Sheet } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 
 const PENDING_CALL_KEY = "edapt:pendingCall";
@@ -12,6 +14,8 @@ type Props = {
   className?: string;
   /** optional WhatsApp greeting */
   whatsappText?: string;
+  /** message templates already filled for this contact (Settings -> Message templates): WhatsApp asks which one */
+  templates?: { id: string; name: string; text: string }[];
 };
 
 function digits(e164: string) {
@@ -47,9 +51,15 @@ export function clearPendingCall() {
 }
 
 /** One-tap Call, WhatsApp and Log buttons. Call opens the phone dialler. */
-export function ContactQuickActions({ contact, variant = "row", className, whatsappText }: Props) {
-  const wa = `https://wa.me/${digits(contact.phoneE164)}${whatsappText ? `?text=${encodeURIComponent(whatsappText)}` : ""}`;
+function waLink(e164: string, text?: string) {
+  return `https://wa.me/${digits(e164)}${text ? `?text=${encodeURIComponent(text)}` : ""}`;
+}
+
+export function ContactQuickActions({ contact, variant = "row", className, whatsappText, templates }: Props) {
+  const wa = waLink(contact.phoneE164, whatsappText);
+  const [choosing, setChoosing] = useState(false);
   if (variant === "full") {
+    const withTemplates = !!templates?.length;
     return (
       <div className={cn("grid grid-cols-3 gap-2", className)}>
         <a
@@ -59,14 +69,56 @@ export function ContactQuickActions({ contact, variant = "row", className, whats
         >
           <Phone className="h-4 w-4" /> Call
         </a>
-        <a
-          href={wa}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#1f9d55] text-sm font-semibold text-white active:scale-[0.98]"
-        >
-          <MessageCircle className="h-4 w-4" /> WhatsApp
-        </a>
+        {withTemplates ? (
+          <button
+            type="button"
+            onClick={() => setChoosing(true)}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#1f9d55] text-sm font-semibold text-white active:scale-[0.98]"
+          >
+            <MessageCircle className="h-4 w-4" /> WhatsApp
+          </button>
+        ) : (
+          <a
+            href={wa}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#1f9d55] text-sm font-semibold text-white active:scale-[0.98]"
+          >
+            <MessageCircle className="h-4 w-4" /> WhatsApp
+          </a>
+        )}
+        {withTemplates && (
+          <Sheet open={choosing} onClose={() => setChoosing(false)} title={`WhatsApp ${contact.name}`}>
+            <p className="mb-3 text-sm text-muted">Pick a message: WhatsApp opens with it typed in, and you send it yourself.</p>
+            <ul className="space-y-2">
+              {templates!.map((t) => (
+                <li key={t.id}>
+                  <a
+                    href={waLink(contact.phoneE164, t.text)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => setChoosing(false)}
+                    className="block rounded-xl border border-border p-3 hover:bg-surface-muted"
+                  >
+                    <span className="block text-sm font-semibold">{t.name}</span>
+                    <span className="mt-0.5 line-clamp-3 block text-sm text-muted">{t.text}</span>
+                  </a>
+                </li>
+              ))}
+              <li>
+                <a
+                  href={wa}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setChoosing(false)}
+                  className="block rounded-xl border border-dashed border-border p-3 text-sm font-medium hover:bg-surface-muted"
+                >
+                  Open the chat without a message
+                </a>
+              </li>
+            </ul>
+          </Sheet>
+        )}
         <Link
           href={`/contacts/${contact.id}/log`}
           className="flex h-12 items-center justify-center gap-2 rounded-xl border border-border bg-surface text-sm font-semibold active:scale-[0.98]"

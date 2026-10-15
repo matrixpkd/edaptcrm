@@ -11,12 +11,11 @@ import "server-only";
  * "Already sent" is recorded with markers (src/lib/alerts/shared.ts), claimed atomically before sending and given
  * back when the email fails, so overlapping runs never send twice and a failed send is retried.
  */
-import { and, count, desc, eq, gt, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
-import { contacts, notifications, payments, purchases, users, type Role } from "@/db/schema";
+import { contacts, notifications, users, type Role } from "@/db/schema";
 import { dailyDigestEmail, isDigestEmpty, type DailyDigestData, type DigestContactItem } from "@/emails/daily-digest";
 import { weeklySummaryEmail, type WeeklySummaryData } from "@/emails/weekly-summary";
-import { can } from "@/lib/auth/permissions";
 import {
   abandonedCheckoutsRecovered,
   assistedVsSelfServe,
@@ -30,6 +29,7 @@ import {
 } from "@/lib/dashboard/metrics";
 import { sendEmail } from "@/lib/email";
 import { getSetting, getSettings, labelFor } from "@/lib/settings";
+import { paymentsDesk } from "@/lib/today/desk";
 import { getTodayQueue } from "@/lib/today/queue";
 import { TASK_TYPE_LABELS } from "@/lib/today/rank";
 import { localTime, validTimeZone } from "@/lib/today/time";
@@ -149,43 +149,8 @@ export async function buildDailyDigest(
     detail: r.body,
   });
 
-  let paymentsBlock: DailyDigestData["payments"] = null;
-  if (can(user, "payments.verify")) {
-    const staleDays = Math.max(0, Number(s.thresholds.unverifiedPaymentDays) || 0);
-    const staleCutoff = new Date(now.getTime() - staleDays * DAY_MS).toISOString();
-    const [u] = await tx
-      .select({
-        n: count(),
-        inr: sql<number>`coalesce(sum(${payments.amountInr}), 0)`.mapWith(Number),
-        stale: sql<number>`count(*) filter (where coalesce(${payments.paidAt}, ${payments.createdAt}) <= ${staleCutoff}::timestamptz)`.mapWith(Number),
-      })
-      .from(payments)
-      .innerJoin(purchases, eq(purchases.id, payments.purchaseId))
-      .innerJoin(contacts, eq(contacts.id, payments.contactId))
-      .where(
-        and(
-          eq(payments.kind, "payment"),
-          eq(payments.status, "unverified"),
-          sql`${purchases.status} <> 'cancelled'`,
-          isNull(contacts.mergedIntoId),
-        ),
-      );
-    const [o] = await tx
-      .select({ n: count() })
-      .from(payments)
-      .innerJoin(purchases, eq(purchases.id, payments.purchaseId))
-      .innerJoin(contacts, eq(contacts.id, payments.contactId))
-      .where(
-        and(
-          eq(payments.kind, "payment"),
-          eq(payments.status, "scheduled"),
-          lt(payments.dueAt, now),
-          sql`${purchases.status} not in ('cancelled', 'refunded')`,
-          isNull(contacts.mergedIntoId),
-        ),
-      );
-    paymentsBlock = { unverified: u.n, unverifiedInr: u.inr, stale: u.stale, staleDays, overdueInstalments: o.n };
-  }
+  // the same counts the Today screen shows a manager (src/lib/today/desk.ts)
+  const paymentsBlock: DailyDigestData["payments"] = await paymentsDesk(user, now, tx);
 
   const channels = s["lists.channels"];
   const sendAt = digestSendTime(now, tz, s.digest.dailyHour, s.digest.dailyMinute);

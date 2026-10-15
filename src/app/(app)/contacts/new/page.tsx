@@ -3,9 +3,9 @@ import { redirect } from "next/navigation";
 import { PageHeader } from "@/components/ui/card";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
-import { channelUsage, listAssignableUsers } from "@/lib/contacts/queries";
+import { assigneeOptions, channelUsage } from "@/lib/contacts/queries";
 import { builtInCities } from "@/lib/contacts/places";
-import { isManualChannel, placeSuggestionList } from "@/lib/contacts/rules";
+import { autoAssignHint, isManualChannel, placeSuggestionList } from "@/lib/contacts/rules";
 import { activeItems, getSettings, type ListItem } from "@/lib/settings";
 import { QuickAddForm } from "./quick-add-form";
 
@@ -46,9 +46,18 @@ export default async function QuickAddPage({
 
   const isManager = user.role === "manager" || user.role === "admin";
   const [lists, usage, owners] = await Promise.all([
-    getSettings(["lists.channels", "lists.firstDoors", "lists.campaigns", "lists.languages", "lists.tags", "locations"]),
+    getSettings([
+      "lists.channels",
+      "lists.firstDoors",
+      "lists.campaigns",
+      "lists.languages",
+      "lists.tags",
+      "locations",
+      "assignment",
+      "teams",
+    ]),
     channelUsage(),
-    isManager ? listAssignableUsers() : Promise.resolve([]),
+    isManager ? assigneeOptions() : Promise.resolve([]),
   ]);
   // TagMango checkouts and imports are recorded by the system only, never typed in
   const { common, other } = rankChannels(
@@ -81,8 +90,15 @@ export default async function QuickAddPage({
           campaigns={opt(lists["lists.campaigns"])}
           languages={opt(lists["lists.languages"])}
           tags={opt(lists["lists.tags"])}
-          owners={
-            isManager ? owners.filter((o) => o.id !== user.id).map((o) => ({ value: o.id, label: o.name })) : null
+          owners={isManager ? owners.filter((o) => o.value !== user.id).map(({ value, label }) => ({ value, label })) : null}
+          autoAssignHint={
+            isManager
+              ? autoAssignHint(
+                  lists.assignment,
+                  lists.teams,
+                  owners.filter((o) => o.role === "sales").length > 0,
+                )
+              : null
           }
           canRequestTransfer={can(user, "contacts.requestTransfer")}
           defaultPhone={defaultPhone}

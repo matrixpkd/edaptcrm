@@ -19,6 +19,7 @@ export type Permission =
   | "contacts.edit"
   | "contacts.reassign"
   | "contacts.merge"
+  | "contacts.erase"
   | "contacts.setStage"
   | "contacts.requestTransfer"
   | "interactions.log"
@@ -41,6 +42,7 @@ const MATRIX: Record<Role, Permission[]> = {
     "contacts.edit",
     "contacts.reassign",
     "contacts.merge",
+    "contacts.erase",
     "contacts.setStage",
     "interactions.log",
     "ratings.edit",

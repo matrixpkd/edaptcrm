@@ -141,6 +141,10 @@ describe("thresholds, digest, lists, teams", () => {
       value: { gccCountries: ["AE", "SA", "QA"], autoAssign: false },
     });
     expect(validateAssignment({ gccCountries: "UAE", gccTeam: "dubai", defaultTeam: "kerala" }, D.teams)).toMatchObject({ ok: false, field: "gccCountries" });
+    // two letters is not enough: the code must be a real country, and the United Kingdom is GB in phone numbers
+    expect(validateAssignment({ gccCountries: "AE, XX", gccTeam: "dubai", defaultTeam: "kerala" }, D.teams)).toMatchObject({ ok: false, field: "gccCountries" });
+    expect(validateAssignment({ gccCountries: "AE, UK", gccTeam: "dubai", defaultTeam: "kerala" }, D.teams)).toMatchObject({ ok: false, field: "gccCountries", error: expect.stringContaining("GB") });
+    expect(validateAssignment({ gccCountries: "AE, OM, BH, KW", gccTeam: "dubai", defaultTeam: "kerala" }, D.teams)).toMatchObject({ ok: true });
     expect(validateAssignment({ gccCountries: "AE", gccTeam: "mars", defaultTeam: "kerala" }, D.teams)).toMatchObject({ ok: false, field: "gccTeam" });
   });
 });

@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-const PUBLIC_PREFIXES = ["/login", "/setup", "/api/webhooks", "/api/cron", "/api/health", "/offline.html", "/sw.js", "/manifest.webmanifest", "/brand/", "/icon", "/apple-touch-icon"];
+const PUBLIC_PREFIXES = ["/login", "/setup", "/forgot", "/reset", "/api/webhooks", "/api/cron", "/api/health", "/offline.html", "/sw.js", "/manifest.webmanifest", "/brand/", "/icon", "/apple-touch-icon"];
 
 /** Cheap gate: no session cookie -> /login. The real session check happens on the server. */
 export function middleware(req: NextRequest) {

@@ -16,6 +16,7 @@ import "server-only";
  */
 import { db, type Tx } from "@/db";
 import { pruneExpiredSessions, pruneLoginAttempts } from "@/lib/auth/login-limit";
+import { prunePasswordResets } from "@/lib/auth/password-reset";
 import { recomputeAll } from "@/lib/metrics/recompute";
 import { pruneWebhookEvents } from "@/lib/webhooks/retention";
 import { pruneAppErrors } from "@/lib/app-errors";
@@ -104,6 +105,7 @@ export function runNightlyJobs(now: Date = new Date()): Promise<JobReport> {
     ["pruneWebhookEvents", () => pruneWebhookEvents(now)],
     ["pruneLoginAttempts", () => pruneLoginAttempts(now)],
     ["pruneExpiredSessions", () => pruneExpiredSessions(now)],
+    ["prunePasswordResets", () => prunePasswordResets(now)],
     ["pruneAppErrors", () => pruneAppErrors(now)],
     ...frequentSteps(now).map(([name, run]): Step => [`catchUp.${name}`, run]),
   ]);

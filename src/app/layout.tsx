@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ServiceWorker } from "@/components/shell/service-worker";
+import { ClientErrorReporter } from "@/components/shell/client-error-reporter";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
@@ -27,6 +28,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         {children}
         <ServiceWorker />
+        <ClientErrorReporter />
       </body>
     </html>
   );

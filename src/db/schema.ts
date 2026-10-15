@@ -775,6 +775,32 @@ export const auditLog = pgTable(
   ],
 );
 
+/**
+ * Errors the app hit, on the server (pages, server actions, API routes: src/instrumentation.ts) and in people's
+ * browsers (/api/client-errors). Read in Settings -> Error log. Pruned nightly after 30 days.
+ */
+export const appErrors = pgTable(
+  "app_errors",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    /** server | client */
+    kind: text("kind").notNull(),
+    message: text("message").notNull(),
+    stack: text("stack"),
+    /** Next.js error digest (links a browser "Application error" to the server error) */
+    digest: text("digest"),
+    path: text("path"),
+    method: text("method"),
+    /** render | action | route | middleware | browser */
+    source: text("source"),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    userAgent: text("user_agent"),
+    ip: text("ip"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("app_errors_created_idx").on(t.createdAt), index("app_errors_ip_idx").on(t.ip, t.createdAt)],
+);
+
 /** Raw inbound webhook deliveries, for idempotency and debugging. */
 export const webhookEvents = pgTable(
   "webhook_events",

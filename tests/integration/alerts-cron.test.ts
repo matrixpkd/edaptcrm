@@ -80,6 +80,7 @@ describe("cron routes", () => {
       "pruneWebhookEvents",
       "pruneLoginAttempts",
       "pruneExpiredSessions",
+      "pruneAppErrors",
       // safety net when the 15-minute schedule (Supabase pg_cron) is missing: the frequent steps run once more
       "catchUp.abandonedCheckouts",
       "catchUp.releaseStaleLeads",

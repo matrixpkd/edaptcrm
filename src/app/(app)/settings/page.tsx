@@ -170,6 +170,12 @@ export default async function SettingsPage() {
           description: "Who changed what and when, with old and new values.",
           icon: History,
         },
+        {
+          href: "/settings/errors",
+          title: "Error log",
+          description: "Errors the CRM hit on the server or in someone's browser, with the screen they happened on.",
+          icon: History,
+        },
       ],
     },
   ];

@@ -1,10 +1,15 @@
 "use client";
+import { useEffect } from "react";
 import { RotateCcw } from "lucide-react";
+import { reportClientError } from "@/components/shell/client-error-reporter";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/card";
 
 /** Shown when the dashboard's numbers could not be loaded (e.g. the database was unreachable). */
-export default function DashboardError({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
+export default function DashboardError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+  useEffect(() => {
+    reportClientError({ message: error.message || "Dashboard error", stack: error.stack ?? null, digest: error.digest ?? null, source: "boundary" });
+  }, [error]);
   return (
     <div className="rounded-xl border border-border bg-surface">
       <EmptyState

@@ -13,10 +13,14 @@ function createClient() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not set");
   return postgres(url, {
-    // Supabase's transaction pooler (port 6543) does not support prepared statements.
+    // No prepared statements, so either Supabase pooler mode works. Use the SESSION pooler (port 5432): the
+    // transaction pooler (6543) stalls on pipelined queries, which this driver sends whenever several queries run
+    // at once (dashboard, server actions with parallel reads) — see README "Deploy".
     prepare: false,
     max: Number(process.env.DATABASE_POOL_MAX ?? 5),
     idle_timeout: 20,
+    // fail fast instead of hanging a request when the pooler cannot be reached
+    connect_timeout: 15,
   });
 }
 

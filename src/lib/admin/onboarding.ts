@@ -1,6 +1,6 @@
 import "server-only";
 import { and, count, eq, inArray, ne, sql } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { auditLog, importBatches, settings as settingsTable, users, webhookEvents } from "@/db/schema";
 import { getSettings } from "@/lib/settings";
 import { WEBHOOK_SOURCES } from "@/lib/webhooks/sources";
@@ -20,16 +20,16 @@ export async function getOnboardingFacts(tx: Tx = db): Promise<OnboardingFacts> 
       .groupBy(users.role, users.team),
     tx.select({ key: settingsTable.key }).from(settingsTable).where(inArray(settingsTable.key, ["teams", "assignment", "currency"])),
     // existence checks only: each stops at the first row (indexes on audit_log(table_name, row_id) and import status)
-    tx.execute<{ productsEdited: boolean; importsCommitted: number }>(sql`
+    queryRows<{ productsEdited: boolean; importsCommitted: number }>(sql`
       select
         exists (select 1 from ${auditLog} where ${auditLog.tableName} = 'products' and ${auditLog.userId} is not null) as "productsEdited",
         (select count(*)::int from ${importBatches} where ${importBatches.status} = 'committed') as "importsCommitted"
-    `),
+    `, tx),
     // one index probe per known source (webhook_events_source_idx) instead of a DISTINCT over every delivery
-    tx.execute<{ source: string }>(sql`
+    queryRows<{ source: string }>(sql`
       select s.source from unnest(${sql.raw(`array[${WEBHOOK_SOURCES.map((x) => `'${x}'`).join(",")}]`)}::text[]) as s(source)
       where exists (select 1 from ${webhookEvents} w where w.source = s.source)
-    `),
+    `, tx),
   ]);
   const salesByTeam: Record<string, number> = {};
   for (const p of people) if (p.role === "sales" && p.team) salesByTeam[p.team] = (salesByTeam[p.team] ?? 0) + Number(p.n);

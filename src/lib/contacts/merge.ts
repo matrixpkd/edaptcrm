@@ -1,7 +1,7 @@
 import "server-only";
 import { and, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { contactMerges, contacts, duplicateReviews, users, type Contact, type FieldSource } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { can } from "@/lib/auth/permissions";
@@ -160,14 +160,16 @@ export async function mergeContacts(
     // ---- re-point every child row, remembering exactly which rows moved
     const moved: Record<string, string[]> = {};
     for (const table of CHILD_TABLES) {
-      const rows = await t.execute<{ id: string }>(
+      const rows = await queryRows<{ id: string }>(
         sql`update ${sql.identifier(table)} set contact_id = ${winnerId} where contact_id = ${loserId} returning id`,
+        t,
       );
       moved[table] = rows.map((r) => r.id);
     }
-    const refRows = await t.execute<{ id: string }>(
+    const refRows = await queryRows<{ id: string }>(
       sql`update contacts set referred_by_id = ${winnerId}, updated_at = now()
           where referred_by_id = ${loserId} and id <> ${winnerId} and id <> ${loserId} returning id`,
+      t,
     );
     moved[MOVED_REFERRALS] = refRows.map((r) => r.id);
 

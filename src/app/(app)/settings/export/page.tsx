@@ -5,7 +5,7 @@ import { buttonClass } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Checkbox, Input, Select } from "@/components/ui/form";
 import { countryName, PAYMENT_MODE_LABELS, PURCHASE_STATUS_LABELS } from "@/components/contacts/labels";
-import { db } from "@/db";
+import { db, queryRows } from "@/db";
 import { PAYMENT_MODES, PURCHASE_SOURCES, PURCHASE_STATUSES, STAGES, contacts, purchases } from "@/db/schema";
 import { recentExports } from "@/lib/admin/export";
 import { requireUser } from "@/lib/auth/session";
@@ -37,7 +37,7 @@ export default async function ExportPage({ searchParams }: { searchParams: Promi
     getSettings(["lists.firstDoors", "lists.campaigns", "lists.channels", "lists.languages", "lists.tags", "ladder.families"]),
     listOwnerOptions(),
     listContactCountries(me),
-    db.execute<{ contacts: number; purchases: number }>(sql`
+    queryRows<{ contacts: number; purchases: number }>(sql`
       select (select count(*)::int from ${contacts} where merged_into_id is null) as contacts,
              (select count(*)::int from ${purchases}) as purchases
     `),

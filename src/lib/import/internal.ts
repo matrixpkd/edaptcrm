@@ -4,7 +4,7 @@ import "server-only";
  * batch counts. Not part of the public API.
  */
 import { eq, sql, type SQL } from "drizzle-orm";
-import { db, type Database, type Tx } from "@/db";
+import { db, queryRows, type Database, type Tx } from "@/db";
 import { importBatches, type ImportBatch, type ImportStatus } from "@/db/schema";
 import { can } from "@/lib/auth/permissions";
 import type { Role } from "@/db/schema";
@@ -130,9 +130,9 @@ export async function bulkUpdateRows(
  * `unresolved` is the conflicts still waiting for a decision; `toCommit` the rows commit will process.
  */
 export async function refreshCounts(batchId: string, t: Tx, extra: BatchCounts = {}): Promise<BatchCounts> {
-  const rows = await t.execute<{ match_result: string | null; resolution: string | null; n: number }>(sql`
+  const rows = await queryRows<{ match_result: string | null; resolution: string | null; n: number }>(sql`
     select match_result, resolution, count(*)::int as n from import_rows where batch_id = ${batchId} group by 1, 2
-  `);
+  `, t);
   const [b] = await t.select({ counts: importBatches.counts }).from(importBatches).where(eq(importBatches.id, batchId)).limit(1);
   const counts: BatchCounts = { ...((b?.counts ?? {}) as BatchCounts) };
   const c = { total: 0, new: 0, merge: 0, conflict: 0, invalid: 0, skip: 0, unresolved: 0, toCommit: 0 };

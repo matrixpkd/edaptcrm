@@ -10,25 +10,18 @@
 import "./env";
 import { rmSync } from "node:fs";
 import path from "node:path";
-import postgres from "postgres";
 
-// BENCH_PROFILE=1 counts the SQL statements of the commit phase (grouped by their first words). The client is
-// created here and handed to src/db through the same global its dev hot-reload cache uses.
+// BENCH_PROFILE=1 counts the SQL statements of the commit phase (grouped by their first words), through the query
+// log hook src/db reads when it is first loaded (it is imported dynamically below).
 const profile = new Map<string, number>();
 let profiling = false;
-(globalThis as unknown as { __edaptSql?: postgres.Sql }).__edaptSql = postgres(process.env.DATABASE_URL!, {
-  prepare: false,
-  max: 5,
-  ...(process.env.BENCH_PROFILE
-    ? {
-        debug: (_c: number, q: string) => {
-          if (!profiling) return;
-          const k = q.replace(/\s+/g, " ").replace(/\$\d+/g, "?").slice(0, 110);
-          profile.set(k, (profile.get(k) ?? 0) + 1);
-        },
-      }
-    : {}),
-});
+if (process.env.BENCH_PROFILE) {
+  (globalThis as unknown as { __edaptQueryLog?: (q: string) => void }).__edaptQueryLog = (q) => {
+    if (!profiling) return;
+    const k = q.replace(/\s+/g, " ").replace(/\$\d+/g, "?").slice(0, 110);
+    profile.set(k, (profile.get(k) ?? 0) + 1);
+  };
+}
 
 const ROWS = Number(process.argv[2] ?? 2000);
 
@@ -102,14 +95,14 @@ async function main() {
   guard();
   // imported after the client above is in place
   const { eq, sql } = await import("drizzle-orm");
-  const { db } = await import("@/db");
+  const { db, queryRows } = await import("@/db");
   const { contacts, importBatches, products, users } = await import("@/db/schema");
   const { createImportBatch, getBatchView, resolveAllConflictsAsNew, runCleanChunk, saveMapping } = await import("@/lib/import/batches");
   const { runCommitChunk, startCommit } = await import("@/lib/import/commit");
   const { runMatchChunk } = await import("@/lib/import/match");
   const { runUndoChunk, startUndo } = await import("@/lib/import/undo");
 
-  const names = (await db.execute<{ tablename: string }>(sql`select tablename from pg_tables where schemaname = 'public'`)).map((x) => `"${x.tablename}"`);
+  const names = (await queryRows<{ tablename: string }>(sql`select tablename from pg_tables where schemaname = 'public'`)).map((x) => `"${x.tablename}"`);
   await db.execute(sql.raw(`truncate table ${names.join(", ")} restart identity cascade`));
   const [admin] = await db.insert(users).values({ name: "Bench Admin", email: "bench@edapt.test", role: "admin", team: "kerala" }).returning();
   await db.insert(users).values([

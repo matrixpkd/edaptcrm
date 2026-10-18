@@ -19,13 +19,10 @@ import postgres from "postgres";
 
 type Captured = { q: string; p: unknown[] };
 let capturing: Captured[] | null = null;
-(globalThis as unknown as { __edaptSql?: postgres.Sql }).__edaptSql = postgres(process.env.DATABASE_URL!, {
-  prepare: false,
-  max: Number(process.env.DATABASE_POOL_MAX ?? 5),
-  debug: (_c: number, q: string, p: unknown[]) => {
-    capturing?.push({ q, p });
-  },
-});
+// src/db reads this hook when it is first loaded (dynamic imports below), so every statement the app sends is seen.
+(globalThis as unknown as { __edaptQueryLog?: (q: string, p: unknown[]) => void }).__edaptQueryLog = (q, p) => {
+  capturing?.push({ q, p });
+};
 
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(name);
@@ -60,10 +57,11 @@ function median(xs: number[]) {
 async function main() {
   const dbName = new URL(process.env.DATABASE_URL ?? "postgres://x/unknown").pathname.slice(1);
   if (!/perf|bench/i.test(dbName)) throw new Error(`Refusing to bench "${dbName}": use a database named *perf* or *bench*`);
-  const client = (globalThis as unknown as { __edaptSql: postgres.Sql }).__edaptSql;
+  // a separate connection for EXPLAIN, so the plans do not show up among the captured statements
+  const client = postgres(process.env.DATABASE_URL!, { prepare: false, max: 1 });
 
   const { eq, sql, desc } = await import("drizzle-orm");
-  const { db } = await import("@/db");
+  const { db, queryRows } = await import("@/db");
   const s = await import("@/db/schema");
   const q = await import("@/lib/contacts/queries");
   const { getContactPurchases } = await import("@/lib/money");
@@ -103,12 +101,12 @@ async function main() {
   const sales = userRows.find((u) => u.id === busiest?.userId) ?? byEmail("sales");
 
   // a heavy contact (most timeline rows) and a typical one
-  const [heavy] = await db.execute<{ id: string }>(sql`
+  const [heavy] = await queryRows<{ id: string }>(sql`
     select c.id from contacts c
     where c.merged_into_id is null
     order by (select count(*) from enquiries e where e.contact_id = c.id) + c.purchase_count desc
     limit 1`);
-  const [typical] = await db.execute<{ id: string; phone_e164: string; name: string }>(
+  const [typical] = await queryRows<{ id: string; phone_e164: string; name: string }>(
     sql`select id, phone_e164, name from contacts where merged_into_id is null and purchase_count = 1 order by id limit 1 offset 1234`,
   );
   const [product] = await db.select().from(s.products).where(eq(s.products.active, true)).limit(1);
@@ -386,7 +384,7 @@ async function main() {
     const { createImportBatch, getBatchView, runCleanChunk, saveMapping } = await import("@/lib/import/batches");
     const { runMatchChunk } = await import("@/lib/import/match");
     // 40% of rows are people already in the CRM (by phone or by email), the rest are new
-    const existing = await db.execute<{ name: string; phone_e164: string; email: string | null; city: string | null }>(
+    const existing = await queryRows<{ name: string; phone_e164: string; email: string | null; city: string | null }>(
       sql`select name, phone_e164, email, city from contacts where merged_into_id is null order by md5(id::text) limit ${Math.round(rows * 0.4)}`,
     );
     const lines = ["Name,Phone,Email,City,Notes"];

@@ -19,7 +19,7 @@ import "server-only";
  * Each function takes the range (or `now`) and an optional `tx`, so tests can run them inside one transaction.
  */
 import { sql } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { unratedCondition } from "@/lib/contacts/unrated";
 import { getSettings, labelFor } from "@/lib/settings";
 import type { ProductFamily, Rung } from "@/lib/settings/defaults";
@@ -81,7 +81,7 @@ export type RevenueByFamily = { rows: FamilyRevenueRow[]; totals: RevenueTotals 
  */
 export async function revenueByFamily(range: CompareRange, tx: Tx = db): Promise<RevenueByFamily> {
   const { "ladder.families": ladder } = await getSettings(["ladder.families"], tx);
-  const rows = await tx.execute<{ family: string; current: string; previous: string; previous_to_date: string }>(sql`
+  const rows = await queryRows<{ family: string; current: string; previous: string; previous_to_date: string }>(sql`
     select pu.family,
       coalesce(sum(${NET}) filter (where ${MOVED_AT} >= ${ts(range.start)}), 0) as current,
       coalesce(sum(${NET}) filter (where ${MOVED_AT} >= ${ts(range.prevStart)} and ${MOVED_AT} < ${ts(range.prevEnd)}), 0) as previous,
@@ -92,7 +92,7 @@ export async function revenueByFamily(range: CompareRange, tx: Tx = db): Promise
       and ${MOVED_AT} >= ${ts(range.prevStart)}
       and ${MOVED_AT} < ${ts(range.end)}
     group by pu.family
-  `);
+  `, tx);
   const out: FamilyRevenueRow[] = rows
     .map((r) => {
       const fam = ladder.find((f) => f.key === r.family);
@@ -123,7 +123,7 @@ export async function revenueByFamily(range: CompareRange, tx: Tx = db): Promise
 
 /** New paying customers: contacts whose first paid purchase falls in the period (and the previous period). */
 export async function newCustomers(range: CompareRange, tx: Tx = db): Promise<RevenueTotals> {
-  const [r] = await tx.execute<{ current: string; previous: string; previous_to_date: string }>(sql`
+  const [r] = await queryRows<{ current: string; previous: string; previous_to_date: string }>(sql`
     select
       count(*) filter (where c.first_purchase_at >= ${ts(range.start)}) as current,
       count(*) filter (where c.first_purchase_at < ${ts(range.prevEnd)}) as previous,
@@ -132,7 +132,7 @@ export async function newCustomers(range: CompareRange, tx: Tx = db): Promise<Re
     where c.merged_into_id is null
       and c.first_purchase_at >= ${ts(range.prevStart)}
       and c.first_purchase_at < ${ts(range.end)}
-  `);
+  `, tx);
   return { current: num(r?.current), previous: num(r?.previous), previousToDate: num(r?.previous_to_date) };
 }
 
@@ -178,7 +178,7 @@ const IS_LEAD = sql.raw(
 export async function leadsAndConversionByChannel(range: TimeRange, tx: Tx = db): Promise<LeadsByChannel> {
   const { "lists.channels": channels } = await getSettings(["lists.channels"], tx);
   const [leads, enq] = await Promise.all([
-    tx.execute<{ channel: string; leads: string; converted: string; imported: string; already: string }>(sql`
+    queryRows<{ channel: string; leads: string; converted: string; imported: string; already: string }>(sql`
       select coalesce(c.first_channel, '') as channel,
         count(*) filter (where ${IS_LEAD}) as leads,
         count(*) filter (where ${IS_LEAD} and c.purchase_count > 0) as converted,
@@ -188,13 +188,13 @@ export async function leadsAndConversionByChannel(range: TimeRange, tx: Tx = db)
       where c.merged_into_id is null
         and c.created_at >= ${ts(range.start)} and c.created_at < ${ts(range.end)}
       group by 1
-    `),
-    tx.execute<{ channel: string; enquiries: string; people: string }>(sql`
+    `, tx),
+    queryRows<{ channel: string; enquiries: string; people: string }>(sql`
       select e.channel, count(*) as enquiries, count(distinct e.contact_id) as people
       from enquiries e
       where e.received_at >= ${ts(range.start)} and e.received_at < ${ts(range.end)}
       group by e.channel
-    `),
+    `, tx),
   ]);
   const by = new Map<string, ChannelRow>();
   const row = (key: string): ChannelRow => {
@@ -261,7 +261,7 @@ export type LtvByDoor = { rows: DoorRow[]; totals: { contacts: number; customers
 /** All-time customers, total and average LTV (stored ltv_inr) by First Door. Sorted by total LTV. */
 export async function ltvByFirstDoor(tx: Tx = db): Promise<LtvByDoor> {
   const { "lists.firstDoors": doors } = await getSettings(["lists.firstDoors"], tx);
-  const rows = await tx.execute<{ door: string; contacts: string; customers: string; ltv: string }>(sql`
+  const rows = await queryRows<{ door: string; contacts: string; customers: string; ltv: string }>(sql`
     select c.first_door as door,
       count(*) as contacts,
       count(*) filter (where c.purchase_count > 0) as customers,
@@ -269,7 +269,7 @@ export async function ltvByFirstDoor(tx: Tx = db): Promise<LtvByDoor> {
     from contacts c
     where c.merged_into_id is null
     group by c.first_door
-  `);
+  `, tx);
   const out: DoorRow[] = rows
     .map((r) => {
       const customers = num(r.customers);
@@ -297,12 +297,12 @@ export async function ltvByFirstDoor(tx: Tx = db): Promise<LtvByDoor> {
 
 /** Share of customers (all time) with two or more paid purchases. */
 export async function repeatRate(tx: Tx = db): Promise<{ customers: number; repeaters: number; rate: number | null }> {
-  const [r] = await tx.execute<{ customers: string; repeaters: string }>(sql`
+  const [r] = await queryRows<{ customers: string; repeaters: string }>(sql`
     select count(*) filter (where c.purchase_count >= 1) as customers,
            count(*) filter (where c.purchase_count >= 2) as repeaters
     from contacts c
     where c.merged_into_id is null and c.purchase_count >= 1
-  `);
+  `, tx);
   const customers = num(r?.customers);
   const repeaters = num(r?.repeaters);
   return { customers, repeaters, rate: ratio(repeaters, customers) };
@@ -314,7 +314,7 @@ export async function repeatRate(tx: Tx = db): Promise<{ customers: number; repe
  * night's copy.
  */
 export async function medianDaysFirstToSecond(tx: Tx = db): Promise<{ medianDays: number | null; customers: number }> {
-  const [r] = await tx.execute<{ median_days: string | null; n: string }>(sql`
+  const [r] = await queryRows<{ median_days: string | null; n: string }>(sql`
     with p as (
       select pu.purchased_at,
         row_number() over w as k,
@@ -328,7 +328,7 @@ export async function medianDaysFirstToSecond(tx: Tx = db): Promise<{ medianDays
       count(*) as n
     from p
     where k = 1 and next_at is not null
-  `);
+  `, tx);
   const median = r?.median_days === null || r?.median_days === undefined ? null : Number(r.median_days);
   return { medianDays: median === null || !Number.isFinite(median) ? null : Math.round(median * 10) / 10, customers: num(r?.n) };
 }
@@ -355,7 +355,7 @@ export async function rungMoves(range: TimeRange, tx: Tx = db): Promise<RungMove
   const s = await getSettings(["ladder.families", "ladder.rungs"], tx);
   const rungOf: Record<string, number> = {};
   for (const f of s["ladder.families"]) if (typeof f.rung === "number") rungOf[f.key] = f.rung;
-  const rows = await tx.execute<{ from_rung: string; to_rung: string; n: string }>(sql`
+  const rows = await queryRows<{ from_rung: string; to_rung: string; n: string }>(sql`
     with buyers as (
       select distinct pu.contact_id
       from purchases pu
@@ -377,7 +377,7 @@ export async function rungMoves(range: TimeRange, tx: Tx = db): Promise<RungMove
     where to_rung > from_rung
     group by from_rung, to_rung
     order by from_rung, to_rung
-  `);
+  `, tx);
   const label = (rung: number) => (rung === 0 ? "Not on the ladder" : rungLabel(s["ladder.rungs"], rung));
   const moves = rows.map((r) => {
     const from = num(r.from_rung);
@@ -407,24 +407,24 @@ function rungLabel(rungs: Rung[], rung: number): string {
 
 /** 90-day revenue forecast: the sum of expected_90d_inr (repeat probability x next best offer price). */
 export async function forecast90d(tx: Tx = db): Promise<{ totalInr: number; customers: number }> {
-  const [r] = await tx.execute<{ total: string; customers: string }>(sql`
+  const [r] = await queryRows<{ total: string; customers: string }>(sql`
     select coalesce(sum(c.expected_90d_inr), 0) as total,
            count(*) filter (where c.expected_90d_inr > 0) as customers
     from contacts c
     where c.merged_into_id is null and c.expected_90d_inr is not null
-  `);
+  `, tx);
   return { totalInr: money(r?.total), customers: num(r?.customers) };
 }
 
 /** Customers past their expected purchase date by thresholds.atRiskDays (stored at_risk), with their expected value. */
 export async function atRiskPool(tx: Tx = db): Promise<{ count: number; expectedInr: number; ltvInr: number }> {
-  const [r] = await tx.execute<{ n: string; expected: string; ltv: string }>(sql`
+  const [r] = await queryRows<{ n: string; expected: string; ltv: string }>(sql`
     select count(*) as n,
            coalesce(sum(c.expected_90d_inr), 0) as expected,
            coalesce(sum(c.ltv_inr), 0) as ltv
     from contacts c
     where c.merged_into_id is null and c.at_risk
-  `);
+  `, tx);
   return { count: num(r?.n), expectedInr: money(r?.expected), ltvInr: money(r?.ltv) };
 }
 
@@ -453,7 +453,7 @@ export type CheckoutRecovery = {
  * contact made at or after the checkout started; a purchase recovering two checkouts counts once.
  */
 export async function abandonedCheckoutsRecovered(range: TimeRange, tx: Tx = db): Promise<CheckoutRecovery> {
-  const [r] = await tx.execute<{ abandoned: string; recovered: string; saved: string; purchases: string }>(sql`
+  const [r] = await queryRows<{ abandoned: string; recovered: string; saved: string; purchases: string }>(sql`
     with e as (
       select e.contact_id, e.received_at, e.status
       from enquiries e
@@ -479,7 +479,7 @@ export async function abandonedCheckoutsRecovered(range: TimeRange, tx: Tx = db)
       (select count(*) from e where status = 'recovered') as recovered,
       (select coalesce(sum(${NET}), 0) from payments p where p.status = 'verified' and p.purchase_id in (select id from rec)) as saved,
       (select count(*) from rec) as purchases
-  `);
+  `, tx);
   const abandoned = num(r?.abandoned);
   const recovered = num(r?.recovered);
   return {
@@ -512,7 +512,7 @@ export type AssistedSplit = { assisted: RevenueSplit; selfServe: RevenueSplit; t
  * customer in the 30 days before, or adjusted by a manager) vs self-serve.
  */
 export async function assistedVsSelfServe(range: TimeRange, tx: Tx = db): Promise<AssistedSplit> {
-  const rows = await tx.execute<{ assisted: boolean | string; inr: string; purchases: string; customers: string }>(sql`
+  const rows = await queryRows<{ assisted: boolean | string; inr: string; purchases: string; customers: string }>(sql`
     select pu.assisted,
       coalesce(sum(${NET}), 0) as inr,
       count(distinct pu.id) filter (where p.kind = 'payment') as purchases,
@@ -522,7 +522,7 @@ export async function assistedVsSelfServe(range: TimeRange, tx: Tx = db): Promis
     where p.status = 'verified'
       and ${MOVED_AT} >= ${ts(range.start)} and ${MOVED_AT} < ${ts(range.end)}
     group by pu.assisted
-  `);
+  `, tx);
   const split = (assisted: boolean): RevenueSplit => {
     const r = rows.find((x) => (x.assisted === true || x.assisted === "true" || x.assisted === "t") === assisted);
     const inr = money(r?.inr);
@@ -575,10 +575,10 @@ export type TeamRow = {
  */
 export async function teamView(range: TimeRange, tx: Tx = db): Promise<TeamRow[]> {
   const [people, assigned, handled, revenue] = await Promise.all([
-    tx.execute<{ id: string; name: string; role: string; active: boolean | string }>(sql`
+    queryRows<{ id: string; name: string; role: string; active: boolean | string }>(sql`
       select u.id::text, u.name, u.role, u.active from users u where u.role <> 'support'
-    `),
-    tx.execute<{ user_id: string; assigned: string; responded: string; median_hours: string | null; leads: string; converted: string }>(sql`
+    `, tx),
+    queryRows<{ user_id: string; assigned: string; responded: string; median_hours: string | null; leads: string; converted: string }>(sql`
       with a as (
         select ol.to_user_id as user_id, ol.contact_id, ol.changed_at, c.first_purchase_at,
           -- a call logged right after the lead was added (occurred a few minutes before it, logged after) counts as
@@ -606,22 +606,22 @@ export async function teamView(range: TimeRange, tx: Tx = db): Promise<TeamRow[]
         count(distinct a.contact_id) filter (where a.first_purchase_at is not null) as converted
       from a
       group by a.user_id
-    `),
-    tx.execute<{ user_id: string; handled: string; interactions: string }>(sql`
+    `, tx),
+    queryRows<{ user_id: string; handled: string; interactions: string }>(sql`
       select i.user_id::text, count(distinct i.contact_id) as handled, count(*) as interactions
       from interactions i
       where i.user_id is not null
         and i.occurred_at >= ${ts(range.start)} and i.occurred_at < ${ts(range.end)}
       group by i.user_id
-    `),
-    tx.execute<{ user_id: string; inr: string }>(sql`
+    `, tx),
+    queryRows<{ user_id: string; inr: string }>(sql`
       select pu.credited_user_id::text as user_id, coalesce(sum(${NET}), 0) as inr
       from payments p
       join purchases pu on pu.id = p.purchase_id
       where p.status = 'verified' and pu.assisted and pu.credited_user_id is not null
         and ${MOVED_AT} >= ${ts(range.start)} and ${MOVED_AT} < ${ts(range.end)}
       group by pu.credited_user_id
-    `),
+    `, tx),
   ]);
   const aBy = new Map(assigned.map((r) => [r.user_id, r]));
   const hBy = new Map(handled.map((r) => [r.user_id, r]));
@@ -702,7 +702,7 @@ export async function beyondUmerShare(range: CompareRange & { timeZone?: string 
     `case when c.umer_level is null then 'unrated' when c.umer_level <= ${BEYOND_UMER_MAX_LEVEL} then 'beyond' else 'circle' end`,
   );
   const [periods, trend] = await Promise.all([
-    tx.execute<{ bucket: string; current: string; previous: string }>(sql`
+    queryRows<{ bucket: string; current: string; previous: string }>(sql`
       select ${bucket} as bucket,
         coalesce(sum(${NET}) filter (where ${MOVED_AT} >= ${ts(range.start)}), 0) as current,
         coalesce(sum(${NET}) filter (where ${MOVED_AT} < ${ts(range.prevEnd)}), 0) as previous
@@ -711,15 +711,15 @@ export async function beyondUmerShare(range: CompareRange & { timeZone?: string 
       where p.status = 'verified'
         and ${MOVED_AT} >= ${ts(range.prevStart)} and ${MOVED_AT} < ${ts(range.end)}
       group by 1
-    `),
-    tx.execute<{ month: string; bucket: string; inr: string }>(sql`
+    `, tx),
+    queryRows<{ month: string; bucket: string; inr: string }>(sql`
       select to_char(${MOVED_AT} at time zone ${tz}, 'YYYY-MM') as month, ${bucket} as bucket, coalesce(sum(${NET}), 0) as inr
       from payments p
       join contacts c on c.id = p.contact_id
       where p.status = 'verified'
         and ${MOVED_AT} >= ${ts(trendStart)} and ${MOVED_AT} < ${ts(trendEnd)}
       group by 1, 2
-    `),
+    `, tx),
   ]);
   const pick = (b: string, f: "current" | "previous") => num(periods.find((r) => r.bucket === b)?.[f]);
   const cell = (m: string, b: string) => num(trend.find((r) => r.month === m && r.bucket === b)?.inr);
@@ -760,14 +760,14 @@ export type LanguageMix = {
  */
 export async function languageMix(range: TimeRange, tx: Tx = db): Promise<LanguageMix> {
   const { "lists.languages": languages } = await getSettings(["lists.languages"], tx);
-  const rows = await tx.execute<{ language: string; customers: string; new_customers: string }>(sql`
+  const rows = await queryRows<{ language: string; customers: string; new_customers: string }>(sql`
     select coalesce(nullif(c.language, ''), '') as language,
       count(*) as customers,
       count(*) filter (where c.first_purchase_at >= ${ts(range.start)} and c.first_purchase_at < ${ts(range.end)}) as new_customers
     from contacts c
     where c.merged_into_id is null and c.purchase_count > 0
     group by 1
-  `);
+  `, tx);
   const out: LanguageRow[] = rows
     .map((r) => ({
       language: r.language,
@@ -813,19 +813,19 @@ export type ReferralLeaderboard = { rows: AdvocateRow[]; advocates: number; tota
 export async function referralLeaderboard(limit: number = LEADERBOARD_SIZE, tx: Tx = db): Promise<ReferralLeaderboard> {
   const size = Math.max(1, Math.min(100, Math.floor(limit) || LEADERBOARD_SIZE));
   const [rows, [totals]] = await Promise.all([
-    tx.execute<{ id: string; name: string; referral_count: string; network: string; ltv: string; owner_name: string | null }>(sql`
+    queryRows<{ id: string; name: string; referral_count: string; network: string; ltv: string; owner_name: string | null }>(sql`
       select c.id::text, c.name, c.referral_count, c.network_value_inr as network, c.ltv_inr as ltv, u.name as owner_name
       from contacts c
       left join users u on u.id = c.owner_id
       where c.merged_into_id is null and (c.network_value_inr > 0 or c.referral_count > 0)
       order by c.network_value_inr desc, c.referral_count desc, c.name, c.id
       limit ${size}
-    `),
-    tx.execute<{ advocates: string; network: string }>(sql`
+    `, tx),
+    queryRows<{ advocates: string; network: string }>(sql`
       select count(*) as advocates, coalesce(sum(c.network_value_inr), 0) as network
       from contacts c
       where c.merged_into_id is null and (c.network_value_inr > 0 or c.referral_count > 0)
-    `),
+    `, tx),
   ]);
   return {
     rows: rows.map((r) => ({
@@ -861,7 +861,7 @@ export async function dataHealth(now: Date, tx: Tx = db): Promise<DataHealth> {
   const staleDays = Math.max(0, Number(thresholds.unverifiedPaymentDays) || 0);
   const staleCutoff = new Date(now.getTime() - staleDays * 24 * 3600 * 1000);
   const [[ratings], [unv], [dups]] = await Promise.all([
-    tx.execute<{ contacts: string; unrated: string; unrated_customers: string }>(sql`
+    queryRows<{ contacts: string; unrated: string; unrated_customers: string }>(sql`
       select count(*) as contacts,
         count(*) filter (where x.unrated) as unrated,
         count(*) filter (where x.unrated and x.customer) as unrated_customers
@@ -870,8 +870,8 @@ export async function dataHealth(now: Date, tx: Tx = db): Promise<DataHealth> {
         from contacts c
         where c.merged_into_id is null
       ) x
-    `),
-    tx.execute<{ n: string; inr: string; stale: string }>(sql`
+    `, tx),
+    queryRows<{ n: string; inr: string; stale: string }>(sql`
       select count(*) as n,
         coalesce(sum(p.amount_inr), 0) as inr,
         count(*) filter (where coalesce(p.paid_at, p.created_at) <= ${ts(staleCutoff)}) as stale
@@ -879,14 +879,14 @@ export async function dataHealth(now: Date, tx: Tx = db): Promise<DataHealth> {
       join purchases pu on pu.id = p.purchase_id
       join contacts c on c.id = p.contact_id
       where p.kind = 'payment' and p.status = 'unverified' and pu.status <> 'cancelled' and c.merged_into_id is null
-    `),
-    tx.execute<{ n: string }>(sql`
+    `, tx),
+    queryRows<{ n: string }>(sql`
       select count(*) as n
       from duplicate_reviews d
       join contacts a on a.id = d.contact_a_id and a.merged_into_id is null
       join contacts b on b.id = d.contact_b_id and b.merged_into_id is null
       where d.status = 'open'
-    `),
+    `, tx),
   ]);
   return {
     contacts: num(ratings?.contacts),
@@ -911,13 +911,13 @@ export type LostReasons = { rows: LostReasonRow[]; total: number };
  */
 export async function lostReasons(range: TimeRange, tx: Tx = db): Promise<LostReasons> {
   const { "lists.lostReasons": reasons } = await getSettings(["lists.lostReasons"], tx);
-  const rows = await tx.execute<{ reason: string; n: string }>(sql`
+  const rows = await queryRows<{ reason: string; n: string }>(sql`
     select coalesce(c.lost_reason, '') as reason, count(*) as n
     from contacts c
     where c.merged_into_id is null and c.stage = 'lost'
       and c.stage_changed_at >= ${ts(range.start)} and c.stage_changed_at < ${ts(range.end)}
     group by 1
-  `);
+  `, tx);
   const order = (key: string) => {
     const i = reasons.findIndex((r) => r.key === key);
     return key === "" ? reasons.length + 1 : i === -1 ? reasons.length : i;

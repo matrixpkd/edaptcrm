@@ -4,7 +4,7 @@ import "server-only";
  * nightly recompute in batches) and a single-contact form. Missing contacts get the empty facts.
  */
 import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { payments, purchases } from "@/db/schema";
 import { getSetting, type ProductFamily } from "@/lib/settings";
 import {
@@ -31,7 +31,7 @@ function uuidArray(ids: string[]): SQL {
   return sql`string_to_array(${ids.join(",")}, ',')::uuid[]`;
 }
 
-/** Raw timestamps come back from postgres-js as strings (Drizzle disables its date parsing). */
+/** Raw timestamps come back as strings (Drizzle turns off the driver's date parsing). */
 export function toDate(v: unknown): Date | null {
   if (v === null || v === undefined) return null;
   const d = v instanceof Date ? v : new Date(String(v));
@@ -121,7 +121,7 @@ export async function computeReferralFactsBulk(contactIds: string[], tx: Tx = db
   if (!ids.length) return out;
   // LTV is computed from the payments themselves, not the stored ltv_inr, so the result never depends on the
   // order contacts are recomputed in.
-  const rows = await tx.execute<{ id: string; referral_count: number; network_value: string | number | null }>(sql`
+  const rows = await queryRows<{ id: string; referral_count: number; network_value: string | number | null }>(sql`
     select r.referred_by_id as id,
       count(*) filter (where exists (
         select 1 from purchases p where p.contact_id = r.id and p.status in ('paid', 'partial')
@@ -135,7 +135,7 @@ export async function computeReferralFactsBulk(contactIds: string[], tx: Tx = db
       and r.merged_into_id is null
       and r.id <> r.referred_by_id
     group by r.referred_by_id
-  `);
+  `, tx);
   const by = new Map(rows.map((r) => [r.id, r]));
   for (const id of ids) {
     const r = by.get(id);
@@ -157,7 +157,7 @@ export async function computeActivityFactsBulk(contactIds: string[], tx: Tx = db
   const ids = uniq(contactIds);
   const out = new Map<string, ActivityFacts>();
   if (!ids.length) return out;
-  const rows = await tx.execute<{
+  const rows = await queryRows<{
     id: string;
     last_enquiry_at: string | null;
     last_interaction_at: string | null;
@@ -182,7 +182,7 @@ export async function computeActivityFactsBulk(contactIds: string[], tx: Tx = db
         where pm.contact_id = c.id and pm.kind = 'payment' and pm.status = 'verified') as last_payment_counted_at
     from contacts c
     where c.id = any(${uuidArray(ids)})
-  `);
+  `, tx);
   const by = new Map(rows.map((r) => [r.id, r]));
   for (const id of ids) {
     const r = by.get(id);

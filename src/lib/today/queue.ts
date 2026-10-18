@@ -1,6 +1,6 @@
 import "server-only";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { contacts, tasks, users, type Role, type Stage } from "@/db/schema";
 import { can } from "@/lib/auth/permissions";
 import { getSettings } from "@/lib/settings";
@@ -309,7 +309,7 @@ function loadRankedTasks(tx: Tx, where: SQL, order: SQL[], opts: { perUser: bool
   const groupPartition = opts.perUser ? sql`partition by uid` : sql``;
   // ranked on narrow rows (id, assignee, rank), then the kept tasks are joined back to their columns: the window
   // sorts then move a few bytes per task instead of the whole row
-  return tx.execute<TeamTaskRaw>(sql`
+  return queryRows<TeamTaskRaw>(sql`
     with ranked as (
       select ${tasks.id} as task_id, ${tasks.userId} as uid,
         row_number() over (${partition} order by ${sql.join(order, sql`, `)}) as rn,
@@ -331,7 +331,7 @@ function loadRankedTasks(tx: Tx, where: SQL, order: SQL[], opts: { perUser: bool
       join ${tasks} on ${tasks.id} = counted.task_id
       left join ${contacts} on ${contacts.id} = ${tasks.contactId}
     where counted.rn <= ${opts.limit}
-    order by counted.uid, counted.rn`);
+    order by counted.uid, counted.rn`, tx);
 }
 
 /** Row count when the fetch hit its limit: what the cap really left out. */

@@ -20,7 +20,7 @@ import { GettingStarted } from "@/components/today/getting-started";
 import { PageHeader } from "@/components/ui/card";
 import { getOnboarding, onboardingDismissed } from "@/lib/admin/onboarding";
 import { onboardingVisibilityAction } from "../today/actions";
-import { db } from "@/db";
+import { db, queryRows } from "@/db";
 import { products, settings as settingsTable, users } from "@/db/schema";
 import { requireUser } from "@/lib/auth/session";
 import { getSettings, type SettingKey } from "@/lib/settings";
@@ -43,7 +43,7 @@ export default async function SettingsPage() {
   const now = new Date();
   const [s, [counts], saved, onboarding, hiddenOnToday] = await Promise.all([
     getSettings(["teams", "assignment", "currency", "nbo.rules", "templates.whatsapp"]),
-    db.execute<{ activeUsers: number; inactiveUsers: number; activeProducts: number }>(sql`
+    queryRows<{ activeUsers: number; inactiveUsers: number; activeProducts: number }>(sql`
       select
         (select count(*)::int from ${users} where ${users.active}) as "activeUsers",
         (select count(*)::int from ${users} where not ${users.active}) as "inactiveUsers",

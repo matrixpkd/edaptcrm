@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
-import { db } from "@/db";
+import { db, queryRows } from "@/db";
 import { products } from "@/db/schema";
 import { DEMO_EMAILS, demoCounts, seedDemo, type DemoSummary } from "../../scripts/seed-demo";
 import { STARTER_PRODUCTS } from "../../scripts/starter-products";
@@ -28,7 +28,7 @@ describe("demo seed (small)", () => {
   });
 
   it("creates the team with the demo password and sensible time zones", async () => {
-    const rows = await db.execute<{ email: string; role: string; team: string | null; timezone: string; has_password: boolean }>(
+    const rows = await queryRows<{ email: string; role: string; team: string | null; timezone: string; has_password: boolean }>(
       sql`select email, role, team, timezone, password_hash is not null as has_password from users order by email`,
     );
     const byEmail = new Map(rows.map((r) => [r.email, r]));
@@ -50,7 +50,7 @@ describe("demo seed (small)", () => {
     expect(c.scheduled).toBeGreaterThanOrEqual(3);
     expect(c.rated).toBeGreaterThan(10);
     expect(c.openTasks).toBeGreaterThan(5);
-    const [x] = await db.execute<{ abandoned: string; hot: string; transfers: string; orgs: string; lost: string }>(sql`
+    const [x] = await queryRows<{ abandoned: string; hot: string; transfers: string; orgs: string; lost: string }>(sql`
       select
         (select count(*) from tasks where type = 'abandoned_checkout' and status = 'open') as abandoned,
         (select count(*) from notifications where type = 'hot_lead') as hot,
@@ -66,7 +66,7 @@ describe("demo seed (small)", () => {
   });
 
   it("keeps the services' invariants", async () => {
-    const [x] = await db.execute<{ ltv_mismatch: string; support_owned: string; bad_inr: string; future: string; unscored: string; lost_no_reason: string }>(sql`
+    const [x] = await queryRows<{ ltv_mismatch: string; support_owned: string; bad_inr: string; future: string; unscored: string; lost_no_reason: string }>(sql`
       select
         (select count(*) from contacts c where c.merged_into_id is null and abs(c.ltv_inr - coalesce((
           select sum(case when p.kind = 'refund' then -p.amount_inr else p.amount_inr end)
@@ -89,7 +89,7 @@ describe("demo seed (small)", () => {
   });
 
   it("spreads history over the last 18 months instead of stamping it today", async () => {
-    const [x] = await db.execute<{ old_ratings: string; old_audit: string; old_contacts: string }>(sql`
+    const [x] = await queryRows<{ old_ratings: string; old_audit: string; old_contacts: string }>(sql`
       select
         (select count(*) from ratings where created_at < now() - interval '30 days') as old_ratings,
         (select count(*) from audit_log where changed_at < now() - interval '90 days') as old_audit,

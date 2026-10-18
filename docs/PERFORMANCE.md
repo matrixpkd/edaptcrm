@@ -39,7 +39,7 @@ DATABASE_URL=postgres://postgres:postgres@localhost:5432/edapt_perf \
 `scripts/perf/bench.ts` calls the same server functions the pages, actions and cron routes call (a page's whole
 `Promise.all`, not one query) as an admin, a manager and the salesperson with the most open tasks. Each scenario
 gets one warm-up run, then the median of 5 runs is reported. `--explain` also captures every SQL statement the
-scenario sent (through the postgres.js `debug` hook) and runs `EXPLAIN (ANALYZE, BUFFERS)` on each distinct read,
+scenario sent (through the query-log hook `src/db` reads, `__edaptQueryLog`) and runs `EXPLAIN (ANALYZE, BUFFERS)` on each distinct read,
 keeping the three slowest plans. `--heavy` adds exports, alerts, import matching, `recomputeAll` and the nightly job.
 Writes run in a transaction that is rolled back; `recomputeAll` writes for real, which is safe because it is
 idempotent. The script refuses any database whose name does not contain `perf` or `bench`.

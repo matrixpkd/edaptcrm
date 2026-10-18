@@ -1,6 +1,6 @@
 import "server-only";
 import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { contacts, type Role, type Stage } from "@/db/schema";
 import { contactScope } from "@/lib/auth/scope";
 import { isUuid } from "@/lib/utils";
@@ -63,7 +63,7 @@ export async function getBoard(
       .from(contacts)
       .where(where)
       .groupBy(contacts.stage),
-    tx.execute<{
+    queryRows<{
       id: string;
       name: string;
       stage: Stage;
@@ -91,7 +91,7 @@ export async function getBoard(
       ) r
       left join users u on u.id = r.owner_id
       where r.rn <= ${per}
-      order by r.stage, r.rn`),
+      order by r.stage, r.rn`, tx),
   ]);
   const byStage = new Map(totals.map((t) => [t.stage, t]));
   return BOARD_STAGES.map((stage) => ({

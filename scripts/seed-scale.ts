@@ -17,7 +17,7 @@
 import "./env";
 import { randomUUID } from "node:crypto";
 import { count, eq, inArray, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, queryRows } from "@/db";
 import {
   contacts,
   enquiries,
@@ -792,7 +792,7 @@ function rate(r: Rng, c: ContactRow, owner: Member | null, touches: InteractionR
 }
 
 async function printSummary() {
-  const rows = await db.execute<{ t: string; n: string }>(sql`
+  const rows = await queryRows<{ t: string; n: string }>(sql`
     select 'contacts' t, count(*)::text n from contacts union all
     select 'customers', count(*)::text from contacts where purchase_count > 0 union all
     select 'purchases', count(*)::text from purchases union all
@@ -805,7 +805,7 @@ async function printSummary() {
     select 'total LTV (INR)', round(sum(ltv_inr))::text from contacts
   `);
   console.log(rows.map((r) => `  ${r.t}: ${Number(r.n).toLocaleString("en-IN")}`).join("\n"));
-  const stages = await db.execute<{ stage: string; n: string }>(sql`select stage, count(*)::text n from contacts group by 1 order by 2 desc`);
+  const stages = await queryRows<{ stage: string; n: string }>(sql`select stage, count(*)::text n from contacts group by 1 order by 2 desc`);
   console.log(`  by stage: ${stages.map((s) => `${s.stage} ${s.n}`).join(", ")}`);
 }
 

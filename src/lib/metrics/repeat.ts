@@ -3,7 +3,7 @@ import "server-only";
  * Repeat purchase metrics (server side). The pure core lives in ./repeat-core.ts and is re-exported here.
  */
 import { sql } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { getSetting, setSetting } from "@/lib/settings";
 import { round, type CohortTable } from "./repeat-core";
 
@@ -27,7 +27,7 @@ export async function buildCohorts(tx: Tx = db, now: Date = new Date()): Promise
   const windowDays = Math.max(0, Math.round(thresholds.repeatWindowDays));
   const nowIso = now.toISOString();
 
-  const [res] = await tx.execute<{ cohorts: CohortRow[] | string | null; median_first_gap: number | string | null }>(sql`
+  const [res] = await queryRows<{ cohorts: CohortRow[] | string | null; median_first_gap: number | string | null }>(sql`
     with p as (
       select
         pu.purchased_at,
@@ -54,7 +54,7 @@ export async function buildCohorts(tx: Tx = db, now: Date = new Date()): Promise
       (select coalesce(json_agg(agg), '[]'::json) from agg) as cohorts,
       (select percentile_cont(0.5) within group (order by extract(epoch from (next_at - purchased_at))::float8 / 86400)
          from p where k = 1 and next_at is not null) as median_first_gap
-  `);
+  `, tx);
 
   const rows: CohortRow[] =
     typeof res?.cohorts === "string" ? (JSON.parse(res.cohorts) as CohortRow[]) : (res?.cohorts ?? []);

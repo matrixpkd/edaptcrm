@@ -1,6 +1,6 @@
 import "server-only";
 import { and, asc, desc, eq, gt, gte, lt, sql, type SQL } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { auditLog, users } from "@/db/schema";
 import { isUuid } from "@/lib/utils";
 
@@ -122,7 +122,7 @@ export async function listAuditLog(
 
 /** Distinct table names in the log (a loose index scan over audit_log_row_idx: one probe per name). */
 export async function auditTableNames(tx: Tx = db): Promise<string[]> {
-  const rows = await tx.execute<{ v: string }>(sql`
+  const rows = await queryRows<{ v: string }>(sql`
     with recursive t(v) as (
       (select table_name from audit_log order by table_name limit 1)
       union all
@@ -130,6 +130,6 @@ export async function auditTableNames(tx: Tx = db): Promise<string[]> {
       from t where t.v is not null
     )
     select v from t where v is not null
-  `);
+  `, tx);
   return rows.map((r) => r.v);
 }

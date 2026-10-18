@@ -10,7 +10,7 @@
  * `backdateDefaults()` moves those values onto the simulated timeline at the end. Development seeding only.
  */
 import { sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, queryRows } from "@/db";
 
 const RealDate = Date;
 
@@ -31,7 +31,7 @@ export type SimClock = {
 
 /** Replaces the global Date with a simulated one. Call stop() when done (also on errors). */
 export async function startSimClock(at: Date): Promise<SimClock> {
-  const [{ ts }] = await db.execute<{ ts: string }>(sql`select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as ts`);
+  const [{ ts }] = await queryRows<{ ts: string }>(sql`select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as ts`);
   let base = at.getTime();
   let anchor = RealDate.now();
   const simMs = () => base + (RealDate.now() - anchor);
@@ -63,7 +63,7 @@ export async function startSimClock(at: Date): Promise<SimClock> {
     now: () => new RealDate(simMs()),
     async mark() {
       const sim = simMs();
-      const [{ real }] = await db.execute<{ real: string }>(
+      const [{ real }] = await queryRows<{ real: string }>(
         sql`select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as real`,
       );
       marks.push({ real, sim });
@@ -128,7 +128,7 @@ export async function backdateDefaults(until: string): Promise<number> {
           )
           where t.${c} >= ${since}::timestamptz and t.${c} < ${until}::timestamptz
         `);
-        changed += Number((res as unknown as { count?: number }).count ?? 0);
+        changed += res.rowCount ?? 0;
       }
     }
   });
@@ -146,6 +146,6 @@ export async function backdateSoFar(): Promise<number> {
 
 /** The database's clock, as an ISO string (for `backdateDefaults(until)`). */
 export async function dbNow(): Promise<string> {
-  const [{ ts }] = await db.execute<{ ts: string }>(sql`select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as ts`);
+  const [{ ts }] = await queryRows<{ ts: string }>(sql`select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as ts`);
   return ts;
 }

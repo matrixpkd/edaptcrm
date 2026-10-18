@@ -22,7 +22,7 @@ import "server-only";
  */
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { contacts, enquiries, notifications, payments, purchases, tasks, users, type PaymentMode, type Role } from "@/db/schema";
 import { releaseStaleLeads as releaseStaleLeadsService } from "@/lib/contacts/assignment";
 import { checkoutResolution } from "@/lib/money/rules";
@@ -575,13 +575,13 @@ async function contactTaskKeys(
   opts: { openOnly?: boolean } = {},
 ): Promise<Set<string>> {
   if (!contactIds.length) return new Set();
-  const rows = await tx.execute<{ contact_id: string; part: string | null }>(sql`
+  const rows = await queryRows<{ contact_id: string; part: string | null }>(sql`
     select t.contact_id, ${part ?? sql`null`} as part
     from tasks t
     where t.contact_id = any(${`{${contactIds.join(",")}}`}::uuid[])
       and t.type = ${type}
       ${opts.openOnly ? sql`and t.status = 'open'` : sql``}
-  `);
+  `, tx);
   const out = new Set<string>();
   for (const r of rows) {
     if (part === null) out.add(r.contact_id);

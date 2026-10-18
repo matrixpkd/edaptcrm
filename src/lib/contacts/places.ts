@@ -5,7 +5,7 @@ import "server-only";
  * consistent, which the Fit location class (Kerala cities and Indian metros, Kerala state names) depends on.
  */
 import { sql } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { getSetting } from "@/lib/settings";
 import type { LocationConfig } from "@/lib/settings/defaults";
 import { placeSuggestionList } from "./rules";
@@ -18,7 +18,7 @@ export type PlaceSuggestions = { cities: string[]; states: string[] };
 export async function placeSuggestions(tx: Tx = db): Promise<PlaceSuggestions> {
   const [locations, rows] = await Promise.all([
     getSetting("locations", tx),
-    tx.execute<{ kind: string; v: string }>(sql`
+    queryRows<{ kind: string; v: string }>(sql`
       (select 'city' as kind, trim(city) as v from contacts
         where merged_into_id is null and city is not null and trim(city) <> ''
         group by trim(city) order by count(*) desc limit ${TOP_PLACES})
@@ -26,7 +26,7 @@ export async function placeSuggestions(tx: Tx = db): Promise<PlaceSuggestions> {
       (select 'state' as kind, trim(state) as v from contacts
         where merged_into_id is null and state is not null and trim(state) <> ''
         group by trim(state) order by count(*) desc limit ${TOP_PLACES})
-    `),
+    `, tx),
   ]);
   const used = (kind: string) => rows.filter((r) => r.kind === kind).map((r) => r.v);
   return {

@@ -1,6 +1,6 @@
 import "server-only";
 import { sql, type SQL } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { getSetting, getSettings, type ListItem } from "@/lib/settings";
 import { AdminError } from "./errors";
 import { LIST_META, type ListKey } from "./meta";
@@ -93,7 +93,7 @@ export async function listUsage(list: ListKey, tx: Tx = db): Promise<Map<string,
     out.set(k, u);
   };
   for (const { source, q } of usageQueries(list)) {
-    const rows = await tx.execute<{ k: string | null; n: number }>(q);
+    const rows = await queryRows<{ k: string | null; n: number }>(q, tx);
     for (const r of rows) if (r.k !== null) add(r.k, source, Number(r.n));
   }
   const cond = RULE_CONDITION[list];

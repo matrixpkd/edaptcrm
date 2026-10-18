@@ -1,6 +1,6 @@
 import "server-only";
 import { getTableColumns, sql, type SQL } from "drizzle-orm";
-import type { Tx } from "@/db";
+import { queryRows, type Tx } from "@/db";
 import { contacts, type Contact } from "@/db/schema";
 
 /**
@@ -28,11 +28,11 @@ export async function selectContacts(
   tx: Tx,
   opts: { orderBy?: SQL; limit?: number; forUpdate?: boolean } = {},
 ): Promise<Contact[]> {
-  const rows = await tx.execute<Record<string, unknown>>(sql`
+  const rows = await queryRows<Record<string, unknown>>(sql`
     select ${SELECT_LIST} from "contacts" where ${where}
     ${opts.orderBy ? sql`order by ${opts.orderBy}` : sql``}
     ${opts.limit ? sql`limit ${sql.raw(String(Math.floor(opts.limit)))}` : sql``}
     ${opts.forUpdate ? sql`for update` : sql``}
-  `);
+  `, tx);
   return rows.map(mapRow);
 }

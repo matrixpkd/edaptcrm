@@ -9,7 +9,7 @@ import "server-only";
  * emails, names and order ids with a handful of set-based queries (never one query per row).
  */
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { contacts, importBatches, importRows, type ImportMatchResult } from "@/db/schema";
 import { looseKey } from "@/lib/contacts/rules";
 import { addCounts, assertCanImport, bulkUpdateRows, ImportError, loadBatch, refreshCounts, setProgress, textArray, uuidArray, type Actor } from "./internal";
@@ -143,11 +143,11 @@ export async function matchRows(
   const byName = new Map<string, ContactLite[]>();
   const orderHolder = new Map<string, string | null>();
   if (phones.length) {
-    const hits = await t.execute<{ id: string; name: string; phone_e164: string; alt_phones: string[]; city: string | null; merged_into_id: string | null }>(sql`
+    const hits = await queryRows<{ id: string; name: string; phone_e164: string; alt_phones: string[]; city: string | null; merged_into_id: string | null }>(sql`
       select id, name, phone_e164, alt_phones, city, merged_into_id from contacts
       where phone_e164 = any(${textArray(phones)}) or alt_phones && ${textArray(phones)}
       order by (merged_into_id is null) desc, created_at
-    `);
+    `, t);
     const live = await survivors([...hits], t);
     const wanted = new Set(phones);
     // primary numbers first, so a number that is one contact's primary and another's alternate goes to the primary
@@ -155,11 +155,11 @@ export async function matchRows(
     for (const h of hits) for (const p of h.alt_phones ?? []) if (wanted.has(p) && live.get(h.id) && !byPhone.has(p)) byPhone.set(p, live.get(h.id)!);
   }
   if (emails.length) {
-    const hits = await t.execute<{ id: string; name: string; phone_e164: string; email: string | null; alt_emails: string[]; city: string | null; merged_into_id: string | null }>(sql`
+    const hits = await queryRows<{ id: string; name: string; phone_e164: string; email: string | null; alt_emails: string[]; city: string | null; merged_into_id: string | null }>(sql`
       select id, name, phone_e164, email, alt_emails, city, merged_into_id from contacts
       where lower(email) = any(${textArray(emails)}) or alt_emails && ${textArray(emails)}
       order by (merged_into_id is null) desc, created_at
-    `);
+    `, t);
     const live = await survivors([...hits], t);
     const wanted = new Set(emails);
     for (const h of hits) {
@@ -169,11 +169,11 @@ export async function matchRows(
     for (const h of hits) for (const e of h.alt_emails ?? []) if (wanted.has(e) && live.get(h.id) && !byEmail.has(e)) byEmail.set(e, live.get(h.id)!);
   }
   if (names.length) {
-    const hits = await t.execute<{ id: string; name: string; phone_e164: string; city: string | null }>(sql`
+    const hits = await queryRows<{ id: string; name: string; phone_e164: string; city: string | null }>(sql`
       select id, name, phone_e164, city from contacts
       where merged_into_id is null and lower(name) = any(${textArray(names)}) and city is not null
       order by created_at limit 20000
-    `);
+    `, t);
     for (const h of hits) {
       const k = `${looseKey(h.name)}|${looseKey(h.city)}`;
       byName.set(k, [...(byName.get(k) ?? []), { id: h.id, name: h.name, phone: h.phone_e164, city: h.city }]);
@@ -181,14 +181,14 @@ export async function matchRows(
   }
   if (orders.length) {
     // a cancelled purchase gives its reference back (see money/internal releaseCancelledReference)
-    const hits = await t.execute<{ reference: string; name: string | null }>(sql`
+    const hits = await queryRows<{ reference: string; name: string | null }>(sql`
       select p.reference, c.name from purchases p join contacts c on c.id = p.contact_id
       where p.reference = any(${textArray(orders)}) and p.status <> 'cancelled'
       union all
       select pay.reference, c.name from payments pay
       join purchases p on p.id = pay.purchase_id join contacts c on c.id = pay.contact_id
       where pay.reference = any(${textArray(orders)}) and p.status <> 'cancelled'
-    `);
+    `, t);
     for (const h of hits) if (!orderHolder.has(h.reference)) orderHolder.set(h.reference, h.name);
   }
 
@@ -199,7 +199,7 @@ export async function matchRows(
   const fileOrder = new Map<string, number>();
   const fileBuys = new Map<string, Buy[]>();
   if (before > 0 && (phones.length || emails.length || names.length || orders.length)) {
-    const earlier = await t.execute<{
+    const earlier = await queryRows<{
       row_number: number;
       match_result: ImportMatchResult;
       match_contact_id: string | null;
@@ -231,7 +231,7 @@ export async function matchRows(
           or cleaned->'purchase'->>'orderId' = any(${textArray(orders)})
         )
       order by row_number
-    `);
+    `, t);
     for (const e of earlier) {
       if (e.order_id && !fileOrder.has(e.order_id)) fileOrder.set(e.order_id, e.row_number);
       if (e.match_result === "skip") continue;
@@ -343,10 +343,10 @@ async function flagRecordedPurchases(
     });
   if (!idx.length) return;
   const ids = uniq(idx.map((i) => out[i].contactId));
-  const recorded = await t.execute<{ contact_id: string; family: string; currency: string; amount: string; purchased_at: string; product_name: string }>(sql`
+  const recorded = await queryRows<{ contact_id: string; family: string; currency: string; amount: string; purchased_at: string; product_name: string }>(sql`
     select contact_id, family, currency, amount::text as amount, purchased_at, product_name from purchases
     where contact_id = any(${uuidArray(ids)}) and status <> 'cancelled'
-  `);
+  `, t);
   type Recorded = (typeof recorded)[number];
   const byContact = new Map<string, Recorded[]>();
   for (const p of recorded) byContact.set(p.contact_id, [...(byContact.get(p.contact_id) ?? []), p]);

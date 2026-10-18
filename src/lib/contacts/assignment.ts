@@ -1,6 +1,6 @@
 import "server-only";
 import { and, asc, eq, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { contacts, ownershipLog, tasks, users, type TaskType } from "@/db/schema";
 import { managerIds, notify } from "@/lib/alerts/core";
 import { audit } from "@/lib/audit";
@@ -226,7 +226,7 @@ export async function handoverAllContacts(
     // with the reason and one audit row per contact (plus first_owner_id when it was filled).
     const now = new Date().toISOString();
     const reason = "Owner left the team";
-    const rows = await t.execute<{ n: number }>(sql`
+    const rows = await queryRows<{ n: number }>(sql`
       with target as (
         select id, first_owner_id is null as first_set
         from contacts
@@ -254,7 +254,7 @@ export async function handoverAllContacts(
         from upd where first_set
       )
       select count(*)::int as n from upd
-    `);
+    `, t);
     const moved = Number(rows[0]?.n ?? 0);
     // every open task of theirs (their contacts' follow-ups, pool follow-ups, manager tasks, ...) goes to the new person
     await t

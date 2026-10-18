@@ -1,6 +1,6 @@
 import "server-only";
 import { eq, sql } from "drizzle-orm";
-import { db, type Database, type Tx } from "@/db";
+import { db, queryRows, type Database, type Tx } from "@/db";
 import { contacts, users, type Contact, type Role, type User } from "@/db/schema";
 import { ContactMergedError, ContactNotFoundError, ContactValidationError } from "./errors";
 import { selectContacts } from "./rows";
@@ -68,7 +68,7 @@ export async function userName(userId: string | null | undefined, tx: Tx = db): 
  */
 export async function wouldCreateReferralCycle(contactId: string, referrerId: string, tx: Tx = db): Promise<boolean> {
   if (contactId === referrerId) return true;
-  const rows = await tx.execute<{ found: boolean }>(sql`
+  const rows = await queryRows<{ found: boolean }>(sql`
     with recursive chain(id, referred_by_id, depth) as (
       select id, referred_by_id, 0 from contacts where id = ${referrerId}
       union all
@@ -77,6 +77,6 @@ export async function wouldCreateReferralCycle(contactId: string, referrerId: st
       where chain.depth < 100
     )
     select exists(select 1 from chain where id = ${contactId}) as found
-  `);
+  `, tx);
   return Boolean(rows[0]?.found);
 }

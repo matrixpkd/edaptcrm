@@ -18,7 +18,7 @@ import "server-only";
  * is a single scan of contacts and purchases however many buckets there are.
  */
 import { sql } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { getSettings } from "@/lib/settings";
 import {
   buildCalibrationTables,
@@ -68,7 +68,7 @@ export async function calibration(now: Date = new Date(), tx: Tx = db): Promise<
     : sql`'top'`;
 
   const [rows, valueRows, snapshotRows, [span]] = await Promise.all([
-    tx.execute<{ dim: string; key: string; leads: string; converted: string; customers: string; repeated: string }>(sql`
+    queryRows<{ dim: string; key: string; leads: string; converted: string; customers: string; repeated: string }>(sql`
       with p as (
         select pu.contact_id,
           (array_agg(pu.purchased_at order by pu.purchased_at, pu.created_at, pu.id))[1] as first_at,
@@ -111,11 +111,11 @@ export async function calibration(now: Date = new Date(), tx: Tx = db): Promise<
       ) as d(dim, key)
       where b.is_lead or b.is_customer
       group by d.dim, d.key
-    `),
+    `, tx),
     // Value inputs, judged at each purchase (see VALUE_DIMENSIONS): every paid purchase at least `window` days old,
     // with the spend, purchases, families and paying referrals up to it, and whether another purchase followed
     // within `window` days. Purchases are ordered like the cohort builder (purchased_at, created_at, id).
-    tx.execute<{ dim: string; key: string; customers: string; repeated: string }>(sql`
+    queryRows<{ dim: string; key: string; customers: string; repeated: string }>(sql`
       with p as (
         select pu.contact_id, pu.purchased_at,
           row_number() over w as k,
@@ -151,10 +151,10 @@ export async function calibration(now: Date = new Date(), tx: Tx = db): Promise<
         ('value_referrals', least(m.referrals, 1000)::text)
       ) as d(dim, key)
       group by d.dim, d.key
-    `),
+    `, tx),
     // Recent interest and recency, judged at the snapshot `window` days ago (see SNAPSHOT_DIMENSIONS). A chat is what
     // Readiness counts (src/lib/metrics/facts.ts): a call, WhatsApp, meeting or email that was inbound or reached them.
-    tx.execute<{ dim: string; key: string | null; leads: string; converted: string; customers: string; repeated: string }>(sql`
+    queryRows<{ dim: string; key: string | null; leads: string; converted: string; customers: string; repeated: string }>(sql`
       with d as (select ${nowIso}::timestamptz - ${windowDays}::int * interval '1 day' as at),
       bought as (
         select pu.contact_id,
@@ -193,12 +193,12 @@ export async function calibration(now: Date = new Date(), tx: Tx = db): Promise<
         count(*) filter (where dim = 'value_recency' and outcome) as repeated
       from (select * from customers union all select * from leads) x
       group by dim, days
-    `),
-    tx.execute<{ first_contact: string | null; first_purchase: string | null }>(sql`
+    `, tx),
+    queryRows<{ first_contact: string | null; first_purchase: string | null }>(sql`
       select
         (select min(c.created_at) from contacts c where c.merged_into_id is null) as first_contact,
         (select min(pu.purchased_at) from purchases pu where pu.status in ('paid', 'partial')) as first_purchase
-    `),
+    `, tx),
   ]);
 
   const raw: CalibrationRawRow[] = [

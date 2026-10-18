@@ -7,7 +7,9 @@ The CRM is Edapt's attention allocator: it decides who deserves a human, when, a
 ## Stack
 
 - Next.js 15 (App Router, Server Components, Server Actions), React 19, TypeScript strict, Tailwind CSS v4.
-- Postgres (Supabase in production, Mumbai region) through Drizzle ORM (`postgres` driver, `prepare: false`).
+- Postgres (Supabase in production, Mumbai region) through Drizzle ORM (`pg` driver, Supabase transaction pooler; see
+  `src/db/connection.ts`). Raw `db.execute()` returns a result object: read rows with `queryRows(sql, tx)` from `@/db`.
+  Maintenance scripts (`db-custom`, `migrate`, `schedule-cron`) use the `postgres` package directly.
 - Auth: email + password (bcrypt), DB-backed sessions in the `sessions` table, cookie `edapt_session`.
 - Files: `src/lib/storage.ts` (Supabase Storage when configured, `./uploads` in dev), served by `/api/files/<key>`.
 - Email: `src/lib/email.ts` (Resend when `RESEND_API_KEY` is set, otherwise logged).

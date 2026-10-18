@@ -6,7 +6,7 @@ import "server-only";
  */
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { getCountries } from "libphonenumber-js/max";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import {
   contacts,
   importBatches,
@@ -691,7 +691,7 @@ export async function batchColumnSamples(batchId: string, headers: string[]): Pr
 
 /** The distinct values of the product column (most common first), for the product choices in step 2. */
 export async function productValues(batchId: string, column: string, limit = 150): Promise<{ value: string; n: number }[]> {
-  const rows = await db.execute<{ value: string; n: number }>(sql`
+  const rows = await queryRows<{ value: string; n: number }>(sql`
     select trim(raw->>${column}) as value, count(*)::int as n
     from import_rows
     where batch_id = ${batchId} and coalesce(trim(raw->>${column}), '') <> ''
@@ -702,7 +702,7 @@ export async function productValues(batchId: string, column: string, limit = 150
 
 /** What a commit will do, for the confirmation: rows, new contacts, merges and payments. */
 export async function commitPreview(batchId: string): Promise<{ rows: number; create: number; merge: number; purchases: number }> {
-  const [r] = await db.execute<{ rows: number; create: number; merge: number; purchases: number }>(sql`
+  const [r] = await queryRows<{ rows: number; create: number; merge: number; purchases: number }>(sql`
     select count(*)::int as rows,
       count(*) filter (where resolution = 'create')::int as create,
       count(*) filter (where resolution = 'merge')::int as merge,

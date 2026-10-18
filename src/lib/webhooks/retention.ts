@@ -1,6 +1,6 @@
 import "server-only";
 import { sql } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { DAY_MS } from "@/lib/utils";
 
 /** How long processed webhook deliveries are kept (failed and skipped ones are kept until someone looks). */
@@ -23,7 +23,7 @@ export async function pruneWebhookEvents(
   const before = new Date(now.getTime() - days * DAY_MS).toISOString();
   let deleted = 0;
   for (let i = 0; i < maxBatches; i++) {
-    const rows = await tx.execute<{ id: string }>(sql`
+    const rows = await queryRows<{ id: string }>(sql`
       delete from webhook_events
       where id in (
         select id from webhook_events
@@ -31,7 +31,7 @@ export async function pruneWebhookEvents(
         limit ${batchSize}
       )
       returning id
-    `);
+    `, tx);
     deleted += rows.length;
     if (rows.length < batchSize) break;
   }

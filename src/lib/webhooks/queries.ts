@@ -1,7 +1,7 @@
 import "server-only";
 /** Reads for Settings > Integrations: the webhook event log and per-source health. */
 import { and, desc, eq, isNotNull, isNull, like, not, sql, type SQL } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import { contacts, webhookEvents } from "@/db/schema";
 import { isUuid } from "@/lib/utils";
 import { SKIP_PREFIX, WEBHOOK_SOURCES, type WebhookSource } from "./sources";
@@ -82,7 +82,7 @@ export async function webhookSourceHealth(now: Date = new Date(), tx: Tx = db): 
     WEBHOOK_SOURCES.map((s) => sql`${s}`),
     sql`, `,
   );
-  const rows = await tx.execute<{ source: string; last: string | Date | null; received: number; failed: number }>(sql`
+  const rows = await queryRows<{ source: string; last: string | Date | null; received: number; failed: number }>(sql`
     select s.source,
       (select max(w.received_at) from webhook_events w where w.source = s.source) as last,
       (select count(*)::int from webhook_events w where w.source = s.source and w.received_at > ${since}::timestamptz) as received,
@@ -90,7 +90,7 @@ export async function webhookSourceHealth(now: Date = new Date(), tx: Tx = db): 
         where w.source = s.source and w.received_at > ${since}::timestamptz
           and w.error is not null and w.error not like ${`${SKIP_PREFIX}%`}) as failed
     from unnest(array[${list}]::text[]) as s(source)
-  `);
+  `, tx);
   const out = new Map<string, SourceHealth>();
   for (const r of rows) {
     out.set(r.source, {

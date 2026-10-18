@@ -1,6 +1,6 @@
 import "server-only";
 import { sql, type SQL } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import type { Role } from "@/db/schema";
 import { isUuid } from "@/lib/utils";
 
@@ -119,7 +119,7 @@ export async function getActivityFeed(
       where t.status = 'done' and t.type in ('task', 'follow_up') and t.completed_at is not null ${arm(sql`t.completed_by_id`, sql`t.completed_at`)})`);
   }
   if (!parts.length) return { items: [], nextBefore: null };
-  const rows = await tx.execute<Raw>(sql`select * from (${sql.join(parts, sql` union all `)}) feed order by at desc, id limit ${limit}`);
+  const rows = await queryRows<Raw>(sql`select * from (${sql.join(parts, sql` union all `)}) feed order by at desc, id limit ${limit}`, tx);
   const items = rows.map((r) => ({
     kind: r.kind,
     id: `${r.kind}:${r.id}`,

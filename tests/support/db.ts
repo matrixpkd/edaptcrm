@@ -5,11 +5,11 @@
  *   const admin = await makeUser({ role: "admin" });
  */
 import { sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, queryRows } from "@/db";
 import { users, type Role } from "@/db/schema";
 
 export async function resetDb() {
-  const rows = await db.execute<{ tablename: string }>(
+  const rows = await queryRows<{ tablename: string }>(
     sql`select tablename from pg_tables where schemaname = 'public' and tablename not like '\\_\\_%'`,
   );
   const names = rows.map((r) => `"${r.tablename}"`).join(", ");

@@ -12,7 +12,7 @@ import "server-only";
  * - affected contacts are recomputed; the batch ends "undone", with audit entries throughout.
  */
 import { and, desc, eq, inArray, isNotNull, isNull, lt, notInArray, or, sql } from "drizzle-orm";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import {
   contactMerges,
   contacts,
@@ -136,22 +136,22 @@ async function activitySince(ids: string[], b: LoadedBatch, t: Tx): Promise<Map<
     "they referred someone",
   );
   note(
-    await t.execute<{ id: string }>(sql`
+    await queryRows<{ id: string }>(sql`
       select distinct r.contact_id as id from import_rows r join import_batches ib on ib.id = r.batch_id
       where r.contact_id = any(${uuidArray(ids)}) and r.batch_id <> ${b.id} and ib.status <> 'undone'
-    `),
+    `, t),
     "a later import added to them",
   );
   if (b.committedAt) {
     // edits by a person between the commit and the start of this undo (the undo's own audit rows come later)
     const until = b.settings.progress?.undoStartedAt ?? new Date().toISOString();
     note(
-      await t.execute<{ id: string }>(sql`
+      await queryRows<{ id: string }>(sql`
         select distinct row_id::uuid as id from audit_log
         where table_name = 'contacts' and row_id = any(${textArray(ids)})
           and user_id is not null
           and changed_at > ${b.committedAt.toISOString()}::timestamptz and changed_at < ${until}::timestamptz
-      `),
+      `, t),
       "someone edited them",
     );
   }
@@ -280,11 +280,11 @@ export async function runUndoChunk(batchId: string, actor: Actor, opts: { limit?
 
     if (!rows.length) {
       // contacts the import created that no row points at (referrers it created)
-      const leftovers = await t.execute<{ id: string }>(sql`
+      const leftovers = await queryRows<{ id: string }>(sql`
         select c.id from contacts c
         where c.import_batch_id = ${batchId} and c.merged_into_id is null
           and not exists (select 1 from import_rows r where r.batch_id = ${batchId} and r.contact_id = c.id)
-      `);
+      `, t);
       const res = await deleteCreatedContacts(leftovers.map((l) => l.id), b, actor, t);
       add.deletedContacts = res.deleted.length;
       add.keptContacts = res.kept.size;

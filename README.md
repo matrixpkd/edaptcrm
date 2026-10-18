@@ -134,7 +134,7 @@ nightly recompute and the alert rules, timing each phase (about 2.5 minutes loca
 
    | Variable | Value |
    | --- | --- |
-   | `DATABASE_URL` | Supabase *transaction pooler* URL (port 6543) |
+   | `DATABASE_URL` | Supabase *transaction pooler* URL (port 6543). A session-pooler URL (5432) on the same host is moved to 6543 by the app: the session pooler admits only 15 clients on small plans, and a few page loads at once use more |
    | `DATABASE_POOL_MAX` | optional — connections per function instance (default 5) |
    | `APP_URL` | e.g. `https://crm.edapt.in` |
    | `CRON_SECRET` | a long random string (Vercel Cron and the Supabase schedule send it to the cron routes) |

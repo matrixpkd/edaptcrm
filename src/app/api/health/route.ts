@@ -6,6 +6,9 @@ import { isAuthorizedCron } from "@/lib/secrets";
 
 export const dynamic = "force-dynamic";
 
+/** The deployed commit, so a deploy can be confirmed from outside (a short git SHA is not a secret). */
+const VERSION = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "dev";
+
 /**
  * Public liveness check. The database error is logged, never sent: it can name hosts, users or the schema.
  * With ?deep=1 and the cron secret it also runs queries the way the app does (many at once, and inside a
@@ -17,7 +20,7 @@ export async function GET(req: Request) {
   const started = Date.now();
   try {
     await db.execute(sql`select 1`);
-    if (!deep) return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
+    if (!deep) return NextResponse.json({ ok: true, version: VERSION }, { headers: { "Cache-Control": "no-store" } });
     const t1 = Date.now();
     await Promise.all(Array.from({ length: 15 }, (_, i) => db.execute(sql`select ${i}::int as i, count(*) from pg_class`)));
     const parallelMs = Date.now() - t1;
@@ -30,13 +33,13 @@ export async function GET(req: Request) {
     });
     const transactionMs = Date.now() - t2;
     return NextResponse.json(
-      { ok: true, parallelMs, transactionMs, totalMs: Date.now() - started },
+      { ok: true, version: VERSION, parallelMs, transactionMs, totalMs: Date.now() - started },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (e) {
     console.error("[health] database check failed", e);
     return NextResponse.json(
-      { ok: false, error: "database unavailable", code: errorCode(e), totalMs: Date.now() - started },
+      { ok: false, version: VERSION, error: "database unavailable", code: errorCode(e), totalMs: Date.now() - started },
       { status: 503, headers: { "Cache-Control": "no-store" } },
     );
   }

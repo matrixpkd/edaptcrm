@@ -5,7 +5,7 @@ import "server-only";
  * Not part of the public API: import from ./purchases, ./credit or ./index instead.
  */
 import { and, asc, eq, inArray, like, lte, ne, notInArray, or, sql } from "drizzle-orm";
-import type { Database, Tx } from "@/db";
+import { queryRows, type Database, type Tx } from "@/db";
 import { contacts, enquiries, payments, purchases, tasks, type Contact, type Purchase, type TaskType } from "@/db/schema";
 import { createTask } from "@/lib/alerts/core";
 import { audit } from "@/lib/audit";
@@ -132,10 +132,10 @@ export async function assertReferenceFree(
 
 /** True when any purchase or payment (live or cancelled) carries this reference. */
 async function referenceInUse(reference: string, t: Tx): Promise<boolean> {
-  const [r] = await t.execute<{ used: number | string }>(sql`
+  const [r] = await queryRows<{ used: number | string }>(sql`
     select (exists (select 1 from purchases where reference = ${reference})
         or exists (select 1 from payments where reference = ${reference}))::int as used
-  `);
+  `, t);
   return Number(r?.used) === 1;
 }
 

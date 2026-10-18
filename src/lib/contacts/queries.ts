@@ -1,7 +1,7 @@
 import "server-only";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { db, type Tx } from "@/db";
+import { db, queryRows, type Tx } from "@/db";
 import {
   STAGES,
   contactMerges,
@@ -669,7 +669,7 @@ export type ContactFootprint = {
 
 export async function getContactFootprint(contactId: string, tx: Tx = db): Promise<ContactFootprint> {
   if (!isUuid(contactId)) return { enquiries: 0, interactions: 0, purchases: 0, payments: 0, ratings: 0, referred: 0 };
-  const rows = await tx.execute<ContactFootprint>(sql`
+  const rows = await queryRows<ContactFootprint>(sql`
     select
       (select count(*)::int from ${enquiries} where contact_id = ${contactId}) as enquiries,
       (select count(*)::int from ${interactions} where contact_id = ${contactId}) as interactions,
@@ -677,7 +677,7 @@ export async function getContactFootprint(contactId: string, tx: Tx = db): Promi
       (select count(*)::int from ${payments} where contact_id = ${contactId}) as payments,
       (select count(*)::int from ${ratings} where contact_id = ${contactId}) as ratings,
       (select count(*)::int from ${contacts} where referred_by_id = ${contactId} and merged_into_id is null) as referred
-  `);
+  `, tx);
   const r = rows[0];
   return {
     enquiries: Number(r?.enquiries ?? 0),
@@ -879,7 +879,7 @@ export async function getContactTimeline(
   const tx = opts.tx ?? db;
   const pageSize = Math.max(1, Math.min(opts.pageSize ?? TIMELINE_PAGE_SIZE, 100));
   const id = contactId;
-  const rows = await tx.execute<RawTimelineRow>(sql`
+  const rows = await queryRows<RawTimelineRow>(sql`
     select kind, id, at, data from (
       select 'enquiry' as kind, e.id::text as id, e.received_at as at,
         jsonb_build_object('channel', e.channel, 'campaign', e.campaign, 'status', e.status, 'notes', e.notes,
@@ -940,7 +940,7 @@ export async function getContactTimeline(
     ) t
     order by at desc, kind asc, id desc
     limit ${pageSize + 1} offset ${(page - 1) * pageSize}
-  `);
+  `, tx);
   const items = rows
     .slice(0, pageSize)
     .map(toTimelineItem)

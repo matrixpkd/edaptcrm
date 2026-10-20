@@ -31,6 +31,7 @@ import { ROLE_LABELS } from "@/lib/auth/permissions";
 import { logoutAction } from "@/app/(auth)/actions";
 import { CallReturnWatcher } from "@/components/contacts/call-return-watcher";
 import { GlobalSearch } from "./global-search";
+import { HydrationGate } from "./hydration-gate";
 
 const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   "list-checks": ListChecks,
@@ -228,7 +229,9 @@ export function AppShell({
       )}
 
       <main className="min-w-0 flex-1 px-4 pb-28 pt-4 sm:px-6 lg:px-8 lg:pb-10 lg:pt-8">
-        <div className="mx-auto max-w-6xl">{children}</div>
+        <div className="mx-auto max-w-6xl">
+          <HydrationGate>{children}</HydrationGate>
+        </div>
       </main>
 
       {/* Phone bottom bar */}

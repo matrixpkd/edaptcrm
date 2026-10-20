@@ -9,16 +9,11 @@ import type { Page } from "@playwright/test";
 /**
  * Collects uncaught page errors and console errors while a page is open.
  *
- * Each document is delivered to the browser in one piece. Under the suite's parallel load `next start` streams the
- * HTML in several chunks, and with the JS chunks already cached React (19.1, Next 15.5) can start hydrating a
- * half-parsed document and report a recoverable hydration mismatch (#418) on any page; buffering the document
- * removes that network race while still catching every real server/client difference.
+ * Documents arrive as the server streams them (not buffered): under the suite's parallel load the RSC payload and
+ * client chunks often land after hydration has started, which is when the React hydration bug worked around in
+ * src/components/shell/hydration-gate.tsx showed up here as #418.
  */
 async function watchErrors(page: Page) {
-  await page.route("**/*", async (route) => {
-    if (route.request().resourceType() !== "document") return route.fallback();
-    await route.fulfill({ response: await route.fetch() });
-  });
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
   page.on("console", (m) => {

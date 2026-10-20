@@ -7,8 +7,8 @@ import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { bulkReassignAction } from "../actions";
+import { BULK_FORM_ID } from "./bulk-form";
 
-export const BULK_FORM_ID = "bulk-reassign";
 const BOX = `input[form="${BULK_FORM_ID}"][name="ids"]`;
 const ALL = "input[data-bulk-all]";
 

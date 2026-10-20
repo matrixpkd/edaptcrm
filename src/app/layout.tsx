@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ServiceWorker } from "@/components/shell/service-worker";
 import { ClientErrorReporter } from "@/components/shell/client-error-reporter";
+import { HydrationGate } from "@/components/shell/hydration-gate";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
@@ -26,7 +27,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        {children}
+        <HydrationGate>{children}</HydrationGate>
         <ServiceWorker />
         <ClientErrorReporter />
       </body>

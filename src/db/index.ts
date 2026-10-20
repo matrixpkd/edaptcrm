@@ -1,8 +1,9 @@
 import "server-only";
 import type { SQL } from "drizzle-orm";
+import { attachDatabasePool } from "@vercel/functions";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
 import { poolConfig } from "./connection";
+import { RetryingPool } from "./pool";
 import * as schema from "./schema";
 
 export type Database = NodePgDatabase<typeof schema>;
@@ -10,7 +11,7 @@ export type Database = NodePgDatabase<typeof schema>;
 export type Tx = Database | Parameters<Parameters<Database["transaction"]>[0]>[0];
 
 const globalForDb = globalThis as unknown as {
-  __edaptPool?: Pool;
+  __edaptPool?: RetryingPool;
   /** Set by the perf benches before they load this module, to capture every statement the app sends. */
   __edaptQueryLog?: (query: string, params: unknown[]) => void;
 };
@@ -18,13 +19,16 @@ const globalForDb = globalThis as unknown as {
 function createPool() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not set");
-  // Transaction-mode pooler on Supabase, TLS and pool size: see ./connection.ts
-  const pool = new Pool(poolConfig(url));
+  // Transaction-mode pooler on Supabase, TLS and pool size: see ./connection.ts. A full pooler is retried: ./pool.ts
+  const pool = new RetryingPool(poolConfig(url));
   // A connection the pooler or server drops must not crash the process. The pool only listens on idle connections,
   // so listen on every connection too (one held by a transaction): the query in flight rejects, the pool drops the
   // dead connection and opens a new one on the next query.
   pool.on("connect", (client) => client.on("error", (e) => console.error("[db] connection error", e)));
   pool.on("error", () => {}); // already logged by the connection's own listener
+  // On Vercel, keep the instance alive until idle connections close, instead of suspending it while they hold
+  // pooler slots (a no-op elsewhere).
+  attachDatabasePool(pool);
   return pool;
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { poolConfig } from "@/db/connection";
+import { isTooManyClients } from "@/db/pool";
 
 const SESSION = "postgresql://postgres.abcd:s3cr%40t@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres";
 
@@ -44,8 +45,10 @@ describe("poolConfig", () => {
     expect(() => poolConfig("postgres://u:p@db.example.com/app?sslmode=sometimes", {})).toThrow(/unknown sslmode/);
   });
 
-  it("sizes the pool from DATABASE_POOL_MAX, falling back to 5 for missing or bad values", () => {
+  it("sizes the pool from DATABASE_POOL_MAX, else 1 connection per Vercel instance and 5 elsewhere", () => {
     expect(target(SESSION, { DATABASE_POOL_MAX: "3" }).max).toBe(3);
+    expect(target(SESSION, { DATABASE_POOL_MAX: "3", VERCEL: "1" }).max).toBe(3);
+    expect(target(SESSION, { VERCEL: "1" }).max).toBe(1);
     expect(target(SESSION).max).toBe(5);
     expect(target(SESSION, { DATABASE_POOL_MAX: "0" }).max).toBe(5);
     expect(target(SESSION, { DATABASE_POOL_MAX: "lots" }).max).toBe(5);
@@ -54,5 +57,18 @@ describe("poolConfig", () => {
   it("rejects URLs that are not Postgres URLs", () => {
     expect(() => poolConfig("not a url", {})).toThrow(/not a valid URL/);
     expect(() => poolConfig("mysql://u:p@h/db", {})).toThrow(/postgres:\/\//);
+  });
+});
+
+describe("isTooManyClients", () => {
+  it("spots a full pooler or database, and nothing else", () => {
+    expect(isTooManyClients({ code: "XX000", message: "(EMAXCONN) max client connections reached, limit: 200" })).toBe(true);
+    expect(isTooManyClients({ code: "XX000", message: "(EMAXCONNSESSION) max clients reached in session mode - max clients are limited to pool_size: 15" })).toBe(true);
+    expect(isTooManyClients({ code: "53300", message: 'too many connections for role "x"' })).toBe(true);
+    expect(isTooManyClients(new Error("sorry, too many clients already"))).toBe(true);
+    expect(isTooManyClients({ code: "XX000", message: "Tenant or user not found" })).toBe(false);
+    expect(isTooManyClients({ code: "28P01", message: "password authentication failed" })).toBe(false);
+    expect(isTooManyClients(new Error("Connection terminated unexpectedly"))).toBe(false);
+    expect(isTooManyClients(null)).toBe(false);
   });
 });

@@ -10,6 +10,10 @@ import type { PoolConfig } from "pg";
  * unless DATABASE_POOLER=session. node-postgres suits transaction mode: one query at a time per connection, and
  * no named prepared statements.
  *
+ * Pool size: transaction mode admits 200 clients on small plans, and a burst of requests starts one Vercel instance
+ * per request, so each instance keeps ONE connection by default on Vercel (the usual serverless setting; a page's
+ * parallel queries take turns on it). Elsewhere (local, scripts) the default is 5. DATABASE_POOL_MAX overrides both.
+ *
  * TLS: `sslmode` keeps its libpq meaning (require = encrypted, certificate not checked; verify-full = checked).
  * Supabase hosts are encrypted by default. Other hosts without `sslmode` (local Postgres) connect in plain text.
  */
@@ -43,9 +47,9 @@ export function poolConfig(url: string, env: Env = process.env): PoolConfig {
   return {
     connectionString: u.toString(),
     ssl: sslFor(sslmode, SUPABASE_HOST.test(u.hostname)),
-    max: positiveInt(env.DATABASE_POOL_MAX, 5),
-    // close idle connections soon: a suspended serverless instance cannot close them itself
-    idleTimeoutMillis: 10_000,
+    max: positiveInt(env.DATABASE_POOL_MAX, env.VERCEL ? 1 : 5),
+    // close idle connections soon; on Vercel the instance is kept alive until they close (see ./index.ts)
+    idleTimeoutMillis: 5_000,
     // fail fast instead of hanging a request when the pooler cannot be reached
     connectionTimeoutMillis: 15_000,
     // scripts exit when their work is done, without waiting for idle connections to time out

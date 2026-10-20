@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
+import { Pool } from "pg";
 import { db, queryRows } from "@/db";
+import { RetryingPool } from "@/db/pool";
 
 async function terminate(pid: number) {
   // from another pooled connection, as a pooler restart or a network drop would
@@ -32,5 +34,50 @@ describe("database connection", () => {
     });
     await expect(run).rejects.toThrow();
     expect(await queryRows<{ ok: number }>(sql`select 1::int as ok`)).toEqual([{ ok: 1 }]);
+  });
+});
+
+describe("a full pooler", () => {
+  // A role allowed one connection stands in for a pooler with no free client slot (Postgres refuses with 53300).
+  const role = `edapt_limited_${process.pid}`;
+  const url = new URL(process.env.DATABASE_URL!);
+  const limitedUrl = () => {
+    const u = new URL(url);
+    u.username = role;
+    u.password = "limited-pass";
+    return u.toString();
+  };
+
+  beforeAll(async () => {
+    await db.execute(sql.raw(`drop role if exists ${role}`));
+    await db.execute(sql.raw(`create role ${role} login password 'limited-pass' connection limit 1`));
+  });
+  afterAll(async () => {
+    await db.execute(sql.raw(`select pg_terminate_backend(pid) from pg_stat_activity where usename = '${role}'`));
+    await db.execute(sql.raw(`drop role if exists ${role}`));
+  });
+
+  it("is waited out: a second query reuses the connection once it is free, instead of failing", async () => {
+    const pool = new RetryingPool({ connectionString: limitedUrl(), max: 3 });
+    try {
+      const [slow, quick] = await Promise.all([pool.query("select pg_sleep(0.4), 1 as n"), pool.query("select 2 as n")]);
+      expect(slow.rows[0].n).toBe(1);
+      expect(quick.rows[0].n).toBe(2);
+      expect(pool.totalCount).toBe(1);
+      const client = await pool.connect(); // transactions take a client the same way
+      client.release();
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it("fails without the retry (the case it guards)", async () => {
+    const pool = new Pool({ connectionString: limitedUrl(), max: 3 });
+    try {
+      const results = await Promise.allSettled([pool.query("select pg_sleep(0.4)"), pool.query("select 2")]);
+      expect(results.some((r) => r.status === "rejected" && (r.reason as { code?: string }).code === "53300")).toBe(true);
+    } finally {
+      await pool.end();
+    }
   });
 });

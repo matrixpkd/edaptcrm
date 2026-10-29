@@ -1,5 +1,6 @@
 # Edapt CRM — project brief
 
+**Picking up the work? Read docs/HANDOFF.md first** (where everything runs, what was verified, open items).
 The full product spec is **docs/SPEC.md** ("Edapt CRM: Requirements and Build Spec"). It is the source of
 truth for every rule, threshold, screen and formula. Read the sections relevant to your task before coding.
 The CRM is Edapt's attention allocator: it decides who deserves a human, when, and with which offer.

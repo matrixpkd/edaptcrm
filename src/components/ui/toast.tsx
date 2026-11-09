@@ -3,6 +3,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AlertTriangle, Check, X } from "lucide-react";
 import { FLASH_COOKIE, readFlashCookie } from "@/lib/flash-cookie";
+import { listenForToasts, type ToastNote } from "@/lib/toast-events";
 import { cn } from "@/lib/utils";
 
 /**
@@ -10,16 +11,12 @@ import { cn } from "@/lib/utils";
  * screen (above the phone tab bar), so an action whose button disappears after it runs (Mark qualified, a Today
  * row, a removed alternate number) still says what happened. Server actions that redirect use `flash()` from
  * `@/lib/flash` instead; the message rides a short-lived cookie and the Toaster shows it on the next page.
+ * A message raised before the Toaster listens is kept for it (`@/lib/toast-events`).
  */
 
-const EVENT = "edapt:toast";
-type Tone = "success" | "error";
-type Msg = { text: string; tone: Tone; key: number };
+export { toast } from "@/lib/toast-events";
 
-export function toast(text: string, tone: Tone = "success") {
-  if (typeof window === "undefined" || !text) return;
-  window.dispatchEvent(new CustomEvent<{ text: string; tone: Tone }>(EVENT, { detail: { text, tone } }));
-}
+type Msg = ToastNote & { key: number };
 
 /** Mounted once in the signed-in layout. */
 export function Toaster() {
@@ -27,22 +24,16 @@ export function Toaster() {
   const pathname = usePathname();
   const search = useSearchParams();
 
-  useEffect(() => {
-    const on = (e: Event) => {
-      const d = (e as CustomEvent<{ text: string; tone: Tone }>).detail;
-      setMsg({ text: d.text, tone: d.tone, key: Date.now() });
-    };
-    window.addEventListener(EVENT, on);
-    return () => window.removeEventListener(EVENT, on);
-  }, []);
-
-  // a message left by a server action that redirected here
+  // a message left by a server action that redirected here. Declared before the listener: on mount a message kept
+  // for the Toaster (raised on this page, so newer than the cookie) is set after it and wins
   useEffect(() => {
     const text = readFlashCookie(document.cookie);
     if (!text) return;
     document.cookie = `${FLASH_COOKIE}=; Max-Age=0; Path=/; SameSite=Lax`;
     setMsg({ text, tone: "success", key: Date.now() });
   }, [pathname, search]);
+
+  useEffect(() => listenForToasts((note) => setMsg({ ...note, key: Date.now() })), []);
 
   useEffect(() => {
     if (!msg) return;

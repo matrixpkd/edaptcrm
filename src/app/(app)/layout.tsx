@@ -17,6 +17,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <AppShell user={{ name: user.name, email: user.email, role: user.role }} unread={n}>
       {children}
+      {/* hydrates last (not while an action is in flight); toast() keeps a message raised before it listens */}
       <Suspense fallback={null}>
         <Toaster />
       </Suspense>

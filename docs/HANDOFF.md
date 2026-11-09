@@ -1,4 +1,4 @@
-# Handoff: state of the build (29 Oct 2026)
+# Handoff: state of the build (30 Oct 2026)
 
 Read this first when you pick up the work in a new conversation, then `CLAUDE.md` (conventions) and the parts of
 `docs/SPEC.md` your task touches. No secrets are written here: passwords and keys live in Vercel and Supabase only.
@@ -27,7 +27,14 @@ site down on 18 Oct. On Vercel each instance keeps one connection; a full pooler
 
 Last verified on the live site (21 Oct, version `56d41a4`): all 32 screens load, 90 requests sent at once all
 succeed, and `/api/health?deep=1` (needs `Authorization: Bearer <CRON_SECRET>`) is fine. `/api/health` shows the
-deployed commit. Locally: 1,036 unit/integration tests and 94 Playwright tests pass.
+deployed commit. On 30 Oct `/api/health` was ok on `b20b980` and the 15-minute pg_cron job had no failures.
+
+Locally (30 Oct, macOS): 1,046 unit/integration tests and 94 Playwright tests pass (1 phone run skipped by design).
+On Node 22 `npm test` is clean. On Node 24 (what Vercel runs) every test passes but Vitest reports one unhandled
+rejection, "ReadableStream is already closed", after the chunked-body cap test in
+`tests/integration/security-auth.test.ts` (undici in Node 24; it happens before this change too), so `npm test` exits 1.
+macOS setup: Homebrew `postgresql@16` (started with `pg_ctl -D /opt/homebrew/var/postgresql@16 start`, role
+`postgres`/`postgres` added) and `node@24` / `node@22` from Homebrew on PATH (the default Node 20 cannot run Vitest 5).
 
 ## Open items
 
@@ -35,8 +42,16 @@ Owner actions (outside the code):
 1. Vercel → Settings → Environment Variables: **delete `DATABASE_POOL_MAX`** (it is 3; unset means 1 per instance,
    which leaves more room under load) and **add `SUPABASE_SERVICE_ROLE_KEY`** (file uploads need it).
 2. Rotate the Supabase database password (it was shared in a chat), then update `DATABASE_URL` in Vercel.
-3. Connect the Supabase and Vercel connectors in the Claude account that continues the work. The Vercel connector of
-   the previous account had lost access to team `edapt4`.
+3. Connect the Supabase and Vercel connectors in the Claude account that continues the work. On 30 Oct Supabase
+   worked; Vercel could read the project but refused calls naming team `edapt4` (logs, runtime errors) until the team
+   access request is approved.
+4. GitHub: the Mac's GitHub login `youmeareorg-create` has read-only access to `matrixpkd/edaptcrm`, so it cannot
+   push. Add it as a collaborator with Write access (or sign the Mac in as `matrixpkd`).
+5. Vercel project `edaptcrm-ew63` is a second copy linked to the same repository; every build there fails. Delete it
+   if it is not needed (the live site is project `edaptcrm`).
+
+Security: `next` 15.5.27 has a critical advisory (image optimisation with SVGs) and a high one (Server Actions
+denial of service). The fix is 15.5.28, a patch release.
 
 Product notes from the last QA pass, not yet changed (each needs a decision, not just code):
 - Logging a support issue moves a lead to Contacted.
@@ -49,6 +64,11 @@ Technical notes:
 - `src/components/shell/hydration-gate.tsx` works around a hydration bug in the React that ships with Next 15.5
   (intermittent error #418). Remove it once React 19.3 is in.
 - The perf benches (`scripts/perf/bench.ts`, `scripts/bench-import.ts`) capture SQL through `__edaptQueryLog` in `src/db`.
+- Toasts: the Toaster sits in its own Suspense boundary, which React hydrates last and not while an action is in
+  flight. A tap before hydration is replayed and can answer before the Toaster listens, so `toast()`
+  (`src/lib/toast-events.ts`) keeps that message for up to 10 s and the Toaster shows it when it starts listening.
+  This fixed the intermittent "Linked to this organisation" failure in `tests/e2e/feedback.spec.ts` (8 in 30 runs
+  before, none in 84 runs with the fix, 30 of them on the final version). `PaymentsToaster`/`announce()` is a separate copy that is not exposed to this race.
 
 ## Starting a new session
 

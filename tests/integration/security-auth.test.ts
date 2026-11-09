@@ -6,6 +6,7 @@
  */
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { Readable } from "node:stream";
 import bcrypt from "bcryptjs";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
@@ -243,9 +244,26 @@ describe("webhook bodies are capped while streaming", () => {
   it("refuses a declared length over the cap, and a multipart form over the cap", async () => {
     const big = new Request("http://localhost/x", { method: "POST", headers: { "content-length": "999999999" }, body: "{}" });
     expect(await readWebhookBody(big, 5000)).toMatchObject({ ok: false, status: 413 });
+    // The form goes in as the bytes a webhook arrives with, whole and as the Node request stream Next hands a route.
+    // Not as an in-memory FormData: Node 24's undici writes that from a loop that keeps going after the reader cancels,
+    // an unhandled "ReadableStream is already closed" that real requests never hit.
     const fd = new FormData();
     fd.append("payload", "x".repeat(6000));
-    expect(await readWebhookBody(new Request("http://localhost/x", { method: "POST", body: fd }), 5000)).toMatchObject({ ok: false, status: 413 });
+    const multipart = new Response(fd);
+    const headers = { "content-type": multipart.headers.get("content-type")! };
+    const bytes = new Uint8Array(await multipart.arrayBuffer());
+    const whole = () => new Request("http://localhost/x", { method: "POST", headers, body: bytes });
+    expect(whole().headers.get("content-length")).toBeNull(); // refused by the streaming cap, not the declared length
+    expect(await readWebhookBody(whole(), 5000)).toMatchObject({ ok: false, status: 413 });
+    expect(await readWebhookBody(whole(), 10_000)).toEqual({ ok: true, payload: { payload: "x".repeat(6000) } });
+    const pieces = Array.from({ length: Math.ceil(bytes.length / 1000) }, (_, i) => Buffer.from(bytes.subarray(i * 1000, (i + 1) * 1000)));
+    const streamed = new Request("http://localhost/x", {
+      method: "POST",
+      headers,
+      body: Readable.from(pieces) as unknown as BodyInit,
+      duplex: "half",
+    } as RequestInit);
+    expect(await readWebhookBody(streamed, 5000)).toMatchObject({ ok: false, status: 413 });
     const small = new FormData();
     small.append("phone", "9847012345");
     expect(await readWebhookBody(new Request("http://localhost/x", { method: "POST", body: small }), 5000)).toEqual({ ok: true, payload: { phone: "9847012345" } });

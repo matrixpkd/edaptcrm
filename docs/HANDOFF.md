@@ -1,4 +1,4 @@
-# Handoff: state of the build (30 Oct 2026)
+# Handoff: state of the build (9 Nov 2026)
 
 Read this first when you pick up the work in a new conversation, then `CLAUDE.md` (conventions) and the parts of
 `docs/SPEC.md` your task touches. No secrets are written here: passwords and keys live in Vercel and Supabase only.
@@ -29,10 +29,9 @@ Last verified on the live site (21 Oct, version `56d41a4`): all 32 screens load,
 succeed, and `/api/health?deep=1` (needs `Authorization: Bearer <CRON_SECRET>`) is fine. `/api/health` shows the
 deployed commit. On 30 Oct `/api/health` was ok on `b20b980` and the 15-minute pg_cron job had no failures.
 
-Locally (30 Oct, macOS): 1,046 unit/integration tests and 94 Playwright tests pass (1 phone run skipped by design).
-On Node 22 `npm test` is clean. On Node 24 (what Vercel runs) every test passes but Vitest reports one unhandled
-rejection, "ReadableStream is already closed", after the chunked-body cap test in
-`tests/integration/security-auth.test.ts` (undici in Node 24; it happens before this change too), so `npm test` exits 1.
+Locally (9 Nov, macOS): 1,046 unit/integration tests pass with no errors on Node 24 (what Vercel runs) and Node 22,
+and 94 Playwright tests pass (1 phone run skipped by design). Check Vitest's summary for an "Errors" line too: an
+unhandled rejection fails the run even when every test passes.
 macOS setup: Homebrew `postgresql@16` (started with `pg_ctl -D /opt/homebrew/var/postgresql@16 start`, role
 `postgres`/`postgres` added) and `node@24` / `node@22` from Homebrew on PATH (the default Node 20 cannot run Vitest 5).
 
@@ -68,7 +67,13 @@ Technical notes:
   flight. A tap before hydration is replayed and can answer before the Toaster listens, so `toast()`
   (`src/lib/toast-events.ts`) keeps that message for up to 10 s and the Toaster shows it when it starts listening.
   This fixed the intermittent "Linked to this organisation" failure in `tests/e2e/feedback.spec.ts` (8 in 30 runs
-  before, none in 84 runs with the fix, 30 of them on the final version). `PaymentsToaster`/`announce()` is a separate copy that is not exposed to this race.
+  before, none in 84 runs with the fix, 30 of them on the final version). `PaymentsToaster`/`announce()` is a
+  separate copy that is not exposed to this race.
+- Node 24's undici (7.x) writes an in-memory `FormData` request body from a loop that keeps going after the reader
+  cancels, which leaves an unhandled "ReadableStream is already closed". A test that sends a form over a body cap
+  must send it as bytes or a Node stream (as `tests/integration/security-auth.test.ts` does). Production is not
+  affected: Next hands route handlers the network stream, and `next start` on Node 24 answered 2 MB webhook bodies
+  with 413 and no error.
 
 ## Starting a new session
 

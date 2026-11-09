@@ -1,4 +1,4 @@
-# Handoff: state of the build (9 Nov 2026)
+# Handoff: state of the build (10 Nov 2026)
 
 Read this first when you pick up the work in a new conversation, then `CLAUDE.md` (conventions) and the parts of
 `docs/SPEC.md` your task touches. No secrets are written here: passwords and keys live in Vercel and Supabase only.
@@ -31,8 +31,9 @@ deployed commit. On 30 Oct `/api/health` was ok on `b20b980` and the 15-minute p
 On 9 Nov `4f626e0` went live: `/api/health` ok, the sign-in page loads, signed-in pages redirect to it, and
 `app_errors` had no rows in the last 24 hours.
 
-Locally (9 Nov, macOS): 1,046 unit/integration tests pass with no errors on Node 24 (what Vercel runs) and Node 22,
-and 94 Playwright tests pass (1 phone run skipped by design). Check Vitest's summary for an "Errors" line too: an
+Locally (10 Nov, macOS, Next 15.5.29): 1,046 unit/integration tests pass with no errors on Node 24 (what Vercel
+runs) and Node 22 (except the intermittent round-robin test under Technical notes), and 94 Playwright tests pass
+(1 phone run skipped by design). Check Vitest's summary for an "Errors" line too: an
 unhandled rejection fails the run even when every test passes.
 macOS setup: Homebrew `postgresql@16` (started with `pg_ctl -D /opt/homebrew/var/postgresql@16 start`, role
 `postgres`/`postgres` added) and `node@24` / `node@22` from Homebrew on PATH (the default Node 20 cannot run Vitest 5).
@@ -48,9 +49,18 @@ Owner actions (outside the code):
    access request is approved (still refused on 9 Nov; GitHub's commit status shows each Vercel build meanwhile).
 4. Vercel project `edaptcrm-ew63` is a second copy linked to the same repository; every build there fails. Delete it
    if it is not needed (the live site is project `edaptcrm`).
+5. Vercel → `edaptcrm` → Settings → Deployment Protection: turn on Vercel Authentication with **Standard
+   Protection**. On 10 Nov it was off: every older production deployment answers publicly on its own
+   `*-edapt4.vercel.app` address, still running the Next.js version it was built with (15.5.27 and older, open to
+   the denial of service above). Standard Protection leaves `edaptcrm.vercel.app` public, which is what users,
+   webhooks and the pg_cron job (`edapt_crm_url`) call; nothing in the code uses `VERCEL_URL`.
 
-Security: `next` 15.5.27 has a critical advisory (image optimisation with SVGs) and a high one (Server Actions
-denial of service). The fix is 15.5.28, a patch release.
+Security: `next` is on 15.5.29 (10 Nov), which fixes GHSA-2464-fhr4-w9xw (image optimiser with SVGs; the app was
+not really exposed: no images config, and Vercel serves `/_next/image`) and GHSA-p3m5-59mp-jv5r (a CPU denial of
+service reachable through the public sign-in action). `npm audit` still lists `next` as moderate for its own postcss
+8.4.31, which runs only at build time on our CSS (docs/SECURITY.md). Other audit items, not yet looked at: `zod` 4.1
+inside `@vercel/functions` → `@vercel/oidc` (high), `minimatch` in the lint tooling, `esbuild` in `drizzle-kit`
+(dev only), `uuid` in `exceljs`.
 
 Product notes from the last QA pass, not yet changed (each needs a decision, not just code):
 - Logging a support issue moves a lead to Contacted.
@@ -58,6 +68,12 @@ Product notes from the last QA pass, not yet changed (each needs a decision, not
 - WhatsApp on the contact page takes two taps (a message template picker opens first).
 
 Technical notes:
+- Round robin (`pickAutoOwner`, `src/lib/contacts/assignment.ts`) has a race, not yet fixed: when four leads for one
+  team are assigned at the same moment, 1–3% of rounds give one salesperson two of them and another none (measured
+  10 Nov, 2,000 rounds, on Node 24 and 22). Likely cause: `FOR UPDATE SKIP LOCKED` with `ORDER BY ... LIMIT 1` locks
+  a row a parallel pick stamped and committed after this statement's snapshot, and Postgres re-checks only the WHERE
+  clause, not the order. So `tests/integration/contacts-review.test.ts` "parallel picks on the root handle..." fails
+  now and then (it makes 10 rounds, so roughly 1 run of `npm test` in 4 to 10). Fix the race; do not loosen the test.
 - Services run `Promise.all` on a transaction handle; pg@8 queues those (with a deprecation warning), pg@9 will not.
   Keep `pg` on `^8` until they run in turn.
 - `src/components/shell/hydration-gate.tsx` works around a hydration bug in the React that ships with Next 15.5

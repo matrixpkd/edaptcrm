@@ -7,7 +7,7 @@ Read this first when you pick up the work in a new conversation, then `CLAUDE.md
 
 | What | Where |
 | --- | --- |
-| Code | GitHub `matrixpkd/edaptcrm`, branch `claude/edapt-logo-x4jtjq` (the only branch, and the default). Every push to it deploys to production. |
+| Code | GitHub `matrixpkd/edaptcrm`, branch `claude/edapt-logo-x4jtjq` (the only branch, and the default). Every push to it deploys to production. On the owner's Mac, `gh` is signed in as `matrixpkd` (since 9 Nov), which can push; its other login, `youmeareorg-create`, is read-only. |
 | Live app | https://edaptcrm.vercel.app (first admin: umertabdussalam@gmail.com) |
 | Hosting | Vercel project `edaptcrm`, team `edapt4`, Hobby plan, functions in `sin1` (`vercel.json`) |
 | Database | Supabase project "matrixpkd's Project", ref `alseppmrzbnyxpwjwhss`, region ap-southeast-1 (Singapore; the spec asked for Mumbai, see README "Deploy") |
@@ -28,6 +28,8 @@ site down on 18 Oct. On Vercel each instance keeps one connection; a full pooler
 Last verified on the live site (21 Oct, version `56d41a4`): all 32 screens load, 90 requests sent at once all
 succeed, and `/api/health?deep=1` (needs `Authorization: Bearer <CRON_SECRET>`) is fine. `/api/health` shows the
 deployed commit. On 30 Oct `/api/health` was ok on `b20b980` and the 15-minute pg_cron job had no failures.
+On 9 Nov `4f626e0` went live: `/api/health` ok, the sign-in page loads, signed-in pages redirect to it, and
+`app_errors` had no rows in the last 24 hours.
 
 Locally (9 Nov, macOS): 1,046 unit/integration tests pass with no errors on Node 24 (what Vercel runs) and Node 22,
 and 94 Playwright tests pass (1 phone run skipped by design). Check Vitest's summary for an "Errors" line too: an
@@ -43,10 +45,8 @@ Owner actions (outside the code):
 2. Rotate the Supabase database password (it was shared in a chat), then update `DATABASE_URL` in Vercel.
 3. Connect the Supabase and Vercel connectors in the Claude account that continues the work. On 30 Oct Supabase
    worked; Vercel could read the project but refused calls naming team `edapt4` (logs, runtime errors) until the team
-   access request is approved.
-4. GitHub: the Mac's GitHub login `youmeareorg-create` has read-only access to `matrixpkd/edaptcrm`, so it cannot
-   push. Add it as a collaborator with Write access (or sign the Mac in as `matrixpkd`).
-5. Vercel project `edaptcrm-ew63` is a second copy linked to the same repository; every build there fails. Delete it
+   access request is approved (still refused on 9 Nov; GitHub's commit status shows each Vercel build meanwhile).
+4. Vercel project `edaptcrm-ew63` is a second copy linked to the same repository; every build there fails. Delete it
    if it is not needed (the live site is project `edaptcrm`).
 
 Security: `next` 15.5.27 has a critical advisory (image optimisation with SVGs) and a high one (Server Actions

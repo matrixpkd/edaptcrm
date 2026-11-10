@@ -28,6 +28,14 @@ import { makeUser, resetDb } from "../support/db";
 
 type U = { id: string; name: string; email: string; role: Role; team: string | null; timezone: string; active: boolean };
 const session = vi.hoisted(() => ({ user: null as null | U }));
+/** Every statement the app sends while `capturing` is set (src/db reads this hook when it loads, before the imports above run). */
+const queryLog = vi.hoisted(() => {
+  const log = { capturing: null as null | string[] };
+  (globalThis as unknown as { __edaptQueryLog?: (q: string, p: unknown[]) => void }).__edaptQueryLog = (q) => {
+    log.capturing?.push(q);
+  };
+  return log;
+});
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 vi.mock("next/navigation", () => ({
@@ -263,17 +271,44 @@ describe("rate limit store", () => {
 
   it("lookups sent at the same moment take turns: at one below the limit, exactly one of many is counted", async () => {
     const limit = { bucket: "test_parallel", max: 300, windowMinutes: 10 };
-    const minuteAgo = new Date(Date.now() - 60_000);
-    await db.insert(rateLimitHits).values(Array.from({ length: limit.max - 1 }, () => ({ bucket: limit.bucket, subject: "u1", createdAt: minuteAgo })));
-    // Open every connection of the pool first, so the lookups below really run at the same moment (a cold pool
-    // connects one by one and staggers them)
     const poolSize = poolConfig(process.env.DATABASE_URL!).max!; // what src/db opens its pool with
     expect(poolSize).toBeGreaterThanOrEqual(4);
-    await Promise.all(Array.from({ length: poolSize }, () => db.execute(sql`select pg_sleep(0.05)`)));
-    const gates = await Promise.all(Array.from({ length: 40 }, () => takeRateLimit(limit, "u1")));
-    expect(gates.filter((g) => g.allowed)).toHaveLength(1);
-    expect(gates.filter((g) => !g.allowed)).toEqual(Array(39).fill({ allowed: false, retryAfterMinutes: 9 }));
-    expect(await hits(limit.bucket, "u1")).toBe(limit.max);
+    // three rounds: without the lock most rounds overshoot, but now and then one still counts exactly one
+    for (const subject of ["u1", "u2", "u3"]) {
+      const minuteAgo = new Date(Date.now() - 60_000);
+      await db.insert(rateLimitHits).values(Array.from({ length: limit.max - 1 }, () => ({ bucket: limit.bucket, subject, createdAt: minuteAgo })));
+      // Open every connection of the pool first, so the lookups below really run at the same moment (a cold pool
+      // connects one by one and staggers them)
+      await Promise.all(Array.from({ length: poolSize }, () => db.execute(sql`select pg_sleep(0.05)`)));
+      const gates = await Promise.all(Array.from({ length: 40 }, () => takeRateLimit(limit, subject)));
+      expect(gates.filter((g) => g.allowed)).toHaveLength(1);
+      expect(gates.filter((g) => !g.allowed)).toEqual(Array(39).fill({ allowed: false, retryAfterMinutes: 9 }));
+      expect(await hits(limit.bucket, subject)).toBe(limit.max);
+    }
+  });
+
+  it("a lookup is one statement, so the lock lasts only while the server runs it, never across a round trip", async () => {
+    // With the lock taken in a statement of its own (then the count, then COMMIT, each a round trip), every lookup
+    // waiting for it held a pooled connection until the holder's round trips came back: a burst from one person
+    // stalled everyone else's queries.
+    await db.insert(rateLimitHits).values([0, 1].map(() => ({ bucket: LIMIT.bucket, subject: "u1", createdAt: new Date(Date.now() - 60_000) })));
+    let sent: string[] = [];
+    queryLog.capturing = sent;
+    try {
+      expect(await takeRateLimit(LIMIT, "u1")).toEqual({ allowed: true });
+      expect(await takeRateLimit(LIMIT, "u1")).toEqual({ allowed: false, retryAfterMinutes: 9 });
+    } finally {
+      sent = queryLog.capturing ?? [];
+      queryLog.capturing = null;
+    }
+    expect(sent).toHaveLength(2);
+    for (const q of sent) expect(q).toMatch(/^select counted, oldest from edapt_take_rate_limit\(/);
+    expect(await hits(LIMIT.bucket, "u1")).toBe(LIMIT.max);
+    // once it has returned, nothing is left locked
+    const [locks] = await queryRows<{ n: number }>(
+      sql`select count(*)::int as n from pg_locks where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database())`,
+    );
+    expect(locks.n).toBe(0);
   });
 
   it("inside a caller's transaction the lookup holds the lock until it commits; one sent meanwhile waits, then counts it", async () => {

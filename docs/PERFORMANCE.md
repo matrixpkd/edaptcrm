@@ -185,8 +185,9 @@ purchase and `recomputeAll` stayed within noise.
 
 Drizzle cannot create extensions, and `drizzle-kit push` fails on a `gin_trgm_ops` index when `pg_trgm` is missing.
 So `drizzle/custom/*.sql` holds idempotent SQL that must run **before** the schema push or the generated migrations,
-in file-name order. Today that is only `0000_extensions.sql` (`create extension if not exists pg_trgm`).
-`scripts/db-custom.ts` applies it, and every schema flow runs it first:
+in file-name order. Today that is `0000_extensions.sql` (`create extension if not exists pg_trgm`) and
+`0001_take_rate_limit.sql` (the lookup-limit function, below). `scripts/db-custom.ts` applies it, and every schema
+flow runs it first:
 
 - `npm run db:push` is now `tsx scripts/db-custom.ts && drizzle-kit push --force`
 - `npm run db:migrate` (`scripts/migrate.ts`) runs it before the migrator, for Supabase deploys
@@ -197,6 +198,18 @@ On Supabase, `pg_trgm` is available. If it was already enabled from Database > E
 `extensions` schema, which is on the default `search_path`, and the custom file is a no-op. Running
 `drizzle-kit push` directly, without `npm run db:push`, on a database that has never had the extension fails with
 `operator class "gin_trgm_ops" does not exist`. Run `npx tsx scripts/db-custom.ts` once and push again.
+
+### The lookup limit: one statement per lookup
+
+Every Quick Add duplicate check (and the Edit page's number checks) first counts the lookup against the per-person
+limit (`takeRateLimit`, src/lib/auth/rate-limit.ts). Lookups sent at the same moment must take turns, which needs a
+per-person advisory lock. Taken by the app in a transaction (BEGIN, lock, count and insert, COMMIT), the lock was held
+across two round trips, and every lookup waiting for it held a pooled connection meanwhile (on Vercel, an instance's
+only one). With 40 ms per round trip, a burst of 20 lookups from one person made another person's `select 1` wait
+1.5 s. So the lock, the count and the insert are one call to the SQL function `edapt_take_rate_limit`
+(drizzle/custom/0001_take_rate_limit.sql): the lock lasts only while the server runs it. The same burst then delays
+the other query by 0.2 s, as without any lock. On a 50,000-contact copy the duplicate check takes 1.9 / 1.8 ms
+(known / new number) in 3 / 2 statements, against 2.2 / 1.9 ms in 6 / 5 with the transaction.
 
 ## Over HTTP (dev server)
 

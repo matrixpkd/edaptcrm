@@ -7,7 +7,7 @@ import "server-only";
  *   payments, alert emails, daily digests (each user at their own local 8:30).
  * - nightly (02:00 IST, vercel.json): recompute every contact (rebuilds cohorts first), then next rung, at risk, VIPs
  *   gone quiet, then prune webhook_events older than 180 days that were processed without an error, sign-in attempts
- *   older than a day and expired sessions; finally the frequent steps once more, so alerts still go out (a day late)
+ *   and rate-limited lookups older than a day and expired sessions; finally the frequent steps once more, so alerts still go out (a day late)
  *   if the 15-minute schedule is missing or down. Every rule is idempotent, so the extra pass never duplicates.
  * - weekly (Monday 09:00 IST): the weekly summary.
  *
@@ -16,6 +16,7 @@ import "server-only";
  */
 import { db, type Tx } from "@/db";
 import { pruneExpiredSessions, pruneLoginAttempts } from "@/lib/auth/login-limit";
+import { pruneRateLimitHits } from "@/lib/auth/rate-limit";
 import { prunePasswordResets } from "@/lib/auth/password-reset";
 import { recomputeAll } from "@/lib/metrics/recompute";
 import { pruneWebhookEvents } from "@/lib/webhooks/retention";
@@ -104,6 +105,7 @@ export function runNightlyJobs(now: Date = new Date()): Promise<JobReport> {
     ["vipGoneQuiet", () => vipGoneQuiet(now)],
     ["pruneWebhookEvents", () => pruneWebhookEvents(now)],
     ["pruneLoginAttempts", () => pruneLoginAttempts(now)],
+    ["pruneRateLimitHits", () => pruneRateLimitHits(now)],
     ["pruneExpiredSessions", () => pruneExpiredSessions(now)],
     ["prunePasswordResets", () => prunePasswordResets(now)],
     ["pruneAppErrors", () => pruneAppErrors(now)],

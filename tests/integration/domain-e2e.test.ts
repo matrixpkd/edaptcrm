@@ -122,9 +122,9 @@ describe("domain end to end", () => {
     // no "new lead" alert to yourself for your own Quick Add
     expect(await count(notifications, eq(notifications.contactId, c.id))).toBe(0);
 
-    // a colleague typing the same number sees the existing contact and its owner before saving
+    // a colleague typing the same number sees the existing contact and its owner before saving (nothing more)
     const dup = await checkQuickAddDuplicate(`+91${phone.replace(/\s/g, "")}`, actor(anu));
-    expect(dup.existing).toMatchObject({ id: c.id, ownerId: ravi.id, ownerName: "Ravi", stage: "new", visible: false });
+    expect(dup.existing).toEqual({ id: c.id, name: "Suresh Nair", ownerId: ravi.id, ownerName: "Ravi", visible: false });
 
     // later the same person fills a Meta lead form with a different email
     const meta = await captureEnquiry({

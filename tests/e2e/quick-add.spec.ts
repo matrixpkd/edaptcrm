@@ -1,4 +1,6 @@
-import { test, expect, findContactByPhone, makeContact, uniqueName, uniquePhone, userId } from "./support/fixtures";
+import { rateLimitHits } from "@/db/schema";
+import { QUICK_ADD_LOOKUP_LIMIT } from "@/lib/auth/rate-limit";
+import { test, expect, db, findContactByPhone, makeContact, makeUser, uniqueName, uniquePhone, userId } from "./support/fixtures";
 import { PEOPLE } from "./support/env";
 
 // Quick Add is phone-first and used on laptops too: both projects run it
@@ -16,6 +18,17 @@ test("a known number shows the existing contact and its owner before saving, and
   await expect(card).toContainText(existing.name);
   await expect(card).toContainText(`Owner: ${PEOPLE.sales2.name}`);
   await expect(card).toContainText(phone.international);
+  // only the name and owner the spec asks for: the card has no stage (or grade), and the check never sends them
+  await expect(card).not.toContainText(/\bNew\b/);
+  const checked = await page.request.get(`/contacts/new/check?phone=${encodeURIComponent(phone.e164)}`);
+  expect(checked.status()).toBe(200);
+  expect((await checked.json()).existing).toEqual({
+    visible: false,
+    id: existing.id,
+    name: existing.name,
+    ownerName: PEOPLE.sales2.name,
+    ownerIsMe: false,
+  });
   // another salesperson's contact: no link into it, a transfer request instead
   await expect(card.getByRole("link", { name: "Open contact" })).toHaveCount(0);
   await expect(card.getByRole("button", { name: "Request transfer" })).toBeVisible();
@@ -30,6 +43,40 @@ test("a known number shows the existing contact and its owner before saving, and
   await expect(card.getByRole("status")).toContainText("Your manager has the request");
   await expect(card.getByRole("button", { name: "Send to manager" })).toHaveCount(0);
   expect(await findContactByPhone(phone.e164)).toMatchObject({ id: existing.id, ownerId: await userId("sales2") });
+});
+
+test("a salesperson's own known number shows its stage and grade and opens the contact", async ({ pageAs }) => {
+  const phone = await uniquePhone();
+  const mine = await makeContact({ owner: "sales", phone: phone.e164, name: uniqueName("Mine") });
+
+  const page = await pageAs("sales");
+  await page.goto("/contacts/new");
+  await page.getByRole("textbox", { name: /^Phone/ }).fill(phone.typed);
+  const card = page.getByRole("alert").filter({ hasText: "Already in the CRM" });
+  await expect(card).toContainText(mine.name);
+  await expect(card).toContainText("Yours");
+  await expect(card).toContainText(/\bNew\b/);
+  await expect(card.getByRole("link", { name: "Open contact" })).toHaveAttribute("href", `/contacts/${mine.id}`);
+  const checked = await page.request.get(`/contacts/new/check?phone=${encodeURIComponent(phone.e164)}`);
+  expect((await checked.json()).existing).toMatchObject({ visible: true, id: mine.id, ownerIsMe: true, stage: "new", grade: mine.grade });
+});
+
+test("over the lookup limit the number check says so instead of answering", async ({ pageFor }) => {
+  // a fresh salesperson, so no other spec's lookups count; their window is already full
+  const rep = await makeUser({ role: "sales" });
+  const at = new Date(Date.now() - 60_000);
+  await db
+    .insert(rateLimitHits)
+    .values(Array.from({ length: QUICK_ADD_LOOKUP_LIMIT.max }, () => ({ bucket: QUICK_ADD_LOOKUP_LIMIT.bucket, subject: rep.id, createdAt: at })));
+  const known = await makeContact({ owner: "sales2" });
+
+  const page = await pageFor(rep);
+  await page.goto("/contacts/new");
+  const phone = known.phoneE164.replace(/^\+91/, "");
+  await page.getByRole("textbox", { name: /^Phone/ }).fill(phone);
+  await expect(page.getByText(/^Too many number checks in a short time\. Try again in \d+ minutes?\.$/)).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: "Already in the CRM" })).toHaveCount(0);
+  await expect(page.getByText(known.name)).toHaveCount(0);
 });
 
 test("a new UAE 05X number becomes +971 and the saved lead is the salesperson's, stage New, with a grade", async ({ pageAs }) => {

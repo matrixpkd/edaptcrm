@@ -13,13 +13,17 @@ import type { Stage } from "@/db/schema";
 import { cn } from "@/lib/utils";
 import { quickAddAction } from "./actions";
 import { requestTransferAction } from "../[id]/actions";
-import type { PhoneCheckResponse } from "./types";
+import type { PhoneCheckError, PhoneCheckResponse } from "./types";
 
 type Check =
   | { status: "idle" }
   | { status: "checking"; last: PhoneCheckResponse | null }
   | { status: "done"; result: PhoneCheckResponse; phone: string }
+  /** over the per-user lookup limit (429): the server's message says when to try again */
+  | { status: "limited"; message: string }
   | { status: "error" };
+
+const LIMITED_FALLBACK = "Too many number checks in a short time. Try again in a few minutes.";
 
 const MIN_DIGITS = 6;
 const FORM_ID = "quick-add-form";
@@ -80,6 +84,11 @@ export function QuickAddForm({
           signal: ctrl.signal,
           cache: "no-store",
         });
+        if (res.status === 429) {
+          const body = (await res.json().catch(() => null)) as PhoneCheckError | null;
+          setCheck({ status: "limited", message: body?.error || LIMITED_FALLBACK });
+          return;
+        }
         if (!res.ok) throw new Error(String(res.status));
         const result = (await res.json()) as PhoneCheckResponse;
         setCheck({ status: "done", result, phone: raw });
@@ -172,6 +181,7 @@ export function QuickAddForm({
           {check.status === "error" && (
             <span className="text-muted">Could not check the number. It is checked again when you save.</span>
           )}
+          {check.status === "limited" && <span className="text-danger">{check.message}</span>}
           {fe.phone && !existing && <span className="block text-danger">{fe.phone}</span>}
         </div>
         {existing && result && (
@@ -406,7 +416,9 @@ function ExistingContact({
   const [asking, setAsking] = useState(false);
   // once the request is sent the form goes away, so it cannot be sent twice or look unsent
   const [sent, setSent] = useState(false);
-  const stage = STAGE_LABELS[existing.stage as Stage] ?? existing.stage;
+  // a colleague's contact comes with its name and owner only, and an id only when a transfer may be requested
+  const transferId = !existing.visible && canRequestTransfer ? existing.id : null;
+  const owner = existing.ownerIsMe ? "Yours" : existing.ownerName ? `Owner: ${existing.ownerName}` : "In the pool";
   return (
     <div role="alert" className="mt-1 rounded-xl border border-warning/40 bg-warning/5 p-3">
       <p className="flex items-center gap-1.5 text-sm font-semibold text-warning">
@@ -419,14 +431,16 @@ function ExistingContact({
         <div className="min-w-0 flex-1">
           <p className="truncate font-semibold">{existing.name}</p>
           <p className="tabular text-sm text-muted">{international}</p>
-          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-            <GradeBadge grade={existing.grade} size="sm" />
-            <span>{stage}</span>
-            <span className="text-muted">·</span>
-            <span>
-              {existing.ownerIsMe ? "Yours" : existing.ownerName ? `Owner: ${existing.ownerName}` : "In the pool"}
-            </span>
-          </p>
+          {existing.visible ? (
+            <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+              <GradeBadge grade={existing.grade} size="sm" />
+              <span>{STAGE_LABELS[existing.stage as Stage] ?? existing.stage}</span>
+              <span className="text-muted">·</span>
+              <span>{owner}</span>
+            </p>
+          ) : (
+            <p className="mt-1 text-sm">{owner}</p>
+          )}
         </div>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
@@ -439,7 +453,7 @@ function ExistingContact({
               A new enquiry from them? Pick the channel below and add it to this record. Name and first door are kept.
             </p>
           </>
-        ) : canRequestTransfer ? (
+        ) : transferId ? (
           asking || sent ? null : (
             <Button variant="outline" onClick={() => setAsking(true)} className="flex-1 sm:flex-none">
               Request transfer
@@ -456,14 +470,14 @@ function ExistingContact({
           Your manager has the request. The contact moves to you once they approve it.
         </p>
       )}
-      {asking && !sent && (
+      {asking && !sent && transferId && (
         <ActionForm
           action={requestTransferAction}
           onSuccess={() => setSent(true)}
           className="mt-3 space-y-2"
           aria-label="Request transfer"
         >
-          <input type="hidden" name="contactId" value={existing.id} />
+          <input type="hidden" name="contactId" value={transferId} />
           <Field label="Why do you need this contact?" htmlFor="qa-transfer-reason">
             <Input id="qa-transfer-reason" name="reason" required defaultValue="They contacted me directly" />
           </Field>

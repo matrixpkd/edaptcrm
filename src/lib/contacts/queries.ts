@@ -29,7 +29,7 @@ import {
   type Stage,
 } from "@/db/schema";
 import { can, canViewContact } from "@/lib/auth/permissions";
-import { contactScope } from "@/lib/auth/scope";
+import { canViewContactSql, contactScope } from "@/lib/auth/scope";
 import { normalizePhone } from "@/lib/phone";
 import { getSetting } from "@/lib/settings";
 import { ContactForbiddenError, ContactValidationError } from "./errors";
@@ -1105,15 +1105,27 @@ export async function countPossibleDuplicates(tx: Tx = db): Promise<number> {
 // Organisations
 // ---------------------------------------------------------------------------
 
+/**
+ * An organisation's revenue total and purchase count add up every deal linked to it, whoever signed it. Only people
+ * who may open every contact (admin, manager, support) see them, so a salesperson never learns the money of a
+ * colleague's contacts through an organisation; admin, manager and support see what they always saw.
+ */
+export function canSeeOrganisationTotals(user: { role: Role }): boolean {
+  return can(user, "contacts.viewAll");
+}
+
 export type OrganisationListRow = {
   id: string;
   name: string;
   kind: OrgKind;
   city: string | null;
   country: string | null;
+  /** everyone linked (live records), whoever owns them: a count, no details */
   people: number;
-  purchaseCount: number;
-  revenueInr: number;
+  /** null when the viewer does not see organisation totals (canSeeOrganisationTotals) */
+  purchaseCount: number | null;
+  /** null when the viewer does not see organisation totals (canSeeOrganisationTotals) */
+  revenueInr: number | null;
 };
 
 /** Net verified revenue (payments minus refunds, INR) of purchases linked to an organisation. */
@@ -1123,10 +1135,22 @@ const orgRevenueSql = (orgId: SQL | string) => sql<number>`coalesce((
   where pu.organisation_id = ${orgId} and pm.status = 'verified'
 ), 0)::float8`;
 
+const toNumberOrNull = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+
 export async function listOrganisations(
+  viewer: Viewer,
   opts: { q?: string | null; kind?: string | null; page?: number; pageSize?: number; tx?: Tx } = {},
-): Promise<{ rows: OrganisationListRow[]; total: number; page: number; pageCount: number; pageSize: number }> {
+): Promise<{
+  rows: OrganisationListRow[];
+  total: number;
+  page: number;
+  pageCount: number;
+  pageSize: number;
+  /** false for a salesperson: the purchase and revenue columns are left out (null in every row) */
+  showTotals: boolean;
+}> {
   const tx = opts.tx ?? db;
+  const showTotals = canSeeOrganisationTotals(viewer);
   const pageSize = Math.max(1, Math.min(opts.pageSize ?? CONTACTS_PAGE_SIZE, 200));
   const q = cleanText(opts.q);
   const conds: (SQL | undefined)[] = [];
@@ -1153,8 +1177,11 @@ export async function listOrganisations(
           city: organisations.city,
           country: organisations.country,
           people: sql<number>`(select count(*)::int from contacts c where c.organisation_id = ${ORG_ID} and c.merged_into_id is null)`,
-          purchaseCount: sql<number>`(select count(*)::int from purchases p where p.organisation_id = ${ORG_ID} and p.status <> 'cancelled')`,
-          revenueInr: orgRevenueSql(ORG_ID),
+          // not computed at all for a viewer who may not see them
+          purchaseCount: showTotals
+            ? sql<number | null>`(select count(*)::int from purchases p where p.organisation_id = ${ORG_ID} and p.status <> 'cancelled')`
+            : sql<number | null>`null::int`,
+          revenueInr: showTotals ? sql<number | null>`${orgRevenueSql(ORG_ID)}` : sql<number | null>`null::float8`,
         })
         .from(organisations)
         .where(where)
@@ -1166,13 +1193,14 @@ export async function listOrganisations(
     rows: rows.map((r) => ({
       ...r,
       people: Number(r.people),
-      purchaseCount: Number(r.purchaseCount),
-      revenueInr: Number(r.revenueInr),
+      purchaseCount: toNumberOrNull(r.purchaseCount),
+      revenueInr: toNumberOrNull(r.revenueInr),
     })),
     total,
     page,
     pageCount,
     pageSize,
+    showTotals,
   };
 }
 
@@ -1186,11 +1214,14 @@ export type OrganisationDetail = {
   phone: string | null;
   notes: string | null;
   createdAt: Date;
-  revenueInr: number;
+  /** null without a viewer, or when the viewer does not see organisation totals (canSeeOrganisationTotals) */
+  revenueInr: number | null;
 };
 
-export async function getOrganisation(id: string, tx: Tx = db): Promise<OrganisationDetail | null> {
+/** One organisation. Its revenue total only for a viewer who sees organisation totals (null = left out). */
+export async function getOrganisation(id: string, viewer: Viewer | null, tx: Tx = db): Promise<OrganisationDetail | null> {
   if (!isUuid(id)) return null;
+  const showTotals = !!viewer && canSeeOrganisationTotals(viewer);
   const rows = await tx
     .select({
       id: organisations.id,
@@ -1202,32 +1233,30 @@ export async function getOrganisation(id: string, tx: Tx = db): Promise<Organisa
       phone: organisations.phone,
       notes: organisations.notes,
       createdAt: organisations.createdAt,
-      revenueInr: orgRevenueSql(id),
+      revenueInr: showTotals ? sql<number | null>`${orgRevenueSql(id)}` : sql<number | null>`null::float8`,
     })
     .from(organisations)
     .where(eq(organisations.id, id))
     .limit(1);
   const r = rows[0];
-  return r ? { ...r, revenueInr: Number(r.revenueInr) } : null;
+  return r ? { ...r, revenueInr: toNumberOrNull(r.revenueInr) } : null;
 }
 
 export type OrganisationPerson = {
   id: string;
   name: string;
-  /** null for a hidden person */
-  phoneE164: string | null;
+  phoneE164: string;
   designation: string | null;
   stage: Stage;
   grade: Grade | null;
   ltvInr: number;
   ownerName: string | null;
-  /** true when the viewer may not open this contact: name is HIDDEN_CONTACT_LABEL, phone/designation/owner left out */
-  hidden: boolean;
 };
 
 /**
- * Everyone linked to an organisation (live records), highest LTV first. People the viewer may not open are listed
- * as HIDDEN_CONTACT_LABEL with their LTV only; `hidden` counts them.
+ * The people linked to an organisation (live records) whom the viewer may open, highest LTV first. People they may
+ * not open (a colleague's contacts) are only counted in `hidden`: no name, grade, stage or money, and they do not
+ * take part in the ordering. Scoped in SQL.
  */
 export async function getOrganisationPeople(
   user: Viewer,
@@ -1235,6 +1264,8 @@ export async function getOrganisationPeople(
   tx: Tx = db,
 ): Promise<{ people: OrganisationPerson[]; hidden: number }> {
   if (!isUuid(orgId)) return { people: [], hidden: 0 };
+  const linked = and(isNull(contacts.mergedIntoId), eq(contacts.organisationId, orgId));
+  const visible = canViewContactSql(user);
   const people = await tx
     .select({
       id: contacts.id,
@@ -1244,20 +1275,22 @@ export async function getOrganisationPeople(
       stage: contacts.stage,
       grade: contacts.grade,
       ltvInr: contacts.ltvInr,
-      ownerId: contacts.ownerId,
       ownerName: users.name,
     })
     .from(contacts)
     .leftJoin(users, eq(users.id, contacts.ownerId))
-    .where(and(isNull(contacts.mergedIntoId), eq(contacts.organisationId, orgId)))
+    .where(and(linked, visible))
     .orderBy(desc(contacts.ltvInr), asc(contacts.name))
     .limit(500);
-  const out: OrganisationPerson[] = people.map(({ ownerId, ...p }) =>
-    canViewContact(user, { ownerId })
-      ? { ...p, hidden: false }
-      : { ...p, name: HIDDEN_CONTACT_LABEL, phoneE164: null, designation: null, ownerName: null, hidden: true },
-  );
-  return { people: out, hidden: out.filter((p) => p.hidden).length };
+  let hidden = 0;
+  if (!can(user, "contacts.viewAll")) {
+    const [row] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(contacts)
+      .where(and(linked, sql`not ${visible}`));
+    hidden = Number(row?.n ?? 0);
+  }
+  return { people, hidden };
 }
 
 export type OrganisationPurchase = {
@@ -1271,17 +1304,15 @@ export type OrganisationPurchase = {
   purchasedAt: Date;
   contactId: string;
   contactName: string;
-  contactOwnerId: string | null;
   netInr: number;
-  /** true when the viewer may not open the signer: contactName is HIDDEN_CONTACT_LABEL */
-  contactHidden: boolean;
 };
 
 /**
- * Purchases linked to an organisation (B2B deals), newest first, with the net verified INR of each. With a viewer,
- * a signer they may not open is named HIDDEN_CONTACT_LABEL.
+ * Purchases linked to an organisation (B2B deals) that were signed by someone the viewer may open, newest first,
+ * with the net verified INR of each. Deals signed by a colleague's contact are left out in SQL (no product, amount,
+ * status or date), so a salesperson sees only their own and the pool's; everyone else sees every deal.
  */
-export async function getOrganisationPurchases(orgId: string, viewer: Viewer | null = null, tx: Tx = db): Promise<OrganisationPurchase[]> {
+export async function getOrganisationPurchases(orgId: string, viewer: Viewer, tx: Tx = db): Promise<OrganisationPurchase[]> {
   if (!isUuid(orgId)) return [];
   const rows = await tx
     .select({
@@ -1295,7 +1326,6 @@ export async function getOrganisationPurchases(orgId: string, viewer: Viewer | n
       purchasedAt: purchases.purchasedAt,
       contactId: contacts.id,
       contactName: contacts.name,
-      contactOwnerId: contacts.ownerId,
       netInr: sql<number>`coalesce((
         select sum(case when pm.kind = 'refund' then -pm.amount_inr else pm.amount_inr end)
         from payments pm where pm.purchase_id = ${PURCHASE_ID} and pm.status = 'verified'
@@ -1303,13 +1333,10 @@ export async function getOrganisationPurchases(orgId: string, viewer: Viewer | n
     })
     .from(purchases)
     .innerJoin(contacts, eq(contacts.id, purchases.contactId))
-    .where(eq(purchases.organisationId, orgId))
+    .where(and(eq(purchases.organisationId, orgId), canViewContactSql(viewer)))
     .orderBy(desc(purchases.purchasedAt))
     .limit(500);
-  return rows.map((r) => {
-    const contactHidden = !!viewer && !canViewContact(viewer, { ownerId: r.contactOwnerId });
-    return { ...r, netInr: Number(r.netInr), contactHidden, ...(contactHidden ? { contactName: HIDDEN_CONTACT_LABEL } : {}) };
-  });
+  return rows.map((r) => ({ ...r, netInr: Number(r.netInr) }));
 }
 
 /** Every organisation as a picker option, by name. */

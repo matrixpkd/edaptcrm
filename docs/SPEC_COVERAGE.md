@@ -78,7 +78,7 @@ Paths are relative to the repository root; `file:line` points at the function or
 | 3. Extra numbers and emails stored as alternates, and they match too | Done | `src/lib/contacts/identity.ts:35` (primary or alternate) | |
 | 4. A merge keeps the oldest First Door, the first owner, every purchase and note | Done | `src/lib/contacts/merge.ts:69`, `:104`, `:158` | Child rows are re-pointed, never deleted. |
 | 4. Nothing is deleted, every merge is logged, any merge can be undone | Done | `contact_merges` table, `src/lib/contacts/merge.ts:264` (`undoMerge`) | |
-| 5. The duplicate check runs while typing and shows the existing contact and owner before saving | Done | `src/app/(app)/contacts/new/check/route.ts:14`, `src/app/(app)/contacts/new/quick-add-form.tsx:381`, `src/lib/contacts/identity.ts:172` | A salesperson who cannot open the record sees its name and owner and can request a transfer. |
+| 5. The duplicate check runs while typing and shows the existing contact and owner before saving | Done | `src/app/(app)/contacts/new/check/route.ts:14`, `src/app/(app)/contacts/new/quick-add-form.tsx:381`, `src/lib/contacts/identity.ts:172` | A salesperson who cannot open the record sees its name and owner only (no stage or grade) and can request a transfer. Lookups are limited to 300 per person per 10 minutes (`src/lib/auth/rate-limit.ts`). |
 
 ## 6. Importing the 50,000 old records
 

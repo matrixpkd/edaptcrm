@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { fail, list, str, type ActionResult } from "@/lib/action";
 import { can, canViewContact } from "@/lib/auth/permissions";
+import { RateLimitedError } from "@/lib/auth/rate-limit";
 import { requireUser } from "@/lib/auth/session";
 import { captureEnquiry } from "@/lib/contacts/capture";
 import { checkQuickAddDuplicate, lookupByEmail } from "@/lib/contacts/identity";
@@ -63,9 +64,16 @@ export async function quickAddAction(_prev: ActionResult, fd: FormData): Promise
   if (note && note.length > 5000) errors.note = "The note is too long";
   if (Object.keys(errors).length || !np) return fail("Check the highlighted fields", errors);
 
-  // one person, one record: a known number or email is shown, never added again
-  const dup = await checkQuickAddDuplicate(np.e164, user);
-  const attaching = !!attachTo && !!dup.existing && dup.existing.id === attachTo && dup.existing.visible;
+  // one person, one record: a known number or email is shown, never added again. The check counts against the same
+  // per-user lookup limit as the live check, so saving cannot be used to look numbers up without one.
+  let dup: Awaited<ReturnType<typeof checkQuickAddDuplicate>>;
+  try {
+    dup = await checkQuickAddDuplicate(np.e164, user);
+  } catch (e) {
+    if (e instanceof RateLimitedError) return fail(e.message, { phone: e.message });
+    throw e;
+  }
+  const attaching = !!attachTo && !!dup.existing?.visible && dup.existing.id === attachTo;
   if (attachTo && !attaching) {
     // the number changed hands or was typed differently since the check: never attach to someone else's record
     const msg = dup.existing ? `${dup.existing.name} already has this number` : "This number is not in the CRM yet. Save it as a new contact.";

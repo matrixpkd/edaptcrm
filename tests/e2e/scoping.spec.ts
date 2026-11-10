@@ -1,5 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import { auditLog, interactions } from "@/db/schema";
+import { createOrganisation } from "@/lib/contacts/organisations";
+import { recordPurchase } from "@/lib/money/purchases";
 import { test, expect, db, getContact, makeContact, uniqueWord, userId } from "./support/fixtures";
 
 // laptop project only (playwright.config.ts)
@@ -25,6 +27,55 @@ test("a salesperson cannot open or find another salesperson's contact", async ({
   const owner = await pageAs("sales2");
   await owner.goto(`/contacts?q=${encodeURIComponent(theirs.phoneE164)}`);
   await expect(owner.getByRole("link", { name: theirs.name, exact: true }).first()).toBeVisible();
+});
+
+test("an organisation shows a salesperson no money, deals or details of a colleague's contacts; a manager sees it all", async ({ pageAs }) => {
+  const admin = { id: await userId("admin"), role: "admin" as const };
+  const org = await createOrganisation({ name: `School ${uniqueWord()}`, kind: "school", city: "Kochi" }, admin);
+  const mine = await makeContact({ owner: "sales", profile: { organisationId: org.id } });
+  const theirs = await makeContact({ owner: "sales2", profile: { organisationId: org.id } });
+  const deal = `Colleague program ${uniqueWord()}`;
+  await recordPurchase(
+    {
+      contactId: theirs.id,
+      organisationId: org.id,
+      productName: deal,
+      family: "b2b_program",
+      amount: 123456,
+      currency: "INR",
+      mode: "bank_transfer",
+      reference: `UTR-ORG-${uniqueWord()}${Date.now()}`,
+      source: "manual",
+      verified: true,
+    },
+    admin,
+  );
+
+  const page = await pageAs("sales");
+  await page.goto(`/organisations/${org.id}`);
+  await expect(page.getByRole("heading", { level: 1, name: org.name })).toBeVisible();
+  const main = page.locator("main");
+  await expect(main.getByRole("link", { name: mine.name })).toBeVisible();
+  await expect(main.getByText("1 more person is linked here, owned by colleagues. Their details stay private.")).toBeVisible();
+  for (const hidden of [theirs.name, deal, "1,23,456", "Total revenue"]) await expect(main).not.toContainText(hidden);
+  await expect(main.getByText("No purchases you can see")).toBeVisible();
+  // the list has no purchase or revenue columns for a salesperson
+  await page.goto(`/organisations?q=${encodeURIComponent(org.name)}`);
+  await expect(page.getByRole("link", { name: org.name })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Revenue" })).toHaveCount(0);
+  await expect(page.locator("main")).not.toContainText("1,23,456");
+
+  // a manager sees every person, the deal and the totals
+  const mp = await pageAs("manager");
+  await mp.goto(`/organisations/${org.id}`);
+  const all = mp.locator("main");
+  await expect(all.getByText("Total revenue")).toBeVisible();
+  await expect(all).toContainText("₹1,23,456");
+  await expect(all.getByRole("link", { name: theirs.name }).first()).toBeVisible();
+  await expect(all).toContainText(deal);
+  await mp.goto(`/organisations?q=${encodeURIComponent(org.name)}`);
+  await expect(mp.getByRole("columnheader", { name: "Revenue" })).toBeVisible();
+  await expect(mp.locator("main")).toContainText("₹1,23,456");
 });
 
 test("a salesperson is sent back to Today from settings, the dashboard and import", async ({ pageAs }) => {

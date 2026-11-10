@@ -71,6 +71,13 @@ Product notes from the last QA pass, not yet changed (each needs a decision, not
 - WhatsApp on the contact page takes two taps (a message template picker opens first).
 
 Technical notes:
+- What a salesperson sees of contacts outside their scope (own plus pool), tightened on branch
+  `worktree-wf_9fcb535f-e7f-2` (not yet live): the Quick Add check sends a colleague's contact's name and owner only
+  (stage and grade only for contacts they may open) and is limited to 300 lookups per person per 10 minutes (new
+  additive table `rate_limit_hits`, pruned nightly: generate its migration with `npm run db:generate` at release,
+  and `db:push` `edapt_perf` before benching); organisations show a salesperson only the people and deals of their
+  own and pool contacts, a count of the others and no revenue totals; a pipeline drop on a colleague's contact
+  answers like a missing contact. Tests: `tests/integration/visibility.test.ts`, `contacts-queries.test.ts`.
 - Round robin (`pickAutoOwner`, `src/lib/contacts/assignment.ts`) had a race, fixed on 10 Nov. When four leads for
   one team arrived at the same moment, 1–3% of rounds gave one salesperson two and another none: under READ
   COMMITTED, `FOR UPDATE SKIP LOCKED` with `ORDER BY ... LIMIT 1` could lock someone a parallel pick had just

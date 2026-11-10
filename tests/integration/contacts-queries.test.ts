@@ -492,30 +492,25 @@ describe("contacts read models", () => {
         sales,
       );
 
-      const detail = await getOrganisation(org.id);
+      const detail = await getOrganisation(org.id, admin);
       expect(detail).toMatchObject({ name: "Koduvally MLA Office", kind: "constituency_office", revenueInr: 200000 });
-      const purchasesOfOrg = await getOrganisationPurchases(org.id);
+      // without a viewer (page titles) there is no revenue
+      expect((await getOrganisation(org.id, null))?.revenueInr).toBeNull();
+      const purchasesOfOrg = await getOrganisationPurchases(org.id, admin);
       expect(purchasesOfOrg).toHaveLength(2);
       expect(purchasesOfOrg.find((p) => p.productName === "Follow-on")?.netInr).toBe(0);
-      // the signer's colleague sees the deals and their money, not the signer's name
-      const forOther = await getOrganisationPurchases(org.id, other);
-      expect(forOther.map((p) => [p.contactName, p.contactHidden])).toEqual([
-        ["Another salesperson's contact", true],
-        ["Another salesperson's contact", true],
-      ]);
-      expect((await getOrganisationPurchases(org.id, sales)).every((p) => p.contactName === "Signer" && !p.contactHidden)).toBe(true);
+      // the signer's owner sees both deals, with the signer's name
+      expect((await getOrganisationPurchases(org.id, sales)).map((p) => p.contactName)).toEqual(["Signer", "Signer"]);
+      // the signer's colleague sees neither deal (scoping is covered in "a salesperson sees no money..." below)
+      expect(await getOrganisationPurchases(org.id, other)).toEqual([]);
 
-      const forSales = await getOrganisationPeople(sales, org.id);
-      expect(forSales.people.map((p) => p.name)).toEqual(["Signer", "Another salesperson's contact"]);
-      expect(forSales.people[1]).toMatchObject({ hidden: true, phoneE164: null, ownerName: null, designation: null });
-      expect(forSales.people[0]).toMatchObject({ hidden: false, ltvInr: 200000 });
-      expect(forSales.hidden).toBe(1);
       const forAdmin = await getOrganisationPeople(admin, org.id);
       expect(forAdmin.people.map((p) => p.name)).toEqual(["Signer", "Colleague"]);
       expect(forAdmin.hidden).toBe(0);
 
-      const listed = await listOrganisations({ q: "koduvally" });
+      const listed = await listOrganisations(admin, { q: "koduvally" });
       expect(listed.total).toBe(2);
+      expect(listed.showTotals).toBe(true);
       const row = listed.rows.find((r) => r.id === org.id);
       expect(row).toMatchObject({ people: 2, purchaseCount: 2, revenueInr: 200000 });
 
@@ -526,6 +521,84 @@ describe("contacts read models", () => {
       );
       expect(edited.name).toBe("Koduvally Constituency Office");
       expect(edited.country).toBeNull();
+    });
+
+    it("a salesperson sees no money, grade, stage or deals of colleagues' contacts through an organisation; admin, manager and support see everything", async () => {
+      const admin = await makeUser({ role: "admin" });
+      const manager = await makeUser({ role: "manager" });
+      const support = await makeUser({ role: "support" });
+      const asha = await makeUser({ role: "sales", name: "Asha" });
+      const biju = await makeUser({ role: "sales", name: "Biju" });
+      const org = await createOrganisation({ name: "Govt School Koduvally", kind: "school", city: "Koduvally" }, asha);
+      const mine = await newContact({ name: "Asha Principal", ownerId: asha.id, profile: { organisationId: org.id, designation: "Principal" } });
+      const theirs = await newContact({ name: "Biju Trustee", ownerId: biju.id, profile: { organisationId: org.id, designation: "Trustee" } });
+      const pool = await newContact({ name: "Pool Teacher", profile: { organisationId: org.id } });
+      const deal = (contactId: string, productName: string, amount: number, reference: string) =>
+        recordPurchase(
+          {
+            contactId,
+            organisationId: org.id,
+            productName,
+            family: "b2b_program",
+            amount,
+            currency: "INR",
+            mode: "bank_transfer",
+            reference,
+            source: "manual",
+            verified: true,
+          },
+          admin,
+        );
+      await deal(theirs.id, "Colleague school program", 300000, "UTR-ORG-BIJU");
+      await deal(mine.id, "Asha school program", 50000, "UTR-ORG-ASHA");
+
+      // Asha: her own and the pool's people with their details; Biju's trustee only as a count
+      const people = await getOrganisationPeople(asha, org.id);
+      expect(people.people.map((p) => p.id)).toEqual([mine.id, pool.id]);
+      expect(people.people[0]).toMatchObject({ name: "Asha Principal", ltvInr: 50000, ownerName: "Asha" });
+      expect(people.hidden).toBe(1);
+      expect(JSON.stringify(people)).not.toContain("Biju Trustee");
+      expect(JSON.stringify(people)).not.toContain(theirs.id);
+      // only the deals her own and pool contacts signed: nothing of the colleague's deal
+      const deals = await getOrganisationPurchases(org.id, asha);
+      expect(deals.map((p) => p.productName)).toEqual(["Asha school program"]);
+      expect(JSON.stringify(deals)).not.toContain("Colleague school program");
+      expect(JSON.stringify(deals)).not.toContain("300000");
+      // no organisation totals, which include the colleague's money
+      expect((await getOrganisation(org.id, asha))?.revenueInr).toBeNull();
+      const listed = await listOrganisations(asha, { q: "koduvally" });
+      expect(listed.showTotals).toBe(false);
+      expect(listed.rows).toEqual([expect.objectContaining({ id: org.id, people: 3, purchaseCount: null, revenueInr: null })]);
+
+      // Biju sees the mirror image
+      const forBiju = await getOrganisationPeople(biju, org.id);
+      expect(forBiju.people.map((p) => p.id)).toEqual([theirs.id, pool.id]);
+      expect(forBiju.hidden).toBe(1);
+      expect((await getOrganisationPurchases(org.id, biju)).map((p) => p.productName)).toEqual(["Colleague school program"]);
+
+      // everyone who may open every contact sees every person, deal and total, as before
+      const [theirsNow] = await db.select().from(contacts).where(eq(contacts.id, theirs.id));
+      expect(theirsNow.stage).toBe("first_purchase");
+      for (const viewer of [admin, manager, support]) {
+        const all = await getOrganisationPeople(viewer, org.id);
+        expect(all.people.map((p) => p.id)).toEqual([theirs.id, mine.id, pool.id]);
+        expect(all.people[0]).toMatchObject({
+          name: "Biju Trustee",
+          designation: "Trustee",
+          ltvInr: 300000,
+          grade: theirsNow.grade,
+          stage: theirsNow.stage,
+          ownerName: "Biju",
+        });
+        expect(all.hidden).toBe(0);
+        expect((await getOrganisationPurchases(org.id, viewer)).map((p) => p.productName).sort()).toEqual([
+          "Asha school program",
+          "Colleague school program",
+        ]);
+        expect((await getOrganisation(org.id, viewer))?.revenueInr).toBe(350000);
+        const row = (await listOrganisations(viewer, { q: "koduvally" })).rows[0];
+        expect(row).toMatchObject({ people: 3, purchaseCount: 2, revenueInr: 350000 });
+      }
     });
   });
 

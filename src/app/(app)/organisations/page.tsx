@@ -46,7 +46,8 @@ export default async function OrganisationsPage({ searchParams }: { searchParams
   // "Not listed? Add an organisation" on a contact's Edit page: the new organisation is linked to them
   const forRaw = one(sp, "for");
   const forContactId = forRaw && isUuid(forRaw) ? forRaw : null;
-  const result = await listOrganisations({ q, kind, page });
+  // a salesperson gets no purchase or revenue columns: those totals include colleagues' contacts
+  const result = await listOrganisations(user, { q, kind, page });
 
   return (
     <div className="space-y-4">
@@ -160,7 +161,9 @@ export default async function OrganisationsPage({ searchParams }: { searchParams
                 >
                   <div className="flex items-start justify-between gap-2">
                     <p className="min-w-0 truncate font-semibold">{o.name}</p>
-                    <p className="tabular shrink-0 text-sm font-semibold">{formatINR(o.revenueInr)}</p>
+                    {o.revenueInr !== null && (
+                      <p className="tabular shrink-0 text-sm font-semibold">{formatINR(o.revenueInr)}</p>
+                    )}
                   </div>
                   <p className="mt-0.5 text-xs text-muted">
                     {ORG_KIND_LABELS[o.kind]}
@@ -180,8 +183,8 @@ export default async function OrganisationsPage({ searchParams }: { searchParams
                   <Th>Kind</Th>
                   <Th>City</Th>
                   <Th className="text-right">People</Th>
-                  <Th className="text-right">Purchases</Th>
-                  <Th className="text-right">Revenue</Th>
+                  {result.showTotals && <Th className="text-right">Purchases</Th>}
+                  {result.showTotals && <Th className="text-right">Revenue</Th>}
                 </tr>
               </thead>
               <tbody>
@@ -198,8 +201,10 @@ export default async function OrganisationsPage({ searchParams }: { searchParams
                       {o.country && <span className="text-muted"> · {o.country}</span>}
                     </Td>
                     <Td className="tabular text-right">{o.people}</Td>
-                    <Td className="tabular text-right">{o.purchaseCount}</Td>
-                    <Td className="tabular text-right font-medium">{formatINR(o.revenueInr)}</Td>
+                    {result.showTotals && <Td className="tabular text-right">{o.purchaseCount ?? 0}</Td>}
+                    {result.showTotals && (
+                      <Td className="tabular text-right font-medium">{formatINR(o.revenueInr ?? 0)}</Td>
+                    )}
                   </tr>
                 ))}
               </tbody>

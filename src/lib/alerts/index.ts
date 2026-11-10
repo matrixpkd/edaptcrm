@@ -3,7 +3,7 @@ import "server-only";
  * Public API of the alerts module (server only). Pure helpers: ./schedule. Email HTML builders: src/emails.
  * Server action for the Settings "Run alerts now" button: runAlertsNowAction in ./actions.
  */
-export { adminIds, closeContactTasks, completeTask, createTask, createTasks, managerIds, notify } from "./core";
+export { adminIds, closeContactTasks, completeTask, createTask, createTasks, managerIds, notify, ownerAdminId } from "./core";
 export type { NewNotification, NewTask } from "./core";
 export {
   ABANDONED_LOOKBACK_DAYS,

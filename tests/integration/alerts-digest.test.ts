@@ -329,10 +329,12 @@ describe("weekly summary", () => {
     expect(s.topAdvocates.map((x) => x.contactId)).toEqual(board.rows.map((x) => x.contactId));
   });
 
-  it("goes to every admin and digest.weeklyRecipients, once per week", async () => {
+  it("goes to the owner (the first admin) and digest.weeklyRecipients, once per week", async () => {
     await fixture();
     const manager = await makeUser({ role: "manager", email: "ops@edapt.test" });
     await makeUser({ role: "sales", email: "sales@edapt.test" });
+    // a second admin, added after the owner and not picked, gets no weekly summary
+    await makeUser({ role: "admin", email: "tester@edapt.test" });
     await setSetting("digest", { ...DEFAULT_SETTINGS.digest, weeklyRecipients: [manager.id, "cfo@example.com", "not an email"] }, null);
     const r = await sendWeeklySummary(NOW);
     expect(r).toMatchObject({ sent: 3, recipients: 3, weekKey: "2026-10-12", failed: 0 });

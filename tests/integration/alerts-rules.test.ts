@@ -8,10 +8,11 @@ import {
   notifications,
   payments,
   tasks,
+  users,
   type NewContact,
   type TaskType,
 } from "@/db/schema";
-import { createTask } from "@/lib/alerts/core";
+import { createTask, ownerAdminId } from "@/lib/alerts/core";
 import { runAllAlerts } from "@/lib/alerts/jobs";
 import {
   abandonedCheckouts,
@@ -496,12 +497,27 @@ describe("unverifiedPayments", () => {
   });
 });
 
+describe("ownerAdminId", () => {
+  it("is the earliest-created active admin, and the next one when the owner is deactivated", async () => {
+    expect(await ownerAdminId()).toBeNull();
+    const later = await makeUser({ role: "admin" });
+    const first = await makeUser({ role: "admin" });
+    await makeUser({ role: "manager" });
+    await db.update(users).set({ createdAt: new Date("2026-01-01T00:00:00Z") }).where(eq(users.id, first.id));
+    await db.update(users).set({ createdAt: new Date("2026-02-01T00:00:00Z") }).where(eq(users.id, later.id));
+    expect(await ownerAdminId()).toBe(first.id);
+    await db.update(users).set({ active: false }).where(eq(users.id, first.id));
+    expect(await ownerAdminId()).toBe(later.id);
+  });
+});
+
 describe("vipGoneQuiet", () => {
-  it("alerts the owner and Umer (admins + weekly recipients) once a quarter, for grade A customers only", async () => {
+  it("alerts the owner and Umer (the first admin + weekly recipients) once a quarter, for grade A customers only", async () => {
     const sales = await makeUser({ role: "sales" });
     const admin = await makeUser({ role: "admin" });
     const cfo = await makeUser({ role: "manager", email: "cfo@edapt.test" });
     await makeUser({ role: "manager" });
+    await makeUser({ role: "admin" }); // a later admin, not picked: no VIP alert
     await setSetting("digest", { ...DEFAULT_SETTINGS.digest, weeklyRecipients: ["CFO@edapt.test", "outside@example.com"] }, null);
     const vip = await contact({
       name: "Priya",

@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { notifications, tasks, users, type TaskType } from "@/db/schema";
 
@@ -121,6 +121,21 @@ export async function adminIds(tx: Tx = db): Promise<string[]> {
     .from(users)
     .where(and(eq(users.active, true), eq(users.role, "admin")));
   return rows.map((r) => r.id);
+}
+
+/**
+ * The owner ("Umer" in the spec): the earliest-created active admin, normally the person who set the CRM up.
+ * The weekly summary and the VIP digest go to them, plus whoever is picked in settings digest.weeklyRecipients;
+ * other admins receive them only when picked. Null when there is no active admin.
+ */
+export async function ownerAdminId(tx: Tx = db): Promise<string | null> {
+  const [row] = await tx
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.active, true), eq(users.role, "admin")))
+    .orderBy(asc(users.createdAt), asc(users.id))
+    .limit(1);
+  return row?.id ?? null;
 }
 
 export async function completeTask(taskId: string, userId: string | null, status: "done" | "dismissed" = "done", tx: Tx = db) {

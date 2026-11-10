@@ -4,6 +4,7 @@ import { Checkbox, Field, Input, Textarea } from "@/components/ui/form";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { THRESHOLD_META, type ThresholdMeta } from "@/lib/admin/meta";
+import { ownerAdminId } from "@/lib/alerts";
 import { ROLE_LABELS } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
 import { getSettings } from "@/lib/settings";
@@ -20,13 +21,14 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export default async function AlertsPage() {
   await requireUser(["admin"]);
-  const [s, people] = await Promise.all([
+  const [s, people, ownerId] = await Promise.all([
     getSettings(["thresholds", "digest"]),
     db
       .select({ id: users.id, name: users.name, email: users.email, role: users.role })
       .from(users)
       .where(eq(users.active, true))
       .orderBy(asc(users.name)),
+    ownerAdminId(),
   ]);
   const t = s.thresholds;
   const d = s.digest;
@@ -124,12 +126,12 @@ export default async function AlertsPage() {
                 </Field>
                 <fieldset className="flex flex-col gap-2">
                   <legend className="text-sm font-medium">Weekly summary and VIP digest</legend>
-                  <p className="text-xs text-muted">Every admin always receives them. Add others here.</p>
+                  <p className="text-xs text-muted">The owner (the first admin) always receives them. Add others here.</p>
                   <ul className="mt-1 grid gap-2 sm:grid-cols-2">
                     {people.map((u) =>
-                      u.role === "admin" ? (
+                      u.id === ownerId ? (
                         <li key={u.id}>
-                          <Checkbox checked disabled readOnly label={`${u.name} (admin, always)`} />
+                          <Checkbox checked disabled readOnly label={`${u.name} (owner, always)`} />
                         </li>
                       ) : (
                         <li key={u.id}>

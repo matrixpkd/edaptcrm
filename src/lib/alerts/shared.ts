@@ -10,7 +10,7 @@ import { teamForCountry } from "@/lib/contacts/rules";
 import { getSetting, type AssignmentConfig, type Team } from "@/lib/settings";
 import { localTime, shortDate, validTimeZone } from "@/lib/today/time";
 import { isUuid } from "@/lib/utils";
-import { adminIds } from "./core";
+import { ownerAdminId } from "./core";
 
 export const DAY_MS = 24 * 3600 * 1000;
 export const HOUR_MS = 3600 * 1000;
@@ -57,7 +57,7 @@ export function unique<T>(list: T[]): T[] {
 }
 
 // ---------------------------------------------------------------------------
-// Umer: admins plus settings digest.weeklyRecipients
+// Umer: the owner plus settings digest.weeklyRecipients
 // ---------------------------------------------------------------------------
 
 export type DigestRecipient = { userId: string | null; email: string; name: string; timezone: string };
@@ -65,9 +65,10 @@ export type DigestRecipient = { userId: string | null; email: string; name: stri
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
- * Who receives the weekly summary and the VIP digest ("Owner and Umer"): every active admin, plus each entry of
- * settings digest.weeklyRecipients — a user id, a team member's email, or an outside email address.
- * Deduplicated by email. Inactive users are skipped.
+ * Who receives the weekly summary and the VIP digest ("Owner and Umer"; the spec sends the weekly summary to Umer):
+ * the owner (ownerAdminId: the earliest-created active admin), plus each entry of settings
+ * digest.weeklyRecipients — a user id, a team member's email, or an outside email address. Other admins receive
+ * them only when picked there. Deduplicated by email. Inactive users are skipped.
  */
 export async function umerRecipients(tx: Tx = db): Promise<DigestRecipient[]> {
   const cfg = await getSetting("digest", tx);
@@ -75,7 +76,8 @@ export async function umerRecipients(tx: Tx = db): Promise<DigestRecipient[]> {
     .map((e) => String(e ?? "").trim())
     .filter(Boolean);
   const isId = (e: string): boolean => isUuid(e);
-  const ids = unique([...(await adminIds(tx)), ...entries.filter(isId)]);
+  const owner = await ownerAdminId(tx);
+  const ids = unique([...(owner ? [owner] : []), ...entries.filter(isId)]);
   const emails = unique(entries.filter((e) => !isId(e) && EMAIL_RE.test(e)).map((e) => e.toLowerCase()));
   const cols = { id: users.id, email: users.email, name: users.name, timezone: users.timezone };
   const byId = ids.length

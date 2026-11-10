@@ -97,6 +97,32 @@ async function waitForLockWaiters(n: number) {
   throw new Error(`fewer than ${n} connections ever waited for a lock`);
 }
 
+type Admin = Awaited<ReturnType<typeof makeUser>>;
+
+/** A real TagMango import of `csv`, cleaned and matched: ready for review. */
+async function importOrders(csv: string, admin: Admin, mapping: Record<string, string> = {}): Promise<string> {
+  const batchId = await createImportBatch({ fileName: "orders.csv", fileType: "text/csv", bytes: new TextEncoder().encode(csv), source: "tagmango" }, admin);
+  const [stored] = await db.select({ fileUrl: importBatches.fileUrl }).from(importBatches).where(eq(importBatches.id, batchId));
+  if (stored.fileUrl) leftovers.push(path.join(UPLOADS, storedKeyFromUrl(stored.fileUrl)!));
+  const view = (await getBatchView(batchId, admin))!;
+  await saveMapping(batchId, { mapping: { ...(view.mapping ?? {}), ...mapping }, defaults: {} }, admin);
+  for (let i = 0; i < 20; i++) if ((await runCleanChunk(batchId, admin)).finished) break;
+  for (let i = 0; i < 20; i++) if ((await runMatchChunk(batchId, admin)).finished) break;
+  return batchId;
+}
+
+async function commitImport(batchId: string, admin: Admin): Promise<void> {
+  await startCommit(batchId, admin);
+  for (let i = 0; i < 20; i++) if ((await runCommitChunk(batchId, admin)).finished) break;
+}
+
+async function undoImport(batchId: string, admin: Admin): Promise<void> {
+  await startUndo(batchId, admin);
+  for (let i = 0; i < 20; i++) if ((await runUndoChunk(batchId, admin)).finished) break;
+}
+
+const importRowsOf = (batchId: string) => db.select().from(importRows).where(eq(importRows.batchId, batchId)).orderBy(importRows.rowNumber);
+
 describe("tasks and reminders", () => {
   beforeEach(resetDb);
 
@@ -409,18 +435,11 @@ describe("data privacy", () => {
       // 6: someone she referred, naming her by number
       `TM-${seq++},Meera Das,${phone()},,,,AI Workshop,999,06/10/2025,,${national}`,
     ].join("\n");
-    const batchId = await createImportBatch({ fileName: "orders.csv", fileType: "text/csv", bytes: new TextEncoder().encode(csv), source: "tagmango" }, admin);
-    const [stored] = await db.select({ fileUrl: importBatches.fileUrl }).from(importBatches).where(eq(importBatches.id, batchId));
-    if (stored.fileUrl) leftovers.push(path.join(UPLOADS, storedKeyFromUrl(stored.fileUrl)!));
-    const view = (await getBatchView(batchId, admin))!;
-    await saveMapping(batchId, { mapping: { ...(view.mapping ?? {}), State: "state", "Alt Phone": "alt_phone", "Referred By": "referrer_phone" }, defaults: {} }, admin);
-    for (let i = 0; i < 20; i++) if ((await runCleanChunk(batchId, admin)).finished) break;
-    for (let i = 0; i < 20; i++) if ((await runMatchChunk(batchId, admin)).finished) break;
+    const batchId = await importOrders(csv, admin, { State: "state", "Alt Phone": "alt_phone", "Referred By": "referrer_phone" });
     expect(await resolveAllConflictsAsNew(batchId, admin)).toBe(1);
-    await startCommit(batchId, admin);
-    for (let i = 0; i < 20; i++) if ((await runCommitChunk(batchId, admin)).finished) break;
+    await commitImport(batchId, admin);
 
-    const rows = async () => db.select().from(importRows).where(eq(importRows.batchId, batchId)).orderBy(importRows.rowNumber);
+    const rows = () => importRowsOf(batchId);
     const [skipped, merged, anils, conflict, invalid, referred] = await rows();
     // what the import left: her data on rows of hers that point at no contact, and quoted on other contacts' rows
     expect(skipped).toMatchObject({ matchResult: "skip", contactId: null, matchContactId: null, issues: [`Order ${order} is already recorded on Priya Nair`] });
@@ -463,11 +482,123 @@ describe("data privacy", () => {
     for (const hers of [national, "priya@example.com"]) expect(notAnils).not.toContain(hers);
 
     // the other contacts' rows still undo: Anil's purchase from this import goes, he stays as he was
-    await startUndo(batchId, admin);
-    for (let i = 0; i < 20; i++) if ((await runUndoChunk(batchId, admin)).finished) break;
+    await undoImport(batchId, admin);
     expect((await getBatchView(batchId, admin))!.status).toBe("undone");
     expect(await db.select().from(purchases).where(eq(purchases.contactId, anil.id))).toHaveLength(0);
     expect((await db.select().from(contacts).where(eq(contacts.id, anil.id)))[0].altPhones).toEqual([]);
+  });
+
+  it("a same-name conflict where she was the first candidate stays the row of the person the file was about", async () => {
+    const admin = await makeUser({ role: "admin" });
+    await db.insert(products).values({ name: "AI Workshop", family: "workshop", rung: 1, listPrice: 999 });
+    const p = await lead(null, "Priya Nair", { email: "priya@example.com", profile: { city: "Kochi" } });
+    const header = "Order ID,Name,Phone,Email,City,Mango,Amount,Date";
+    // another Priya Nair of Kochi, with her own number and email: a conflict with her as the only (so first)
+    // candidate, so the row's matched contact; imported as a new contact (below)
+    const done = await importOrders(`${header}\nTM-${seq++},Priya Nair,${phone()},pn.kochi@example.com,Kochi,AI Workshop,999,04/10/2025`, admin);
+    // a third one, in a file still in review: she and a newer namesake are its candidates, nothing decided yet
+    const namesake = await lead(null, "Priya Nair", { profile: { city: "Kochi" } });
+    const third = phone();
+    const pending = await importOrders(`${header}\nTM-${seq++},Priya Nair,${third},nair.p@example.com,Kochi,AI Workshop,999,05/10/2025`, admin);
+    expect(await resolveAllConflictsAsNew(done, admin)).toBe(1);
+    await commitImport(done, admin);
+    const [created] = await importRowsOf(done);
+    const [waiting] = await importRowsOf(pending);
+    const y = created.contactId!;
+    expect(created).toMatchObject({ matchResult: "conflict", matchContactId: p.id, resolution: "create" });
+    expect(created.applied).toMatchObject({ contactId: y, createdContact: true });
+    expect(y).not.toBe(p.id);
+    expect((created.cleaned as StoredClean).match).toMatchObject({ candidates: [{ id: p.id }], contactName: "Priya Nair" });
+    expect(waiting).toMatchObject({ matchResult: "conflict", matchContactId: p.id, resolution: null, contactId: null });
+    expect((waiting.cleaned as StoredClean).match?.candidates?.map((c) => c.id)).toEqual([p.id, namesake.id]);
+
+    await eraseContact(p.id, admin, "Asked by email");
+
+    // both rows stay whole: only her entry as a candidate goes, with the name the conflict showed for her
+    const withoutHer = (r: typeof created, keep: string[]) => {
+      const clean = r.cleaned as StoredClean;
+      const { contactName, ...match } = clean.match!;
+      expect(contactName).toBe("Priya Nair");
+      return { ...clean, match: { ...match, candidates: match.candidates!.filter((c) => keep.includes(c.id)) } };
+    };
+    const [createdA] = await importRowsOf(done);
+    const [waitingA] = await importRowsOf(pending);
+    expect(createdA).toMatchObject({ raw: created.raw, mapped: created.mapped, issues: created.issues, applied: created.applied, contactId: y });
+    expect(createdA.cleaned).toEqual(withoutHer(created, []));
+    expect(waitingA).toMatchObject({ raw: waiting.raw, mapped: waiting.mapped, issues: waiting.issues, resolution: null });
+    expect(waitingA.cleaned).toEqual(withoutHer(waiting, [namesake.id]));
+    for (const batchId of [done, pending]) {
+      expect(JSON.stringify(await listRows(batchId, admin, { pageSize: 200 }))).not.toMatch(new RegExp(`priya@example\\.com|\\${p.phoneE164}`));
+    }
+
+    // the file still in review can be decided and imported
+    expect(await resolveAllConflictsAsNew(pending, admin)).toBe(1);
+    await commitImport(pending, admin);
+    const [imported] = await importRowsOf(pending);
+    expect(imported.applied).not.toHaveProperty("error");
+    expect(imported.applied).toMatchObject({ createdContact: true });
+    expect((await db.select().from(contacts).where(eq(contacts.id, imported.contactId!)))[0]).toMatchObject({ name: "Priya Nair", phoneE164: `+91${third}` });
+    // and the first import still undoes: the contact it created goes
+    await undoImport(done, admin);
+    expect((await getBatchView(done, admin))!.status).toBe("undone");
+    expect(await db.select().from(contacts).where(eq(contacts.id, y))).toHaveLength(0);
+  });
+
+  it("a row linked to no contact is hers by her number or order, by her email only when the import tied it to no one else", async () => {
+    const admin = await makeUser({ role: "admin" });
+    await db.insert(products).values({ name: "AI Workshop", family: "workshop", rung: 1, listPrice: 999 });
+    // she and Anil share the family email (an edit gave it to him; emails are not unique); priya@example.com is hers
+    const p = await lead(null, "Priya Nair", { email: "family@example.com" });
+    await updateContactProfile(p.id, { altEmails: { add: ["priya@example.com"] } }, admin);
+    const anil = await lead(null, "Anil Kumar");
+    await updateContactProfile(anil.id, { email: "family@example.com" }, admin);
+    const anilsOrder = `TM-${seq++}`;
+    await recordPurchase(
+      { contactId: anil.id, productName: "AI Workshop", family: "workshop", amount: 999, currency: "INR", mode: "tagmango", source: "tagmango", reference: anilsOrder, purchasedAt: new Date("2025-09-01T10:00:00Z") },
+      null,
+    );
+    const his = anil.phoneE164.slice(3);
+    const newcomer = phone();
+    const csv = [
+      "Order ID,Name,Phone,Email,City,Mango,Amount,Date",
+      // 1: his order again: skipped, "already recorded on Anil Kumar", linked to no contact
+      `${anilsOrder},Anil Kumar,${his},family@example.com,,AI Workshop,999,01/10/2025`,
+      // 2: his order again, from a number the CRM does not know
+      `${anilsOrder},Anil Kumar,${phone()},family@example.com,,AI Workshop,999,01/10/2025`,
+      // 3: his number with an amount that is not one: invalid
+      `TM-${seq++},Anil Kumar,${his},family@example.com,,AI Workshop,lots,02/10/2025`,
+      // 4 and 5: someone new, then the same number with the family email: one new person (the file is in review)
+      `TM-${seq++},Meera Das,${newcomer},,,AI Workshop,999,03/10/2025`,
+      `TM-${seq++},Meera Das,${newcomer},family@example.com,,AI Workshop,999,04/10/2025`,
+      // 6: her own email from a number the CRM does not know, with an amount that is not one: invalid, and hers
+      `TM-${seq++},Priya Nair,${phone()},priya@example.com,,AI Workshop,lots,05/10/2025`,
+    ].join("\n");
+    const batchId = await importOrders(csv, admin);
+    const before = await importRowsOf(batchId);
+    expect(before.map((r) => [r.matchResult, r.contactId, r.matchContactId])).toEqual([
+      ["skip", null, null],
+      ["skip", null, null],
+      ["invalid", null, null],
+      ["new", null, null],
+      ["merge", null, null],
+      ["invalid", null, null],
+    ]);
+    expect(before[0].issues).toEqual([`Order ${anilsOrder} is already recorded on Anil Kumar`]);
+    expect(before.map((r) => (r.cleaned as StoredClean).email)).toEqual([
+      "family@example.com",
+      "family@example.com",
+      "family@example.com",
+      null,
+      "family@example.com",
+      "priya@example.com",
+    ]);
+
+    await eraseContact(p.id, admin, "Asked by email");
+
+    const after = await importRowsOf(batchId);
+    // the import tied rows 1 to 5 to someone else (his order, his number, the new person's earlier row): untouched
+    expect(after.slice(0, 5)).toEqual(before.slice(0, 5));
+    expect(after[5]).toMatchObject({ raw: {}, mapped: null, cleaned: null, issues: [] });
   });
 
   it("a proof file that cannot be deleted goes to the error log, without its file name, and the erasure stands", async () => {
@@ -888,6 +1019,38 @@ describe("data privacy", () => {
     expect(anils.find((a) => a.field === "altPhones")).toMatchObject({ oldValue: [], newValue: [extra] });
     expect(JSON.stringify([await timeline(ravi.id), await history(ravi.id)])).not.toMatch(/Priya/);
     expect((await history(p.id)).every((a) => a.action === "erase" || (a.oldValue === null && a.newValue === null))).toBe(true);
+  });
+
+  it("an undone merge: the other contact keeps its own numbers and emails in its history, even ones she shares", async () => {
+    const admin = await makeUser({ role: "admin" });
+    // she has the family email and old@example.com; emails are not unique, and Anil had both at some point
+    const p = await lead(null, "Priya Nair", { email: "family@example.com" });
+    await updateContactProfile(p.id, { altEmails: { add: ["old@example.com"] } }, admin);
+    const anil = await lead(null, "Anil Kumar");
+    const emailsOf = (id: string) => and(eq(auditLog.tableName, "contacts"), eq(auditLog.rowId, id), eq(auditLog.field, "email"));
+    // long before the merge: his email was old@example.com, then the family email
+    await updateContactProfile(anil.id, { email: "old@example.com" }, admin);
+    await updateContactProfile(anil.id, { email: "family@example.com" }, admin);
+    await db.update(auditLog).set({ changedAt: new Date(Date.now() - 30 * 24 * H) }).where(emailsOf(anil.id));
+    // merged by mistake ("same email"): while merged his email changes, and after the undo it changes back
+    const mergeId = await mergeContacts(anil.id, p.id, admin, "Same email");
+    await updateContactProfile(anil.id, { email: "anil@example.com" }, admin);
+    await undoMerge(mergeId, admin);
+    await updateContactProfile(anil.id, { email: "family@example.com" }, admin);
+    const history = async () =>
+      (await db.select().from(auditLog).where(emailsOf(anil.id)).orderBy(auditLog.id)).map((a) => [a.oldValue, a.newValue]);
+    const his = await history();
+    expect(his).toEqual([
+      [null, "old@example.com"],
+      ["old@example.com", "family@example.com"],
+      ["family@example.com", "anil@example.com"],
+      ["anil@example.com", "family@example.com"],
+    ]);
+
+    await eraseContact(p.id, admin, "Asked by email");
+    // before the merge: his own history, not hers; while merged: the family email is still his own
+    expect(await history()).toEqual(his);
+    expect((await db.select().from(contacts).where(eq(contacts.id, anil.id)))[0].email).toBe("family@example.com");
   });
 
   it("the proof of a payment that was not saved leaves file storage; a proof a payment holds stays", async () => {

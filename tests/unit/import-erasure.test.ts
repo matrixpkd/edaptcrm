@@ -55,6 +55,25 @@ describe("import rows quoting an erased person", () => {
     });
   });
 
+  it("drops their name as the row's matched contact: a conflict's first candidate, or the contact a merge row matched", () => {
+    const hers = { id: P, name: "Priya Nair", phone: "+919847100001", city: "Kochi" };
+    const namesake = { id: Q, name: "Priya Nair", phone: "+919847100009", city: "Kochi" };
+    // a conflict imported as someone new, or merged into the second candidate: the row is not hers
+    for (const matchContactId of [P, Q]) {
+      const before = row({ cleaned: { name: "Priya Nair", match: { by: "name_city", candidates: [hers, namesake], contactName: "Priya Nair" } } });
+      expect(withoutPersonQuotes({ ...before, matchContactId }, ctx)).toEqual({
+        ...before,
+        cleaned: { name: "Priya Nair", match: { by: "name_city", candidates: [namesake] } },
+      });
+    }
+    // a merge row that matched her and went to another contact
+    const merged = row({ cleaned: { name: "Anil Kumar", match: { by: "phone", contactName: "Priya Nair" } } });
+    expect(withoutPersonQuotes({ ...merged, matchContactId: P }, ctx)).toEqual({ ...merged, cleaned: { name: "Anil Kumar", match: { by: "phone" } } });
+    // a conflict with an earlier row of the file: the name is that row's, not a contact's
+    const earlier = row({ cleaned: { name: "Priya Nair", match: { by: "name_city", conflictRow: 2, contactName: "Priya Nair" } } });
+    expect(withoutPersonQuotes({ ...earlier, matchContactId: null }, ctx)).toBeNull();
+  });
+
   it("drops the referrer columns of a row that named them as referrer", () => {
     const before = row({
       raw: { Name: "Meera Das", "Referred By": "98471 00001" },

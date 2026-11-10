@@ -156,6 +156,10 @@ user's own rows only. `(auth)/login` and `(auth)/setup` are public (setup only w
   import rows (theirs are wiped, linked or not; other contacts' rows lose the issues, conflict candidates and referrer
   columns that quote them), the history of a contact they were merged into by a merge since undone, and their
   referrer's task and alert. No alert rule, Today queue, digest or organisation page brings an erased contact back.
+  It never takes another living person's data with it: a row that went to someone else (a namesake's conflict
+  imported as new) only loses the quote, an email they share (emails are not unique) wipes no row the import tied to
+  someone else, and the other contact of an undone merge keeps its history outside the merge and every number or
+  email it holds now.
 
 ## Secrets
 

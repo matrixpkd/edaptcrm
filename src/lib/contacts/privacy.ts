@@ -37,10 +37,11 @@ import { referredAlertBody } from "./rules";
  *     city/state, designation, company, sales notes, tags and consent cleared; erased_at / erased_by_id set;
  *   - every free text that can hold personal data: interaction summaries, enquiry notes and raw payloads, rating
  *     notes, webhook payloads, task reasons and payloads, the reasons typed for its owner changes and merges;
- *   - its import rows (src/lib/import/erasure.ts): the rows it imported from or matched, and the rows linked to
- *     nobody that carry its number, email or order id (a row skipped because the order was already recorded on it,
- *     an invalid or failed row), are wiped (with their issues and the before/after values an import undo would put
- *     back; the ids an undo needs stay);
+ *   - its import rows (src/lib/import/erasure.ts): the rows that went to it, the rows that matched it and went
+ *     nowhere yet (a same-name conflict only when the admin chose it), and the rows linked to nobody that carry its
+ *     number or order id, or its email or other number when the import tied the row to no one else (a row skipped
+ *     because the order was already recorded on it, an invalid or failed row), are wiped (with their issues and the
+ *     before/after values an import undo would put back; the ids an undo needs stay);
  *   - money rows keep what the accounts need (reference = TagMango order id / UTR, amounts, currency, fx, dates,
  *     product, status, credited user) and lose their free text: purchase notes and raw payloads, payment and refund
  *     reasons (rejection notes), the same reasons in their audit trail, and their payment proofs (below);
@@ -51,15 +52,18 @@ import { referredAlertBody } from "./rules";
  *   - what other contacts' rows quote of it, which stay without the quote:
  *     - its referrer's "call to thank" task (without its name) and the referrer's "New lead" alert ("Referred
  *       <name>", without that line);
- *     - other contacts' import rows (src/lib/import/erasure.ts): issues with its number or name ("<number> belongs
- *       to <name>, so it was not added", "... already recorded on <name>"), its entry in a conflict's candidates,
- *       and the referrer columns of a row that named it as the referrer; the rows stay, so their undo still works;
+ *     - other contacts' import rows (src/lib/import/erasure.ts), a same-name conflict imported as someone new or
+ *       still to decide among them: issues with its number or name ("<number> belongs to <name>, so it was not
+ *       added", "... already recorded on <name>"), its entry in a conflict's candidates (and its name as the first
+ *       one), and the referrer columns of a row that named it as the referrer; the rows stay, so their undo still
+ *       works and a file in review can still be imported;
  *     - a merge into another contact that was undone: the merge entry in that contact's history ("Merged <name>
- *       into this contact", with its number) keeps only its id, and that contact's own history of numbers and
- *       emails (audit values of phoneE164, email, altPhones, altEmails) loses its numbers and emails, which a touch or
- *       an edit could record there while the two were merged. Names stay there: a mistaken merge is usually of
- *       namesakes, and the other contact's own name must stay. When it was the winner of an undone merge, that
- *       merge's entry is in its own history, cleared with the rest.
+ *       into this contact", with its number) keeps only its id, and that contact's history of numbers and emails
+ *       (audit values of phoneE164, email, altPhones, altEmails) written while the two were merged, which a touch or
+ *       an edit could fill with its numbers and emails, loses them. The other contact's history before and after the
+ *       merge stays, and so does a number or email it holds now (emails are shared, numbers change hands). Names stay
+ *       there: a mistaken merge is usually of namesakes, and the other contact's own name must stay. When it was the
+ *       winner of an undone merge, that merge's entry is in its own history, cleared with the rest.
  *     Owner changes, referrer changes, transfer requests and duplicate reviews name no one: they hold ids or fixed
  *     texts.
  * Contact rows merged INTO it are erased the same way. The erasure itself is audited (who, when, the reason) without
@@ -138,11 +142,20 @@ export async function closeErasedContactAlerts(ids: string[], closedById: string
 const IDENTITY_FIELDS = ["phoneE164", "email", "altPhones", "altEmails"];
 
 /**
+ * Slack around a merge's dates (contact_merges.merged_at, undone_at) when looking for the other contact's history
+ * written while the merge was in place: a write that began just before the merge can land after it (it waits for the
+ * contact's lock), and those dates come from the app's clock while audit_log.changed_at comes from the database's.
+ */
+const MERGE_WINDOW_SLACK = sql`interval '5 minutes'`;
+
+/**
  * Contacts the person was merged into by a merge since undone: another person now (a merge still in place made the
  * winner part of the erasure). Their history quotes the person: the merge entry ("Merged <name> into this contact",
- * with the number) keeps only the id, and their own entries of numbers and emails, which a touch through the
- * person's number or an edit could record while the two were merged, lose the person's. Names stay (see the file
- * comment). Found through contact_merges and the audit log's (table, row) index.
+ * with the number) keeps only the id, and their entries of numbers and emails written while the merge was in place
+ * (a touch through the person's number, or an edit, could record the person's there) lose the person's. Only those:
+ * numbers move between people and emails are shared (a family email), so the winner's own history before and after
+ * the merge stays, and so does any number or email the winner holds now. Names stay (see the file comment). Found
+ * through contact_merges and the audit log's (table, row) index.
  */
 async function scrubMergeWinnersHistory(ids: string[], person: { phones: Set<string>; emails: Set<string> }, t: Tx): Promise<void> {
   const merges = await t.selectDistinct({ winnerId: contactMerges.winnerId }).from(contactMerges).where(inArray(contactMerges.loserId, ids));
@@ -160,13 +173,35 @@ async function scrubMergeWinnersHistory(ids: string[], person: { phones: Set<str
       ),
     );
   if (!person.phones.size && !person.emails.size) return;
-  const theirs = (v: unknown) => typeof v === "string" && (person.phones.has(v) || person.emails.has(v.toLowerCase()));
-  const clean = (v: unknown): unknown => (theirs(v) ? null : Array.isArray(v) ? v.filter((x) => !theirs(x)) : v);
   const rows = await t
-    .select({ id: auditLog.id, oldValue: auditLog.oldValue, newValue: auditLog.newValue })
+    .select({ id: auditLog.id, rowId: auditLog.rowId, oldValue: auditLog.oldValue, newValue: auditLog.newValue })
     .from(auditLog)
-    .where(and(eq(auditLog.tableName, "contacts"), inArray(auditLog.rowId, winners), inArray(auditLog.field, IDENTITY_FIELDS)));
+    .where(
+      and(
+        eq(auditLog.tableName, "contacts"),
+        inArray(auditLog.rowId, winners),
+        inArray(auditLog.field, IDENTITY_FIELDS),
+        sql`exists (
+          select 1 from ${contactMerges} m
+          where m.winner_id::text = ${auditLog.rowId} and ${inArray(sql`m.loser_id`, ids)}
+            and ${auditLog.changedAt} between m.merged_at - ${MERGE_WINDOW_SLACK} and coalesce(m.undone_at, now()) + ${MERGE_WINDOW_SLACK}
+        )`,
+      ),
+    );
+  if (!rows.length) return;
+  // what each winner holds now is its own, whoever else has it too
+  const held = new Map<string, Set<string>>();
+  for (const w of await t
+    .select({ id: contacts.id, phone: contacts.phoneE164, altPhones: contacts.altPhones, email: contacts.email, altEmails: contacts.altEmails })
+    .from(contacts)
+    .where(inArray(contacts.id, winners))) {
+    held.set(w.id, new Set([w.phone, ...(w.altPhones ?? []), ...[w.email, ...(w.altEmails ?? [])].filter((e): e is string => !!e).map((e) => e.toLowerCase())]));
+  }
   for (const r of rows) {
+    const own = held.get(r.rowId ?? "") ?? new Set<string>();
+    const theirs = (v: unknown) =>
+      typeof v === "string" && (person.phones.has(v) || person.emails.has(v.toLowerCase())) && !own.has(v) && !own.has(v.toLowerCase());
+    const clean = (v: unknown): unknown => (theirs(v) ? null : Array.isArray(v) ? v.filter((x) => !theirs(x)) : v);
     const oldValue = clean(r.oldValue);
     const newValue = clean(r.newValue);
     if (JSON.stringify([oldValue, newValue]) === JSON.stringify([r.oldValue, r.newValue])) continue;

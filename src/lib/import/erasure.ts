@@ -5,23 +5,33 @@ import "server-only";
  * applied) and the admin's import review shows them all, so the person is taken out of:
  *
  * 1. Their own rows, wiped (raw {}, mapped and cleaned null, issues [], and the before/after values an import undo
- *    would put back on the contact; the ids an undo needs stay):
- *    - rows linked to them: contact_id (the contact the row went to) or match_contact_id (the contact it matched);
- *    - rows linked to nobody (both null) whose clean values are theirs: their main or alternate number, email or
- *      alternate email, or the order id of one of their purchases or payments. These are rows skipped because the
- *      order was already recorded on them, invalid rows, new rows that failed, and rows of an import still in review.
- * 2. Other contacts' rows that quote them, kept so that contact's import undo still works; only the quote goes:
+ *    would put back on the contact; the ids an undo needs stay). A row is theirs when:
+ *    - it went to them (contact_id);
+ *    - it went to no contact yet (pending, failed) and matched them (match_contact_id) by number or email, or as a
+ *      same-name conflict the admin chose to merge into them. A same-name conflict not decided that way is about
+ *      someone else with their name (match_contact_id is only its first candidate): see part 2;
+ *    - it is linked to nobody (both null) and carries their main number or the order id of one of their purchases or
+ *      payments; or their alternate number, email or alternate email, when the import did not tie the row to someone
+ *      else: its main number is no other contact's, its order is not recorded on another contact (a skipped row), and
+ *      it is not "the same person as row N" of its file (a merge row with no contact). Emails are not unique, so a
+ *      shared email alone never makes another person's row theirs. These are rows skipped because the order was
+ *      already recorded on them, invalid rows, new rows that failed, and rows of an import still in review.
+ * 2. Other contacts' rows that quote them, kept so that contact's import undo still works (and a file still in review
+ *    can be decided and committed); only the quote goes:
  *    - issues with their number or naming them ("<number> belongs to <name>, so it was not added", "... already
  *      recorded on <name>"), and the same text in applied.purchaseSkipped;
  *    - their entry in a conflict's candidates (cleaned.match.candidates: id, name, phone and city of up to three
- *      same-name contacts, of which only the first is match_contact_id);
+ *      same-name contacts, of which the first is match_contact_id), and cleaned.match.contactName when it is their
+ *      name (they were the first candidate, or the row's matched contact). match_contact_id stays: an id, shown as
+ *      the erased contact's placeholder name;
  *    - the referrer columns of a row that named them as its referrer (applied.referrerId): cleaned.referrer, the
  *      mapped referrer fields and the raw columns mapped to them.
  *    A namesake's line with the same wording goes too, which only shortens that row's list of issues.
  *
  * One pass over import_rows finds every such row. No index covers these predicates (contact_id, match_contact_id and
- * the jsonb values are not indexed), so it is a sequential scan of import_rows, once per erasure; the writes then go
- * by primary key.
+ * the jsonb values are not indexed), so it is a sequential scan of import_rows, once per erasure; the check that a
+ * number is another contact's runs only for the few unlinked rows carrying their email or alternate number, through
+ * the contacts phone indexes. The writes then go by primary key.
  */
 import { sql } from "drizzle-orm";
 import { queryRows, type Tx } from "@/db";
@@ -95,10 +105,11 @@ function omit<T extends Record<string, unknown>>(o: T, keys: readonly string[]):
 
 /**
  * Another contact's row without what it quotes of the person (see the file comment, part 2), or null when it quotes
- * nothing. `referrerHeaders`: the file's columns mapped to the referrer fields. Pure.
+ * nothing. `matchContactId`: the row's matched contact. `referrerHeaders`: the file's columns mapped to the referrer
+ * fields. Pure.
  */
 export function withoutPersonQuotes(
-  row: ImportRowParts,
+  row: ImportRowParts & { matchContactId?: string | null },
   ctx: { ids: ReadonlySet<string>; quotes: RegExp[]; referrerHeaders: readonly string[] },
 ): ImportRowParts | null {
   let changed = false;
@@ -107,9 +118,19 @@ export function withoutPersonQuotes(
 
   let cleaned = row.cleaned;
   const match = cleaned?.match as MatchInfo | undefined;
-  if (cleaned && Array.isArray(match?.candidates) && match.candidates.some((c: Candidate) => ctx.ids.has(c?.id))) {
-    cleaned = { ...cleaned, match: { ...match, candidates: match.candidates.filter((c: Candidate) => !ctx.ids.has(c?.id)) } };
-    changed = true;
+  if (cleaned && match && typeof match === "object") {
+    const candidates = Array.isArray(match.candidates) ? match.candidates : null;
+    const theirs = (id: unknown) => typeof id === "string" && ctx.ids.has(id);
+    const dropCandidates = !!candidates?.some((c: Candidate) => theirs(c?.id));
+    // the name of the row's matched contact: a conflict's first candidate, or the contact a merge row matched
+    const dropName = match.contactName != null && (theirs(row.matchContactId) || theirs(candidates?.[0]?.id));
+    if (dropCandidates || dropName) {
+      const next: MatchInfo = { ...match };
+      if (dropCandidates) next.candidates = candidates!.filter((c: Candidate) => !theirs(c?.id));
+      if (dropName) delete next.contactName;
+      cleaned = { ...cleaned, match: next };
+      changed = true;
+    }
   }
 
   let applied = row.applied;
@@ -147,21 +168,37 @@ export async function scrubErasedPersonFromImports(p: ErasedPerson, tx: Tx): Pro
   const patterns = quoteLikePatterns(p);
   const ids = uuidArray(p.ids);
 
-  // the one sequential scan (see the file comment)
+  const phoneList = textArray(phones);
+  const emailList = textArray(emails);
+  // the one sequential scan (see the file comment, part 1 for "own")
   const own = sql`(
-    r.contact_id = any(${ids}) or r.match_contact_id = any(${ids})
+    r.contact_id = any(${ids})
+    or (r.contact_id is null and r.match_contact_id = any(${ids})
+      and (r.match_result is distinct from 'conflict' or r.resolution = 'merge'))
     or (r.contact_id is null and r.match_contact_id is null and (
-      r.cleaned->>'phone' = any(${textArray(phones)})
-      or jsonb_exists_any(coalesce(r.cleaned->'altPhones', '[]'::jsonb), ${textArray(phones)})
-      or lower(r.cleaned->>'email') = any(${textArray(emails)})
-      or jsonb_exists_any(coalesce(r.cleaned->'altEmails', '[]'::jsonb), ${textArray(emails)})
+      r.cleaned->>'phone' = any(${phoneList})
       or r.cleaned->'purchase'->>'orderId' = any(${textArray(references)})
+      or (
+        (
+          jsonb_exists_any(coalesce(r.cleaned->'altPhones', '[]'::jsonb), ${phoneList})
+          or lower(r.cleaned->>'email') = any(${emailList})
+          or jsonb_exists_any(coalesce(r.cleaned->'altEmails', '[]'::jsonb), ${emailList})
+        )
+        and r.match_result is distinct from 'skip'
+        and r.match_result is distinct from 'merge'
+        and not exists (
+          select 1 from contacts o
+          where (o.phone_e164 = r.cleaned->>'phone' or o.alt_phones @> array[r.cleaned->>'phone'])
+            and o.id <> all(${ids})
+        )
+      )
     ))
   )`;
   const found = await queryRows<{ id: string; own: boolean }>(sql`
     select r.id, ${own} as own
     from import_rows r
     where ${own}
+      or r.match_contact_id = any(${ids})
       or exists (
         select 1 from jsonb_array_elements_text(case when jsonb_typeof(r.issues) = 'array' then r.issues else '[]'::jsonb end) i
         where i like any(${textArray(patterns)})
@@ -189,8 +226,8 @@ export async function scrubErasedPersonFromImports(p: ErasedPerson, tx: Tx): Pro
 
   const quoting = found.filter((r) => !r.own).map((r) => r.id);
   if (!quoting.length) return { wiped: ownIds.length, edited: 0 };
-  const rows = await queryRows<ImportRowParts & { id: string; mapping: Record<string, string> | null }>(sql`
-    select r.id, r.raw, r.mapped, r.cleaned, r.issues, r.applied, b.mapping
+  const rows = await queryRows<ImportRowParts & { id: string; matchContactId: string | null; mapping: Record<string, string> | null }>(sql`
+    select r.id, r.raw, r.mapped, r.cleaned, r.issues, r.applied, r.match_contact_id as "matchContactId", b.mapping
     from import_rows r join import_batches b on b.id = r.batch_id
     where r.id = any(${uuidArray(quoting)})
     for update of r

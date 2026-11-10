@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ChevronLeft } from "lucide-react";
 import { PageHeader } from "@/components/ui/card";
+import { ErasedNotice } from "@/components/contacts/erased-notice";
 import { RecordPaymentForm } from "@/components/payments/record-payment-form";
 import { defaultPurchaseOrganisation } from "@/components/payments/rules";
 import { can, canEditContact, canViewContact } from "@/lib/auth/permissions";
@@ -30,6 +31,16 @@ export default async function RecordPaymentPage({ params }: { params: Promise<{ 
     notFound();
   }
   if (!canViewContact(user, contact)) notFound();
+  if (contact.erasedAt) {
+    return (
+      <div className="mx-auto max-w-xl">
+        <PageHeader title="Record payment" back={<BackLink href={`/contacts/${contact.id}`} label={contact.name} />} />
+        <div className="rounded-xl border border-border bg-surface">
+          <ErasedNotice contactId={contact.id} />
+        </div>
+      </div>
+    );
+  }
   if (!can(user, "payments.record") || !canEditContact(user, contact)) {
     return (
       <div className="mx-auto max-w-xl">

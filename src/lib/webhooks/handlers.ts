@@ -22,6 +22,7 @@ import { captureEnquiry, type CaptureInput } from "@/lib/contacts/capture";
 import { ContactError, InvalidPhoneError } from "@/lib/contacts/errors";
 import { findContactByEmail, lookupByPhone } from "@/lib/contacts/identity";
 import { logInteraction } from "@/lib/contacts/interactions";
+import { isContactErased } from "@/lib/contacts/privacy";
 import { applyRating } from "@/lib/contacts/profile";
 import { listKeyFor } from "@/lib/contacts/rules";
 import { recomputeContact } from "@/lib/metrics/recompute";
@@ -318,9 +319,13 @@ export async function reprocessWebhookEvent(
 async function runEvent(ev: WebhookEventRow, ctx: IntegrationContext): Promise<IngestOutcome> {
   try {
     const r = await processEvent(ev, ctx);
+    const contactId = r.contactId ?? ev.contactId;
+    // an event that landed on an erased contact (a refund, a repeat of an order it holds) keeps no personal data,
+    // the same as the events its erasure blanked
+    const erased = contactId ? await isContactErased(contactId) : false;
     await db
       .update(webhookEvents)
-      .set({ processedAt: new Date(), error: r.note ?? null, contactId: r.contactId ?? ev.contactId })
+      .set({ processedAt: new Date(), error: r.note ?? null, contactId, ...(erased ? { payload: {} } : {}) })
       .where(eq(webhookEvents.id, ev.id));
     return {
       ok: true,
@@ -415,12 +420,19 @@ export async function fillSelfReportedFirstDoor(contactId: string, door: string,
   if (!door || door === "other") return false;
   return tx.transaction(async (t) => {
     const [c] = await t
-      .select({ id: contacts.id, firstDoor: contacts.firstDoor, fieldSources: contacts.fieldSources, mergedIntoId: contacts.mergedIntoId })
+      .select({
+        id: contacts.id,
+        firstDoor: contacts.firstDoor,
+        fieldSources: contacts.fieldSources,
+        mergedIntoId: contacts.mergedIntoId,
+        erasedAt: contacts.erasedAt,
+      })
       .from(contacts)
       .where(eq(contacts.id, contactId))
       .limit(1)
       .for("update");
-    if (!c || c.mergedIntoId || c.firstDoor !== "other" || c.fieldSources?.first_door) return false;
+    // an erased contact takes nothing new (src/lib/contacts/privacy.ts)
+    if (!c || c.mergedIntoId || c.erasedAt || c.firstDoor !== "other" || c.fieldSources?.first_door) return false;
     await t
       .update(contacts)
       .set({ firstDoor: door, fieldSources: { ...(c.fieldSources ?? {}), first_door: "self" }, updatedAt: new Date() })
@@ -569,8 +581,9 @@ async function processTagMango(payload: unknown, ctx: IntegrationContext, receiv
  */
 async function processTagMangoRefund(o: TagMangoOrder, reference: string, receivedAt: Date): Promise<ProcessResult> {
   const [p] = await db
-    .select({ id: purchases.id, contactId: purchases.contactId, currency: purchases.currency })
+    .select({ id: purchases.id, contactId: purchases.contactId, currency: purchases.currency, erasedAt: contacts.erasedAt })
     .from(purchases)
+    .innerJoin(contacts, eq(contacts.id, purchases.contactId))
     .where(eq(purchases.reference, reference))
     .limit(1);
   if (!p) {
@@ -590,7 +603,8 @@ async function processTagMangoRefund(o: TagMangoOrder, reference: string, receiv
       {
         amount,
         currency,
-        reason: o.refundReason ? `Refunded on TagMango: ${o.refundReason}` : "Refunded on TagMango",
+        // the refund still counts for an erased contact (accounting), but not the customer's own words about it
+        reason: o.refundReason && !p.erasedAt ? `Refunded on TagMango: ${o.refundReason}` : "Refunded on TagMango",
         reference: refundRef,
         refundedAt: believableTime(null, receivedAt),
         mode: "tagmango",

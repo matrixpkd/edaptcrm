@@ -5,6 +5,7 @@ import { PAYMENT_MODES, type PaymentMode } from "@/db/schema";
 import { bool, fail, num, str, type ActionResult } from "@/lib/action";
 import { can, canEditContact, canViewContact } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
+import { ERASED_MESSAGE } from "@/lib/contacts/errors";
 import { recordPurchase, type RecordPurchaseInput } from "@/lib/money";
 import { BASE_CURRENCY, normalizeCurrency } from "@/lib/money/fx";
 import { getSettings } from "@/lib/settings";
@@ -50,6 +51,8 @@ export async function recordPaymentAction(contactId: string, _prev: ActionResult
   const contact = await getPayableContact(contactId);
   if (!contact || contact.mergedIntoId || !canViewContact(user, contact)) return fail("This contact is not available to you.");
   if (!canEditContact(user, contact)) return fail("Only the owner or a manager can record a payment for this contact.");
+  // refused before the proof is stored (recordPurchase refuses too)
+  if (contact.erasedAt) return fail(ERASED_MESSAGE);
 
   const settings = await getSettings(["currency", "ladder.families"]);
   const tz = validTimeZone(user.timezone);

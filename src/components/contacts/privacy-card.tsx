@@ -122,8 +122,9 @@ export function PrivacyCard({
               <div className="space-y-3 text-sm">
                 <p>
                   For a person who asked to be forgotten. Their name, phone,
-                  email, notes, message texts and raw form or checkout data are
-                  wiped, open tasks close and alerts about them go.{" "}
+                  email, notes, message texts, payment screenshots and raw form
+                  or checkout data are wiped, open tasks close and alerts about
+                  them go. Nothing new can be added to the record afterwards.{" "}
                   <strong>This cannot be undone.</strong>
                 </p>
                 <p className="text-muted">

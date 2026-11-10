@@ -10,6 +10,7 @@ import { contacts, enquiries, payments, purchases, tasks, type Contact, type Pur
 import { createTask } from "@/lib/alerts/core";
 import { audit } from "@/lib/audit";
 import { can, type Permission } from "@/lib/auth/permissions";
+import { assertNotErased } from "@/lib/contacts/errors";
 import { selectContacts } from "@/lib/contacts/rows";
 import { recomputeContact } from "@/lib/metrics/recompute";
 import { getSetting } from "@/lib/settings";
@@ -45,6 +46,16 @@ export async function resolveContact(contactId: string, t: Tx): Promise<Contact 
     id = c.mergedIntoId;
   }
   return null;
+}
+
+/**
+ * New money is refused for a contact whose personal data was erased (ContactErasedError): a new purchase or payment
+ * brings new personal data with it (a proof, a payload, notes). Money already recorded stays workable; see
+ * ./purchases.ts.
+ */
+export async function assertTakesNewMoney(contactId: string, t: Tx): Promise<void> {
+  const [c] = await t.select({ erasedAt: contacts.erasedAt }).from(contacts).where(eq(contacts.id, contactId)).limit(1);
+  assertNotErased(c);
 }
 
 /** Load and lock a purchase row for the rest of the transaction (serialises concurrent payments/refunds). */

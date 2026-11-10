@@ -310,6 +310,7 @@ export type PurchaseDetail = {
     ownerId: string | null;
     ownerName: string | null;
     mergedIntoId: string | null;
+    erasedAt: Date | null;
   };
   organisation: { id: string; name: string } | null;
   creditedUserName: string | null;
@@ -336,6 +337,7 @@ export async function getPurchaseDetail(purchaseId: string, tx: Tx = db): Promis
       ownerId: contacts.ownerId,
       ownerName: owner.name,
       mergedIntoId: contacts.mergedIntoId,
+      erasedAt: contacts.erasedAt,
       orgId: organisations.id,
       orgName: organisations.name,
       creditedUserName: credited.name,
@@ -377,6 +379,7 @@ export async function getPurchaseDetail(purchaseId: string, tx: Tx = db): Promis
       ownerId: row.ownerId,
       ownerName: row.ownerName,
       mergedIntoId: row.mergedIntoId,
+      erasedAt: row.erasedAt,
     },
     organisation: row.orgId && row.orgName ? { id: row.orgId, name: row.orgName } : null,
     creditedUserName: row.creditedUserName,
@@ -439,6 +442,8 @@ export type MoneyRowContext = {
   contactId: string;
   ownerId: string | null;
   mergedIntoId: string | null;
+  /** set when the contact's personal data was erased: no new money for it */
+  erasedAt: Date | null;
 };
 
 /** The purchase's contact, for permission checks in actions. Null when the purchase does not exist. */
@@ -452,6 +457,7 @@ export async function getPurchaseContext(purchaseId: string, tx: Tx = db): Promi
       contactId: contacts.id,
       ownerId: contacts.ownerId,
       mergedIntoId: contacts.mergedIntoId,
+      erasedAt: contacts.erasedAt,
     })
     .from(purchases)
     .innerJoin(contacts, eq(contacts.id, purchases.contactId))
@@ -471,6 +477,7 @@ export async function getPaymentContext(paymentId: string, tx: Tx = db): Promise
       contactId: contacts.id,
       ownerId: contacts.ownerId,
       mergedIntoId: contacts.mergedIntoId,
+      erasedAt: contacts.erasedAt,
     })
     .from(payments)
     .innerJoin(purchases, eq(purchases.id, payments.purchaseId))

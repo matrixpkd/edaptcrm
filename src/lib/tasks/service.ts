@@ -5,6 +5,7 @@ import { db, type Database, type Tx } from "@/db";
 import { contacts, tasks, users, type Role, type TaskStatus, type TaskType } from "@/db/schema";
 import { notify } from "@/lib/alerts/core";
 import { can, canViewContact } from "@/lib/auth/permissions";
+import { ERASED_MESSAGE } from "@/lib/contacts/errors";
 import { isUuid } from "@/lib/utils";
 import {
   LISTED_TASK_TYPES,
@@ -48,7 +49,7 @@ async function loadContact(contactId: string, tx: Tx): Promise<ContactRef> {
     .limit(1);
   const c = rows[0];
   if (!c || c.mergedIntoId) throw new TaskError("not_found", "That contact no longer exists", "contactId");
-  if (c.erasedAt) throw new TaskError("invalid", "This contact's data was erased", "contactId");
+  if (c.erasedAt) throw new TaskError("invalid", ERASED_MESSAGE, "contactId");
   return c;
 }
 

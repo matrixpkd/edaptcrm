@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { Lock } from "lucide-react";
 import { ButtonLink } from "@/components/ui/button";
 import { GradeBadge } from "@/components/ui/badge";
+import { ErasedNotice } from "@/components/contacts/erased-notice";
 import { RateForm } from "@/components/today/rate-form";
 import { ScreenSheet } from "@/components/today/screen-sheet";
 import { requireUser } from "@/lib/auth/session";
@@ -48,6 +49,14 @@ export default async function RateCustomerPage({
       </span>
     </span>
   );
+
+  if (screen.erased) {
+    return (
+      <ScreenSheet title="Rate customer" subtitle={<span className="font-medium text-foreground">{c.name}</span>} closeHref={returnTo}>
+        <ErasedNotice contactId={c.id} />
+      </ScreenSheet>
+    );
+  }
 
   if (!screen.canRate) {
     return (

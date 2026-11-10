@@ -5,6 +5,7 @@ import { EmptyState, PageHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/form";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { ActionForm } from "@/components/contacts/action-form";
+import { ErasedNotice } from "@/components/contacts/erased-notice";
 import { countryOptions } from "@/components/contacts/countries";
 import { can, canEditContact, canViewContact } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
@@ -43,6 +44,16 @@ export default async function EditContactPage({ params }: { params: Promise<{ id
       ← {c.name}
     </Link>
   );
+  if (c.erasedAt) {
+    return (
+      <div className="mx-auto max-w-3xl">
+        <PageHeader title="Edit contact" back={back} />
+        <div className="rounded-xl border border-border bg-surface">
+          <ErasedNotice contactId={c.id} />
+        </div>
+      </div>
+    );
+  }
   if (!can(user, "contacts.edit") || !canEditContact(user, c)) {
     return (
       <div className="mx-auto max-w-3xl">

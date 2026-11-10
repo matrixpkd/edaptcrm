@@ -7,7 +7,14 @@ import { audit } from "@/lib/audit";
 import { can } from "@/lib/auth/permissions";
 import { recomputeContact } from "@/lib/metrics/recompute";
 import { formatPhone } from "@/lib/phone";
-import { ContactForbiddenError, ContactMergedError, ContactNotFoundError, ContactValidationError } from "./errors";
+import {
+  ContactErasedError,
+  ContactForbiddenError,
+  ContactMergedError,
+  ContactNotFoundError,
+  ContactValidationError,
+  assertNotErased,
+} from "./errors";
 import { setOwner } from "./assignment";
 import { withTx, wouldCreateReferralCycle, type Actor } from "./internal";
 import { RATED_FIELDS, RATED_FIELD_KEYS, addUnique, earlierOf, isPhoneFallbackName, isUuid, laterOf, removeAdded } from "./rules";
@@ -88,6 +95,9 @@ export async function mergeContacts(
     if (!winner || !loser) throw new ContactNotFoundError();
     if (winner.mergedIntoId) throw new ContactMergedError(winner.mergedIntoId);
     if (loser.mergedIntoId) throw new ContactMergedError(loser.mergedIntoId);
+    // a merge would copy one person's data onto an erased record, or an erased record's money onto a living one
+    assertNotErased(winner);
+    assertNotErased(loser);
     const now = new Date();
     const older = loser.createdAt < winner.createdAt ? loser : winner;
     const newer = older === winner ? loser : winner;
@@ -283,7 +293,9 @@ export async function undoMerge(mergeId: string, actor: Actor, tx: Tx = db): Pro
     if (loser.mergedIntoId !== winner.id) throw new ContactValidationError("The merged record has changed since; this merge cannot be undone");
     if (winner.mergedIntoId) throw new ContactValidationError("The surviving contact was merged again; undo that merge first");
     // erasure on request wiped the snapshot this undo needs (src/lib/contacts/privacy.ts)
-    if (winner.erasedAt || loser.erasedAt) throw new ContactValidationError("This contact's data was erased, so the merge cannot be undone");
+    if (winner.erasedAt || loser.erasedAt) {
+      throw new ContactErasedError("This contact's personal data was erased, so the merge cannot be undone.");
+    }
     const later = await t
       .select({ id: contactMerges.id })
       .from(contactMerges)

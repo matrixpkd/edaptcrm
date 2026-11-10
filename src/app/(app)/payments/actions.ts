@@ -4,6 +4,7 @@ import { PAYMENT_MODES, type PaymentMode } from "@/db/schema";
 import { bool, fail, num, ok, str, type ActionResult } from "@/lib/action";
 import { can, canEditContact, canViewContact } from "@/lib/auth/permissions";
 import { requireUser, type SessionUser } from "@/lib/auth/session";
+import { ERASED_MESSAGE } from "@/lib/contacts/errors";
 import {
   addPayment,
   adjustCredit,
@@ -108,6 +109,8 @@ export async function recordInstalmentAction(_prev: ActionResult, fd: FormData):
   const paymentId = str(fd, "paymentId") ?? "";
   const ctx = await getPaymentContext(paymentId);
   if (!allowed(user, ctx, true)) return fail("Only the owner or a manager can record payments for this contact.");
+  // refused before the proof is stored (the service refuses too)
+  if (ctx.erasedAt) return fail(ERASED_MESSAGE);
   const r = await readReceipt(user, fd);
   const amount = num(fd, "amount");
   if (amount !== null && !(amount > 0)) r.errors.amount = "Enter the amount received.";
@@ -133,6 +136,8 @@ export async function addPaymentAction(_prev: ActionResult, fd: FormData): Promi
   const purchaseId = str(fd, "purchaseId") ?? "";
   const ctx = await getPurchaseContext(purchaseId);
   if (!allowed(user, ctx, true)) return fail("Only the owner or a manager can record payments for this contact.");
+  // refused before the proof is stored (the service refuses too)
+  if (ctx.erasedAt) return fail(ERASED_MESSAGE);
   const r = await readReceipt(user, fd);
   const amount = num(fd, "amount");
   if (amount === null || !(amount > 0)) r.errors.amount = "Enter the amount received.";

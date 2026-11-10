@@ -1,5 +1,5 @@
 import "server-only";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { and, eq, or } from "drizzle-orm";
@@ -13,6 +13,7 @@ import { INLINE_IMAGE_EXTENSIONS } from "@/lib/file-types";
  * Supabase Storage when SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set, else ./uploads (dev only).
  * Files are always served through /api/files/<key>, which checks the session AND who may see the file
  * (canReadStoredFile): proofs follow the contact, import files are admin-only, anything else is never served.
+ * deleteStoredFile removes one (an erased contact's payment proofs, src/lib/contacts/privacy.ts).
  *
  * Import files can be bigger than a serverless request body (Vercel stops at about 4.5 MB), so with Supabase the
  * browser uploads them straight to Storage with a signed upload URL (createSignedUpload) and hands the key over.
@@ -26,6 +27,22 @@ export const IMPORT_FOLDER = "imports";
 /** The URL stored on rows (payments.proof_url, import_batches.file_url) for a storage key. */
 export function fileUrlForKey(key: string): string {
   return `/api/files/${key}`;
+}
+
+/** The storage key behind a stored file's URL ("/api/files/<key>"); null for anything else, e.g. an outside link. */
+export function storedKeyFromUrl(url: string | null | undefined): string | null {
+  const prefix = fileUrlForKey("");
+  if (!url || !url.startsWith(prefix)) return null;
+  return cleanStoredKey(url.slice(prefix.length));
+}
+
+/**
+ * A key without its file name, for logs: "proofs/2026-11/<uuid>" (the uploaded file name can hold a person's name).
+ * A key of another shape keeps only its folder.
+ */
+export function redactStoredKey(key: string): string {
+  const m = /^([^/]+\/\d{4}-\d{2}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:-|$)/i.exec(key);
+  return m ? m[1] : `${storedKeyFolder(key)}/(file)`;
 }
 
 /** A storage key from the URL path segments (or a joined key); null when it is not a clean relative key. */
@@ -153,6 +170,35 @@ export async function saveFile(
     await writeFile(full, bytes);
   }
   return fileUrlForKey(key);
+}
+
+/**
+ * Deletes a stored file, from the same store saveFile uses: Supabase Storage when SUPABASE_URL +
+ * SUPABASE_SERVICE_ROLE_KEY are set, else ./uploads. Returns true when a file was removed and false when there was
+ * none to remove; throws when the store refuses or cannot be reached (the caller decides what a failure means).
+ */
+export async function deleteStoredFile(key: string): Promise<boolean> {
+  if (cleanStoredKey(key) !== key) throw new Error("Not a stored file key");
+  const sb = supabase();
+  if (sb) {
+    // the Storage API's bulk delete (what supabase-js remove() calls): it answers with the objects it removed
+    const res = await fetch(`${sb.url}/storage/v1/object/${sb.bucket}`, {
+      method: "DELETE",
+      headers: { ...authHeaders(sb.key), "Content-Type": "application/json" },
+      body: JSON.stringify({ prefixes: [key] }),
+    });
+    if (!res.ok) throw new Error(`Delete failed: ${res.status} ${await res.text()}`);
+    const removed: unknown = await res.json();
+    return Array.isArray(removed) && removed.length > 0;
+  }
+  try {
+    await unlink(path.join(LOCAL_ROOT, key));
+    return true;
+  } catch (e) {
+    // already gone: nothing to delete. Anything else (permissions, a folder in its place) is a real failure.
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw e;
+  }
 }
 
 /** For /api/files: a short-lived signed URL (Supabase) or the local bytes. */

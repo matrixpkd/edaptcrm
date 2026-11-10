@@ -46,6 +46,8 @@ export type LogScreen = {
   lostReasons: ListItem[];
   /** may mark the contact Lost from this screen */
   canMarkLost: boolean;
+  /** the contact's personal data was erased: nothing can be logged (the screen shows a notice) */
+  erased: boolean;
 };
 
 export async function loadLogScreen(contactId: string, user: Viewer, tx: Tx = db): Promise<LogScreen | null> {
@@ -65,7 +67,8 @@ export async function loadLogScreen(contactId: string, user: Viewer, tx: Tx = db
     },
     outcomes: activeItems(s["lists.outcomes"]),
     lostReasons: activeItems(s["lists.lostReasons"]),
-    canMarkLost: can(user, "contacts.setStage") && canEditContact(user, c) && c.stage !== "lost",
+    canMarkLost: can(user, "contacts.setStage") && canEditContact(user, c) && c.stage !== "lost" && !c.erasedAt,
+    erased: !!c.erasedAt,
   };
 }
 
@@ -125,6 +128,8 @@ export type RateScreen = {
   preview: ScorePreviewInputs;
   /** may give a sales rating: sales on own/pool contacts, managers, admins */
   canRate: boolean;
+  /** the contact's personal data was erased: nothing can be rated (the screen shows a notice) */
+  erased: boolean;
 };
 
 export async function loadRateScreen(
@@ -189,6 +194,7 @@ export async function loadRateScreen(
       },
       now: now.toISOString(),
     },
-    canRate: canGiveSalesRating(user, c),
+    canRate: canGiveSalesRating(user, c) && !c.erasedAt,
+    erased: !!c.erasedAt,
   };
 }

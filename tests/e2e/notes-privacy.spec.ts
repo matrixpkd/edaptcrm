@@ -103,4 +103,13 @@ test("consent in one tap, and an admin erases a person's data on request", async
   expect(after.erasedAt).not.toBeNull();
   await ap.goto(`/contacts?q=${encodeURIComponent(c.name)}`);
   await expect(ap.getByRole("link", { name: c.name })).toHaveCount(0);
+
+  // the screens that would add data show a notice instead of their form, even opened by URL
+  for (const screen of ["edit", "log", "rate", "payment"]) {
+    await ap.goto(`/contacts/${c.id}/${screen}`);
+    await expect(ap.getByText("This contact's personal data was erased.")).toBeVisible();
+    await expect(ap.getByRole("link", { name: "Back to the contact" })).toBeVisible();
+    // (the shell's sign-out form sits outside <main>)
+    await expect(ap.getByRole("main").locator("form")).toHaveCount(0);
+  }
 });

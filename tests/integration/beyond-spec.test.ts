@@ -1,18 +1,43 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { existsSync } from "node:fs";
+import { mkdir, rm } from "node:fs/promises";
+import path from "node:path";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
-import { auditLog, contactMerges, contacts, enquiries, interactions, notifications, payments, purchases, tasks } from "@/db/schema";
+import {
+  appErrors,
+  auditLog,
+  contactMerges,
+  contacts,
+  enquiries,
+  importBatches,
+  importRows,
+  interactions,
+  notifications,
+  organisations,
+  ownershipLog,
+  payments,
+  purchases,
+  ratings,
+  tasks,
+  webhookEvents,
+} from "@/db/schema";
 import { getActivityFeed } from "@/lib/activity/feed";
 import { createTask } from "@/lib/alerts/core";
+import { handoverAllContacts, reassignContacts, releaseStaleLeads, requestTransfer, setOwner } from "@/lib/contacts/assignment";
 import { captureEnquiry } from "@/lib/contacts/capture";
-import { ContactValidationError } from "@/lib/contacts/errors";
+import { ContactErasedError, ContactValidationError, ERASED_MESSAGE } from "@/lib/contacts/errors";
 import { logInteraction } from "@/lib/contacts/interactions";
-import { setManualStage } from "@/lib/contacts/lifecycle";
+import { reopenContact, setManualStage } from "@/lib/contacts/lifecycle";
 import { mergeContacts, undoMerge } from "@/lib/contacts/merge";
 import { addNote, getPinnedNote, setPinned } from "@/lib/contacts/notes";
-import { ERASED_NAME, eraseContact, setConsent } from "@/lib/contacts/privacy";
+import { linkContactToOrganisation } from "@/lib/contacts/organisations";
+import { ERASED_NAME, ERASED_REASON, eraseContact, setConsent } from "@/lib/contacts/privacy";
+import { applyRating, updateContactProfile } from "@/lib/contacts/profile";
 import { listContacts, parseContactFilters } from "@/lib/contacts/queries";
-import { recordPurchase } from "@/lib/money";
+import { addPayment, adjustCredit, cancelPurchase, recordPurchase, recordRefund, rejectPayment, verifyPayment } from "@/lib/money";
+import { PROOF_FOLDER, canReadStoredFile, saveFile, storedKeyFromUrl } from "@/lib/storage";
+import { ingestWebhook } from "@/lib/webhooks/handlers";
 import { getBoard } from "@/lib/pipeline/board";
 import { globalSearch } from "@/lib/search/global";
 import { TaskError } from "@/lib/tasks/rules";
@@ -31,6 +56,19 @@ async function lead(ownerId: string | null, name = "Priya Nair", extra: Record<s
 }
 
 const H = 3_600_000;
+
+// payment proofs go to ./uploads in tests (no Supabase): whatever a test leaves there is removed at the end
+const UPLOADS = path.join(process.cwd(), "uploads");
+const leftovers: string[] = [];
+afterAll(async () => {
+  for (const p of leftovers) await rm(p, { recursive: true, force: true });
+});
+async function proofFile(name: string): Promise<string> {
+  const url = await saveFile({ name, type: "image/png", data: new Uint8Array([137, 80, 78, 71]) }, PROOF_FOLDER);
+  leftovers.push(path.join(UPLOADS, storedKeyFromUrl(url)!));
+  return url;
+}
+const onDisk = (url: string) => existsSync(path.join(UPLOADS, storedKeyFromUrl(url)!));
 
 describe("tasks and reminders", () => {
   beforeEach(resetDb);
@@ -198,7 +236,7 @@ describe("data privacy", () => {
     expect(open).toHaveLength(0);
     const contactAudit = await db.select().from(auditLog).where(and(eq(auditLog.tableName, "contacts"), eq(auditLog.rowId, c.id)));
     const erase = contactAudit.find((a) => a.action === "erase");
-    expect(erase?.newValue).toEqual({ reason: "Asked by email on 12 Oct", rows: 1 });
+    expect(erase?.newValue).toEqual({ reason: "Asked by email on 12 Oct", rows: 1, proofs: 0 });
     expect(JSON.stringify(contactAudit)).not.toContain("Priya");
 
     // gone from lists and search; the same number comes back as a new person
@@ -221,11 +259,11 @@ describe("data privacy", () => {
 
     const a = await lead(null, "Twin Person");
     const b = await lead(null, "Twin Person");
-    const mergeId = await mergeContacts(a.id, b.id, admin);
+    const mergeId = await mergeContacts(a.id, b.id, admin, "Twin's second number");
     const r = await eraseContact(a.id, admin, "asked");
     expect(r.erasedIds.sort()).toEqual([a.id, b.id].sort());
     expect((await db.select().from(contacts).where(eq(contacts.id, b.id)))[0].name).toBe(ERASED_NAME);
-    expect((await db.select().from(contactMerges).where(eq(contactMerges.id, mergeId)))[0].winnerBefore).toEqual({});
+    expect((await db.select().from(contactMerges).where(eq(contactMerges.id, mergeId)))[0]).toMatchObject({ winnerBefore: {}, reason: null });
     await expect(undoMerge(mergeId, admin)).rejects.toThrow(/erased/);
   });
 
@@ -241,6 +279,280 @@ describe("data privacy", () => {
     row = (await db.select().from(contacts).where(eq(contacts.id, c.id)))[0];
     expect(row.consent).toBe(false);
     await expect(setConsent(c.id, true, support)).rejects.toThrow();
+  });
+
+  it("unlinks and deletes payment proofs and clears free text on money rows; references and amounts stay", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const manager = await makeUser({ role: "manager" });
+    const sales = await makeUser({ role: "sales" });
+    const other = await makeUser({ role: "sales" });
+    const c = await lead(sales.id, "Priya Nair");
+    const shot = await proofFile("priya-nair-gpay.png");
+    const slip = await proofFile("priya-bank-slip.png");
+    // a verified bank transfer with its screenshot (on the purchase and on its payment)
+    await recordPurchase(
+      { contactId: c.id, productName: "AAM", family: "applied_ai_mastery", amount: 5000, currency: "INR", mode: "bank_transfer", source: "manual", reference: `UTR${seq++}`, proofUrl: shot, notes: "Paid by Priya's husband", verified: true, purchasedAt: new Date() },
+      admin,
+    );
+    // a TagMango order, partly refunded with a reason
+    const refundRef = `RF-${seq++}`;
+    const tm = await recordPurchase(
+      { contactId: c.id, productName: "Workshop", family: "workshop", amount: 999, currency: "INR", mode: "tagmango", source: "tagmango", reference: `TM-${seq++}`, rawPayload: { name: "Priya Nair" }, purchasedAt: new Date() },
+      null,
+    );
+    await recordRefund(tm.purchaseId, { amount: 199, reason: "Priya moved to Dubai", reference: refundRef }, admin);
+    // a claimed payment rejected with a note
+    const claim = await recordPurchase(
+      { contactId: c.id, productName: "AAM", family: "applied_ai_mastery", amount: 2000, currency: "INR", mode: "upi_qr", source: "manual", reference: `UPI${seq++}`, proofUrl: slip, purchasedAt: new Date() },
+      sales,
+    );
+    await rejectPayment(claim.paymentIds[0], manager, "Wrong UTR from Priya");
+    // an owner change with a typed reason, and an import row that remembers her old and new email
+    await reassignContacts([c.id], other.id, manager, "Priya prefers Hindi");
+    const [batch] = await db.insert(importBatches).values({ fileName: "leads.csv", source: "other" }).returning();
+    await db.insert(importRows).values({
+      batchId: batch.id,
+      rowNumber: 1,
+      raw: { Name: "Priya Nair" },
+      contactId: c.id,
+      issues: [`${c.phoneE164} belongs to Priya Nair, so it was not added`],
+      applied: { contactId: c.id, enquiryId: null, before: { email: "priya@old.example" }, after: { email: "priya@new.example" } },
+    });
+
+    const buysBefore = await db.select().from(purchases).where(eq(purchases.contactId, c.id));
+    const paysBefore = await db.select().from(payments).where(eq(payments.contactId, c.id));
+    const ltvBefore = (await db.select().from(contacts).where(eq(contacts.id, c.id)))[0].ltvInr;
+    expect(ltvBefore).toBe(5000 + 999 - 199);
+    expect(onDisk(shot) && onDisk(slip)).toBe(true);
+    expect(await canReadStoredFile(other, storedKeyFromUrl(shot)!)).toBe(true);
+
+    const r = await eraseContact(c.id, admin, "Asked by email");
+    expect(r.proofKeys.sort()).toEqual([storedKeyFromUrl(shot), storedKeyFromUrl(slip)].sort());
+    expect(r).toMatchObject({ filesDeleted: 2, fileErrors: 0 });
+
+    // the proofs: no row points at them (the file route serves nobody), and the files are gone
+    for (const url of [shot, slip]) {
+      expect(onDisk(url)).toBe(false);
+      expect(await canReadStoredFile(admin, storedKeyFromUrl(url)!)).toBe(false);
+    }
+    // money rows: free text and proofs cleared, everything the accounts need unchanged
+    const buys = await db.select().from(purchases).where(eq(purchases.contactId, c.id));
+    expect(buys).toHaveLength(3);
+    for (const p of buys) {
+      expect(p).toMatchObject({ proofUrl: null, notes: null, rawPayload: null });
+      const b = buysBefore.find((x) => x.id === p.id)!;
+      expect({ ...p, proofUrl: b.proofUrl, notes: b.notes, rawPayload: b.rawPayload, updatedAt: b.updatedAt }).toEqual(b);
+    }
+    const pays = await db.select().from(payments).where(eq(payments.contactId, c.id));
+    expect(pays).toHaveLength(paysBefore.length);
+    for (const p of pays) {
+      expect(p).toMatchObject({ proofUrl: null, reason: null });
+      const b = paysBefore.find((x) => x.id === p.id)!;
+      expect({ ...p, proofUrl: b.proofUrl, reason: b.reason, updatedAt: b.updatedAt }).toEqual(b);
+    }
+    expect(pays.find((p) => p.kind === "refund")).toMatchObject({ reference: refundRef, amount: 199, status: "verified" });
+    expect((await db.select().from(contacts).where(eq(contacts.id, c.id)))[0].ltvInr).toBe(ltvBefore);
+    // the same notes in the money rows' history are gone; the references stay
+    const moneyAudit = JSON.stringify(await db.select().from(auditLog).where(inArray(auditLog.tableName, ["purchases", "payments"])));
+    expect(moneyAudit).not.toMatch(/Priya|Dubai|husband/);
+    expect(moneyAudit).toContain(refundRef);
+    // owner changes keep who and when, not the reason typed
+    const log = await db.select().from(ownershipLog).where(eq(ownershipLog.contactId, c.id));
+    expect(log).toHaveLength(2);
+    expect(log.every((l) => l.reason === ERASED_REASON)).toBe(true);
+    // the import row keeps what an undo needs, not the values it would put back
+    const [row] = await db.select().from(importRows).where(eq(importRows.batchId, batch.id));
+    expect(row).toMatchObject({ raw: {}, issues: [], applied: { contactId: c.id, enquiryId: null } });
+    expect(row.applied).not.toHaveProperty("before");
+  });
+
+  it("a proof file that cannot be deleted goes to the error log, without its file name, and the erasure stands", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const c = await lead(null, "Rahul Menon");
+    const key = `${PROOF_FOLDER}/2026-11/0b6f3f3e-2f6a-4a51-9d0e-6b1f4f0c9a11-rahul-menon-receipt.png`;
+    // a folder where the file should be: the store refuses to delete it
+    const where = path.join(UPLOADS, key);
+    await mkdir(where, { recursive: true });
+    leftovers.push(where);
+    await recordPurchase(
+      { contactId: c.id, productName: "AAM", family: "applied_ai_mastery", amount: 3000, currency: "INR", mode: "bank_transfer", source: "manual", reference: `UTR${seq++}`, proofUrl: `/api/files/${key}`, verified: true, purchasedAt: new Date() },
+      admin,
+    );
+    expect(await canReadStoredFile(admin, key)).toBe(true);
+
+    const r = await eraseContact(c.id, admin, "Asked on the phone");
+    expect(r).toMatchObject({ proofKeys: [key], filesDeleted: 0, fileErrors: 1 });
+    const errors = await db.select().from(appErrors);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ kind: "server", source: "erasure", path: `/contacts/${c.id}`, userId: admin.id });
+    expect(errors[0].message).toContain(`${PROOF_FOLDER}/2026-11/0b6f3f3e-2f6a-4a51-9d0e-6b1f4f0c9a11`);
+    expect(`${errors[0].message} ${errors[0].stack ?? ""}`).not.toContain("rahul-menon");
+    // the erasure stands and the file is unreachable already
+    expect((await db.select().from(contacts).where(eq(contacts.id, c.id)))[0].erasedAt).not.toBeNull();
+    expect(await canReadStoredFile(admin, key)).toBe(false);
+  });
+
+  it("an erased contact is locked: every write that would add personal data is refused by the service", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const manager = await makeUser({ role: "manager" });
+    const sales = await makeUser({ role: "sales" });
+    const other = await makeUser({ role: "sales" });
+    const c = await lead(sales.id, "Priya Nair");
+    const noteId = await addNote(c.id, "Lives in Kochi", sales);
+    const partly = await recordPurchase(
+      { contactId: c.id, productName: "AAM", family: "applied_ai_mastery", amount: 4000, currency: "INR", mode: "bank_transfer", source: "manual", reference: `UTR${seq++}`, paidNow: { amount: 1000, reference: `UTR${seq++}` }, verified: true, purchasedAt: new Date() },
+      admin,
+    );
+    const live = await lead(sales.id, "Priya Nair");
+    const [org] = await db.insert(organisations).values({ name: "Acme Traders" }).returning();
+    await eraseContact(c.id, admin, "Asked by email");
+    const erasedRow = async () => (await db.select().from(contacts).where(eq(contacts.id, c.id)))[0];
+    const before = await erasedRow();
+    const counts = async () => ({
+      interactions: (await db.select().from(interactions).where(eq(interactions.contactId, c.id))).length,
+      ratings: (await db.select().from(ratings).where(eq(ratings.contactId, c.id))).length,
+      purchases: (await db.select().from(purchases).where(eq(purchases.contactId, c.id))).length,
+      payments: (await db.select().from(payments).where(eq(payments.contactId, c.id))).length,
+      tasks: (await db.select().from(tasks).where(eq(tasks.contactId, c.id))).length,
+      owners: (await db.select().from(ownershipLog).where(eq(ownershipLog.contactId, c.id))).length,
+    });
+    const countsBefore = await counts();
+    const refused = async (p: Promise<unknown>) => {
+      const e = await p.then(
+        () => null,
+        (err: unknown) => err,
+      );
+      expect(e).toBeInstanceOf(ContactErasedError);
+      expect((e as Error).message).toBe(ERASED_MESSAGE);
+    };
+
+    // profile, consent, organisation, notes, interactions, ratings, stage
+    await refused(updateContactProfile(c.id, { name: "Priya Nair", email: "priya@example.com" }, admin));
+    await refused(updateContactProfile(c.id, { altPhones: { add: ["+919847099999"] } }, admin));
+    await refused(setConsent(c.id, true, admin));
+    await refused(linkContactToOrganisation(c.id, org.id, admin));
+    await refused(addNote(c.id, "Called back", admin));
+    await refused(setPinned(noteId, true, admin));
+    await refused(logInteraction(c.id, { type: "call", summary: "Spoke to Priya" }, admin));
+    await refused(logInteraction(c.id, { type: "whatsapp", direction: "in", summary: "Hi", externalRef: `libromi:msg:x${seq++}` }, null));
+    await refused(applyRating(c.id, { aiLevel: 3, notes: "Sharp" }, "sales", admin.id));
+    await refused(applyRating(c.id, { aiLevel: 3 }, "self", null));
+    await refused(setManualStage(c.id, "lost", { lostReason: "price" }, admin));
+    await refused(reopenContact(c.id, admin));
+    // owner: reassignment (one or in bulk), transfer requests, any owner change, merges either way
+    await refused(reassignContacts([c.id], other.id, manager, "Move"));
+    await expect(reassignContacts([live.id, c.id], other.id, manager, "Move")).rejects.toThrow(/erased\. Reload the list/);
+    await refused(requestTransfer(c.id, other, "I know her"));
+    await refused(setOwner(c.id, other.id, { reason: "Moved", changedById: manager.id }));
+    await refused(mergeContacts(live.id, c.id, manager));
+    await refused(mergeContacts(c.id, live.id, manager));
+    // new money: a purchase, a part payment on a purchase it already has
+    await refused(
+      recordPurchase(
+        { contactId: c.id, productName: "Workshop", family: "workshop", amount: 999, currency: "INR", mode: "tagmango", source: "tagmango", reference: `TM-${seq++}`, purchasedAt: new Date() },
+        null,
+      ),
+    );
+    await refused(addPayment(partly.purchaseId, { amount: 500, mode: "bank_transfer", reference: `UTR${seq++}`, verify: true }, admin));
+    // tasks refuse with their own error; a living contact cannot take the erased one as referrer, by hand or on capture
+    await expect(createManualTask({ title: "Call Priya", dueAt: new Date(), contactId: c.id }, admin)).rejects.toThrow(ERASED_MESSAGE);
+    await expect(updateContactProfile(live.id, { referredById: c.id }, admin)).rejects.toThrow(/referrer's personal data was erased/);
+    const referred = await captureEnquiry({ phone: phone(), name: "New Friend", channel: "phone_call", referrer: { contactId: c.id }, skipAlerts: true, skipAssignment: true });
+    expect(referred.contact.referredById).toBeNull();
+
+    // nothing changed on the erased contact
+    expect(await erasedRow()).toEqual(before);
+    expect(await counts()).toEqual(countsBefore);
+    expect(await db.select().from(contactMerges)).toHaveLength(0);
+  });
+
+  it("system jobs leave an erased lead alone; a leaver's handover still moves it", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const sales = await makeUser({ role: "sales" });
+    const heir = await makeUser({ role: "sales" });
+    const c = await lead(sales.id, "Old Lead");
+    const stale = await lead(sales.id, "Stale Lead");
+    await eraseContact(c.id, admin, "Asked by email");
+    // use it or lose it (the 15-minute cron) skips an erased lead instead of failing on it
+    expect(await releaseStaleLeads(new Date(Date.now() + 60 * 24 * H))).toEqual([stale.id]);
+    expect((await db.select().from(contacts).where(eq(contacts.id, c.id)))[0].ownerId).toBe(sales.id);
+    // when someone leaves, their erased contacts move too (a fixed reason, no personal data)
+    expect(await handoverAllContacts(sales.id, heir.id, admin)).toBe(1);
+    expect((await db.select().from(contacts).where(eq(contacts.id, c.id)))[0].ownerId).toBe(heir.id);
+  });
+
+  it("money already recorded on an erased contact stays workable: refunds, verification, cancelling, credit", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const manager = await makeUser({ role: "manager" });
+    const sales = await makeUser({ role: "sales" });
+    const c = await lead(sales.id, "Priya Nair", { email: "priya@example.com" });
+    const oldPhone = c.phoneE164;
+    const paid = await recordPurchase(
+      { contactId: c.id, productName: "AAM", family: "applied_ai_mastery", amount: 5000, currency: "INR", mode: "bank_transfer", source: "manual", reference: `UTR${seq++}`, verified: true, purchasedAt: new Date() },
+      admin,
+    );
+    const claimed = await recordPurchase(
+      { contactId: c.id, productName: "AAM", family: "applied_ai_mastery", amount: 2000, currency: "INR", mode: "bank_transfer", source: "manual", reference: `UTR${seq++}`, purchasedAt: new Date() },
+      sales,
+    );
+    await rejectPayment(claimed.paymentIds[0], manager, "Not in the account yet");
+    const wrong = await recordPurchase(
+      { contactId: c.id, productName: "Workshop", family: "workshop", amount: 999, currency: "INR", mode: "bank_transfer", source: "manual", reference: `UTR${seq++}`, purchasedAt: new Date() },
+      sales,
+    );
+    await rejectPayment(wrong.paymentIds[0], manager, "Recorded on the wrong person");
+    const order = `TM-${seq++}`;
+    await recordPurchase(
+      { contactId: c.id, productName: "Workshop", family: "workshop", amount: 999, currency: "INR", mode: "tagmango", source: "tagmango", reference: order, purchasedAt: new Date() },
+      null,
+    );
+    await eraseContact(c.id, admin, "Asked by email");
+    const ltv = async () => (await db.select().from(contacts).where(eq(contacts.id, c.id)))[0].ltvInr;
+    expect(await ltv()).toBe(5999);
+
+    await recordRefund(paid.purchaseId, { amount: 1000, reason: "Refund on request", reference: `RF-${seq++}` }, admin);
+    expect(await ltv()).toBe(4999);
+    // the manager changed their mind: the money did arrive
+    await verifyPayment(claimed.paymentIds[0], manager);
+    expect(await ltv()).toBe(6999);
+    expect(await cancelPurchase(wrong.purchaseId, manager, "Duplicate entry")).toBe("cancelled");
+    await adjustCredit(paid.purchaseId, sales.id, manager);
+    expect((await db.select().from(purchases).where(eq(purchases.id, paid.purchaseId)))[0].creditedUserId).toBe(sales.id);
+
+    // a TagMango refund still lands on the order, without the customer's own words, and its payload is not kept
+    const refund = await ingestWebhook("tagmango", {
+      orderId: order,
+      status: "refunded",
+      refundAmount: 999,
+      refundId: "rf_erased",
+      reason: "Priya could not attend",
+      name: "Priya Nair",
+      phone: oldPhone,
+      email: "priya@example.com",
+    });
+    expect(refund).toMatchObject({ ok: true, contactId: c.id });
+    const [tmRefund] = await db.select().from(payments).where(eq(payments.reference, `${order}:refund:rf_erased`));
+    expect(tmRefund).toMatchObject({ kind: "refund", amount: 999, reason: "Refunded on TagMango", contactId: c.id });
+    expect(await ltv()).toBe(6000);
+    const [ev] = await db.select().from(webhookEvents).where(eq(webhookEvents.id, refund.eventId!));
+    expect(ev).toMatchObject({ payload: {}, contactId: c.id, error: null });
+    expect(ev.processedAt).not.toBeNull();
+
+    // a new order from the old number is a new person: a new contact, nothing added to the erased one
+    const fresh = await ingestWebhook("tagmango", {
+      orderId: `TM-${seq++}`,
+      orderStatus: "completed",
+      name: "Priya Nair",
+      phone: oldPhone,
+      amountPaid: 499,
+      currency: "INR",
+      mangoName: "Prompt Workshop",
+    });
+    expect(fresh.ok).toBe(true);
+    expect(fresh.contactId).not.toBe(c.id);
+    const [again] = await db.select().from(contacts).where(eq(contacts.id, fresh.contactId!));
+    expect(again).toMatchObject({ phoneE164: oldPhone, name: "Priya Nair", erasedAt: null, ltvInr: 499 });
+    expect((await db.select().from(contacts).where(eq(contacts.id, c.id)))[0]).toMatchObject({ name: ERASED_NAME, email: null });
   });
 });
 

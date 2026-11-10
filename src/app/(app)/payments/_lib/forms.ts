@@ -8,6 +8,7 @@ import { db } from "@/db";
 import { contacts, type Role } from "@/db/schema";
 import { fail, type ActionResult } from "@/lib/action";
 import { canViewContact } from "@/lib/auth/permissions";
+import { ContactError } from "@/lib/contacts/errors";
 import {
   DuplicateReferenceError,
   MoneyError,
@@ -94,6 +95,8 @@ export function moneyFailure(e: unknown, fieldMap: Record<string, string> = {}):
     return fail(e.message, { [fieldMap[e.field] ?? e.field]: e.message });
   }
   if (e instanceof MoneyError) return fail(e.message);
+  // e.g. ContactErasedError: no new money for a contact whose personal data was erased
+  if (e instanceof ContactError) return fail(e.message);
   console.error("[payments action]", e);
   return fail("Something went wrong. Nothing was saved. Please try again.");
 }

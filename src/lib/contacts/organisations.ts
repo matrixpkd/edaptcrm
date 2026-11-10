@@ -5,7 +5,7 @@ import { ORG_KINDS, organisations, type OrgKind, type Organisation } from "@/db/
 import { audit, auditDiff } from "@/lib/audit";
 import { can } from "@/lib/auth/permissions";
 import { normalizePhone } from "@/lib/phone";
-import { ContactConflictError, ContactForbiddenError, ContactNotFoundError, ContactValidationError } from "./errors";
+import { ContactConflictError, ContactForbiddenError, ContactNotFoundError, ContactValidationError, assertNotErased } from "./errors";
 import { getLiveContact, withTx, type Actor } from "./internal";
 import { updateContactProfile } from "./profile";
 import { cleanText, countryCode, isUuid } from "./rules";
@@ -136,6 +136,7 @@ export async function linkContactToOrganisation(
 ): Promise<{ changed: boolean }> {
   return withTx(tx, async (t) => {
     const before = await getLiveContact(contactId, t);
+    assertNotErased(before);
     if (orgId) {
       if (!isUuid(orgId)) throw new ContactNotFoundError("Organisation");
       const o = await t.select({ id: organisations.id }).from(organisations).where(eq(organisations.id, orgId)).limit(1);

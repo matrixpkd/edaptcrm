@@ -109,6 +109,15 @@ async function main() {
   const [typical] = await queryRows<{ id: string; phone_e164: string; name: string }>(
     sql`select id, phone_e164, name from contacts where merged_into_id is null and purchase_count = 1 order by id limit 1 offset 1234`,
   );
+  // the organisation with the most linked people, and the contact who referred the most people
+  const [bigOrg] = await queryRows<{ id: string }>(sql`
+    select organisation_id as id from contacts
+    where organisation_id is not null and merged_into_id is null
+    group by organisation_id order by count(*) desc limit 1`);
+  const [topReferrer] = await queryRows<{ id: string }>(sql`
+    select referred_by_id as id from contacts
+    where referred_by_id is not null and merged_into_id is null
+    group by referred_by_id order by count(*) desc limit 1`);
   const [product] = await db.select().from(s.products).where(eq(s.products.active, true)).limit(1);
   const settings = await getSettings(["lists.campaigns", "lists.channels", "lists.tags", "lists.languages", "ladder.families"]);
   const anyCampaign = settings["lists.campaigns"][0]?.key ?? "none";
@@ -141,6 +150,11 @@ async function main() {
       tab === "purchases" ? getContactPurchases(c.id) : null,
       nboProducts(),
     ]);
+  };
+  const orgPage = (user: typeof admin) => async () => {
+    const org = await q.getOrganisation(bigOrg.id, user);
+    if (!org) throw new Error("organisation missing");
+    return Promise.all([q.getOrganisationPeople(user, org.id), q.getOrganisationPurchases(org.id, user)]);
   };
   const layout = (u: typeof admin) => () =>
     db.select({ n: sql<number>`count(*)` }).from(s.notifications).where(sql`${s.notifications.userId} = ${u.id} and ${s.notifications.readAt} is null`);
@@ -197,6 +211,13 @@ async function main() {
     { group: "contact page", name: "header + purchases (heavy contact)", budgetMs: 300, run: contactPage(heavy.id, "purchases") },
     { group: "contact page", name: "header + timeline (typical)", budgetMs: 300, run: contactPage(typical.id, "timeline") },
     { group: "contact page", name: "ratings + referrals tabs", budgetMs: 300, run: () => Promise.all([q.getContactRatings(heavy.id), q.getContactReferrals(heavy.id, admin)]) },
+    { group: "contact page", name: "referrals tab, top referrer (sales)", budgetMs: 300, run: () => q.getContactReferrals(topReferrer.id, sales) },
+    // ---- organisations (a salesperson sees only own and pool people, and no totals)
+    { group: "organisations", name: "list (admin)", budgetMs: 300, run: () => q.listOrganisations(admin, { page: 1 }) },
+    { group: "organisations", name: "list (sales)", budgetMs: 300, run: () => q.listOrganisations(sales, { page: 1 }) },
+    { group: "organisations", name: "list search (sales)", budgetMs: 300, run: () => q.listOrganisations(sales, { q: "a", page: 1 }) },
+    { group: "organisations", name: "page, biggest org (admin)", budgetMs: 300, run: orgPage(admin) },
+    { group: "organisations", name: "page, biggest org (sales)", budgetMs: 300, run: orgPage(sales) },
     // ---- today
     { group: "today", name: "Today queue (busiest sales)", budgetMs: 300, run: () => getTodayQueue(sales, now) },
     { group: "today", name: "Today queue (manager)", budgetMs: 300, run: () => getTodayQueue(manager, now) },

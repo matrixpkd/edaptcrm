@@ -19,7 +19,7 @@ test("a known number shows the existing contact and its owner before saving, and
   await expect(card).toContainText(`Owner: ${PEOPLE.sales2.name}`);
   await expect(card).toContainText(phone.international);
   // only the name and owner the spec asks for: the card has no stage (or grade), and the check never sends them
-  await expect(card).not.toContainText(/\bNew\b/);
+  await expect(card.getByText("New", { exact: true })).toHaveCount(0);
   const checked = await page.request.get(`/contacts/new/check?phone=${encodeURIComponent(phone.e164)}`);
   expect(checked.status()).toBe(200);
   expect((await checked.json()).existing).toEqual({
@@ -55,7 +55,8 @@ test("a salesperson's own known number shows its stage and grade and opens the c
   const card = page.getByRole("alert").filter({ hasText: "Already in the CRM" });
   await expect(card).toContainText(mine.name);
   await expect(card).toContainText("Yours");
-  await expect(card).toContainText(/\bNew\b/);
+  // the stage is its own element (the card's text runs it into the grade letter, e.g. "CNew")
+  await expect(card.getByText("New", { exact: true })).toBeVisible();
   await expect(card.getByRole("link", { name: "Open contact" })).toHaveAttribute("href", `/contacts/${mine.id}`);
   const checked = await page.request.get(`/contacts/new/check?phone=${encodeURIComponent(phone.e164)}`);
   expect((await checked.json()).existing).toMatchObject({ visible: true, id: mine.id, ownerIsMe: true, stage: "new", grade: mine.grade });

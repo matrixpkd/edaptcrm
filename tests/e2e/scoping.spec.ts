@@ -63,7 +63,11 @@ test("an organisation shows a salesperson no money, deals or details of a collea
   // the list has no purchase or revenue columns for a salesperson
   await page.goto(`/organisations?q=${encodeURIComponent(org.name)}`);
   await expect(page.getByRole("link", { name: org.name })).toBeVisible();
-  await expect(page.getByRole("columnheader", { name: "Revenue" })).toHaveCount(0);
+  // Playwright gives these <th> the role "cell", so the header row is checked by its text
+  const salesHead = page.locator("main thead");
+  await expect(salesHead).toContainText("People");
+  await expect(salesHead).not.toContainText("Revenue");
+  await expect(salesHead).not.toContainText("Purchases");
   await expect(page.locator("main")).not.toContainText("1,23,456");
 
   // a manager sees every person, the deal and the totals
@@ -75,7 +79,9 @@ test("an organisation shows a salesperson no money, deals or details of a collea
   await expect(all.getByRole("link", { name: theirs.name }).first()).toBeVisible();
   await expect(all).toContainText(deal);
   await mp.goto(`/organisations?q=${encodeURIComponent(org.name)}`);
-  await expect(mp.getByRole("columnheader", { name: "Revenue" })).toBeVisible();
+  const managerHead = mp.locator("main thead");
+  await expect(managerHead).toContainText("Purchases");
+  await expect(managerHead).toContainText("Revenue");
   await expect(mp.locator("main")).toContainText("₹1,23,456");
 });
 

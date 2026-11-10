@@ -9,7 +9,7 @@ import { formatPhone, normalizeEmail, normalizePhone, type NormalisedPhone } fro
 import { getSettings, labelFor, type ListItem } from "@/lib/settings";
 import { properCase } from "@/lib/utils";
 import { pickAutoOwner, setOwner } from "./assignment";
-import { ContactValidationError, InvalidPhoneError } from "./errors";
+import { ContactValidationError, InvalidPhoneError, assertNotErased } from "./errors";
 import { flagPossibleDuplicates, lookupByEmail, lookupByPhone, matchContact } from "./identity";
 import { assertAssignableOwner, getContact, resolveSurvivor, withTx, wouldCreateReferralCycle } from "./internal";
 import { applyRating } from "./profile";
@@ -23,6 +23,7 @@ import {
   isUuid,
   laterOf,
   listKeyFor,
+  referredAlertBody,
   sanitizeRatings,
 } from "./rules";
 
@@ -334,6 +335,9 @@ async function captureInner(
   // ---- 2. a returning contact: enrich, never overwrite
   if (!created) {
     contact = await getContact(contact.id, t, { forUpdate: true });
+    // an erased contact matches no phone or email, so this only happens when an erasure lands mid-touch: the
+    // touch fails (a webhook can be reprocessed) instead of writing the person's data back
+    assertNotErased(contact);
     const c = contact;
     before = c;
     const patch: Partial<NewContact> = {};
@@ -583,6 +587,8 @@ async function resolveReferrer(
   if (refContactId && isUuid(refContactId)) {
     const rows = await t.select().from(contacts).where(eq(contacts.id, refContactId)).limit(1);
     const ref = await resolveSurvivor(rows[0], t);
+    // an erased contact takes no new links to living people
+    if (ref?.erasedAt) return null;
     if (ref && ref.id !== contact.id) return { id: ref.id, created: false };
     if (ref) return null;
   }
@@ -627,7 +633,7 @@ async function resolveReferrer(
           userId: owner,
           type: "new_lead",
           title: `New lead: ${ref.name}`,
-          body: `Referred ${contact.name}`,
+          body: referredAlertBody(contact.name),
           contactId: ref.id,
           dedupeKey: `new_lead:${ref.id}:${owner}`,
         },

@@ -10,13 +10,14 @@ import { contacts, enquiries, payments, purchases, tasks, type Contact, type Pur
 import { createTask } from "@/lib/alerts/core";
 import { audit } from "@/lib/audit";
 import { can, type Permission } from "@/lib/auth/permissions";
+import { assertNotErased } from "@/lib/contacts/errors";
 import { selectContacts } from "@/lib/contacts/rows";
 import { recomputeContact } from "@/lib/metrics/recompute";
 import { getSetting } from "@/lib/settings";
 import { DAY_MS, isUuid } from "@/lib/utils";
 import { DuplicateReferenceError, NotFoundError, PermissionError } from "./errors";
 import { roundMoney, toInr } from "./fx";
-import { checkoutResolution, CHECKOUT_ENQUIRY_STATUSES, inPurchaseCurrency, MONEY_EPSILON, type Actor } from "./rules";
+import { checkoutResolution, CHECKOUT_ENQUIRY_STATUSES, inPurchaseCurrency, MONEY_EPSILON, newAdvocateReason, type Actor } from "./rules";
 
 /** Run `fn` in a transaction (a savepoint when `tx` is already a transaction). */
 export function inTx<T>(tx: Tx, fn: (t: Tx) => Promise<T>): Promise<T> {
@@ -33,18 +34,36 @@ export function assertActorCan(actor: Actor | null | undefined, permission: Perm
   if (!actor || !can(actor, permission)) throw new PermissionError(permission, message);
 }
 
-/** Follows merged_into_id to the surviving contact. */
-export async function resolveContact(contactId: string, t: Tx): Promise<Contact | null> {
+/**
+ * Follows merged_into_id to the surviving contact. With `forUpdate` the surviving row is locked for the rest of the
+ * transaction (only that one: the merged rows on the way stay unlocked), so a check made on it holds until the
+ * commit: an erasure or merge in progress is waited for and then read as it committed.
+ */
+export async function resolveContact(contactId: string, t: Tx, opts: { forUpdate?: boolean } = {}): Promise<Contact | null> {
   // a malformed id from a form or URL is simply "not found", never a raw database error
   if (!isUuid(contactId)) return null;
   let id: string | null = contactId;
   for (let hop = 0; id && hop < 10; hop++) {
-    const [c]: Contact[] = await selectContacts(eq(contacts.id, id), t, { limit: 1 });
+    let [c]: Contact[] = await selectContacts(eq(contacts.id, id), t, { limit: 1 });
     if (!c) return null;
+    if (!c.mergedIntoId && opts.forUpdate) {
+      [c] = await selectContacts(eq(contacts.id, id), t, { limit: 1, forUpdate: true });
+      if (!c) return null;
+    }
     if (!c.mergedIntoId) return c;
     id = c.mergedIntoId;
   }
   return null;
+}
+
+/**
+ * New money is refused for a contact whose personal data was erased (ContactErasedError): a new purchase or payment
+ * brings new personal data with it (a proof, a payload, notes). Money already recorded stays workable; see
+ * ./purchases.ts.
+ */
+export async function assertTakesNewMoney(contactId: string, t: Tx): Promise<void> {
+  const [c] = await t.select({ erasedAt: contacts.erasedAt }).from(contacts).where(eq(contacts.id, contactId)).limit(1);
+  assertNotErased(c);
 }
 
 /** Load and lock a purchase row for the rest of the transaction (serialises concurrent payments/refunds). */
@@ -220,7 +239,8 @@ export async function recomputeWithReferrer(contactId: string, t: Tx): Promise<v
 /**
  * Run once verified money has arrived for a contact (`paymentIds` just became verified, paid at `paidAt`):
  * 1. New advocate: if this is the contact's FIRST verified money and someone referred them, a Today task for the
- *    referrer's owner (or the pool) to call and thank them. Deduped per referred contact. Skipped for imports.
+ *    referrer's owner (or the pool) to call and thank them. Deduped per referred contact. Skipped for imports and
+ *    for an erased contact (an erasure also takes the name off the tasks raised before it).
  * 2. Abandoned checkouts: the contact's checkout enquiries become "recovered" (or "handled" when the checkout
  *    just completed normally within the abandoned-checkout window) and open abandoned-checkout tasks close.
  * 3. Open "unverified payment" alerts for these payments close.
@@ -247,11 +267,13 @@ export async function onVerifiedMoney(
     opts.newAdvocate === false
       ? [null]
       : await t
-          .select({ id: contacts.id, name: contacts.name, referredById: contacts.referredById })
+          .select({ id: contacts.id, name: contacts.name, referredById: contacts.referredById, erasedAt: contacts.erasedAt })
           .from(contacts)
           .where(eq(contacts.id, contactId))
           .limit(1);
-  if (contact?.referredById) {
+  // an erased contact starts nothing new: verifying its old money (allowed for the accounts) puts no thank-you call
+  // about the person on the referrer's Today
+  if (contact?.referredById && !contact.erasedAt) {
     const [earlier] = await t
       .select({ id: payments.id })
       .from(payments)
@@ -272,7 +294,7 @@ export async function onVerifiedMoney(
             contactId: referrer.id,
             userId: referrer.ownerId ?? null,
             type: "new_advocate",
-            reason: `Their referral ${contact.name} just paid — call to thank`,
+            reason: newAdvocateReason(contact.name),
             dedupeKey: `new_advocate:${contactId}`,
             payload: { referredContactId: contactId, referredName: contact.name, purchaseId, paymentIds },
             createdById: actorId,

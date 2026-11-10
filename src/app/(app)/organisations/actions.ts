@@ -44,7 +44,8 @@ export async function createOrganisationAction(_prev: ActionResult, fd: FormData
         if (e instanceof ContactNotFoundError) return null;
         throw e;
       });
-      if (c && !c.mergedIntoId && canEditContact(user, c)) {
+      // an erased contact takes no organisation (linkContactToOrganisation refuses it): the organisation page opens
+      if (c && !c.mergedIntoId && !c.erasedAt && canEditContact(user, c)) {
         await linkContactToOrganisation(c.id, id, user);
         linked = true;
       }

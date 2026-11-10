@@ -24,6 +24,7 @@ import {
   ContactForbiddenError,
   ContactValidationError,
   InvalidPhoneError,
+  assertNotErased,
 } from "./errors";
 import { getContact, getLiveContact, resolveSurvivor, withTx, wouldCreateReferralCycle, type Actor } from "./internal";
 import {
@@ -91,6 +92,7 @@ export async function applyRating(
 
   return withTx(tx, async (t) => {
     const c = await getLiveContact(contactId, t, { forUpdate: true });
+    assertNotErased(c);
     const [row] = await t
       .insert(ratings)
       .values({
@@ -185,6 +187,7 @@ export async function updateContactProfile(
     if (!can(actor, "contacts.edit") || !canEditContact(actor, c)) {
       throw new ContactForbiddenError("You cannot edit this contact");
     }
+    assertNotErased(c);
     const lists = await getSettings(["lists.languages", "lists.ageBands", "lists.industries", "lists.firstDoors"], t);
     const next: Partial<NewContact> = {};
     let sources: Record<string, FieldSource> = { ...(c.fieldSources ?? {}) };
@@ -335,6 +338,8 @@ export async function updateContactProfile(
         const ref = await resolveSurvivor(refRows[0], t);
         if (!ref) throw new ContactValidationError("That referrer does not exist", "referredById");
         if (ref.id === c.id) throw new ContactValidationError("A contact cannot refer itself", "referredById");
+        // an erased contact takes no new links to living people
+        if (ref.erasedAt) throw new ContactValidationError("That referrer's personal data was erased", "referredById");
         if (await wouldCreateReferralCycle(c.id, ref.id, t)) {
           throw new ContactValidationError("That would make a referral loop", "referredById");
         }

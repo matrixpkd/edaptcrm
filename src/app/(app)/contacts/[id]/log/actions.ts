@@ -5,7 +5,7 @@ import { INTERACTION_TYPES, type InteractionType } from "@/db/schema";
 import { bool, fail, str, type ActionResult } from "@/lib/action";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
-import { ContactError } from "@/lib/contacts/errors";
+import { ContactError, ERASED_MESSAGE } from "@/lib/contacts/errors";
 import { logFromSheet } from "@/lib/today/log";
 import { loadLogScreen } from "@/lib/today/screens";
 import { FollowUpError, LOG_TYPES, resolveFollowUp, safeReturnPath, suggestedLostReason } from "@/lib/today/rules";
@@ -30,6 +30,8 @@ export async function logInteractionAction(contactId: string, _prev: ActionResul
   if (!can(user, "interactions.log")) return fail("You cannot log interactions");
   const screen = await loadLogScreen(contactId, user);
   if (!screen) return fail("This contact is not available to you");
+  // the service refuses too (logInteraction); said first so a Lost tick does not get a misleading answer
+  if (screen.erased) return fail(ERASED_MESSAGE);
 
   const type = str(fd, "type");
   if (!type || !INTERACTION_TYPES.includes(type as InteractionType)) {

@@ -7,7 +7,7 @@ import { audit } from "@/lib/audit";
 import { can } from "@/lib/auth/permissions";
 import { getSetting } from "@/lib/settings";
 import { DAY_MS } from "@/lib/utils";
-import { ContactForbiddenError, ContactNotFoundError, ContactValidationError } from "./errors";
+import { ContactErasedError, ContactForbiddenError, ContactNotFoundError, ContactValidationError, assertNotErased } from "./errors";
 import { assertAssignableOwner, getContact, getLiveContact, userName, withTx, type Actor } from "./internal";
 import { isUuid, teamForCountry } from "./rules";
 
@@ -22,8 +22,13 @@ export { teamForCountry } from "./rules";
  * 5. Only a manager or admin reassigns; salespeople request a transfer.
  * 7. Support never owns.
  * 8. When someone leaves, all their contacts move in one action.
- * setOwner() is the ONLY function that writes contacts.owner_id.
+ * setOwner() is the ONLY function that writes contacts.owner_id (handoverAllContacts does the same set-based).
+ * A contact whose personal data was erased keeps its owner: setOwner refuses it (reassignment, transfers, merges),
+ * releaseStaleLeads skips it, and only a leaver's handover still moves it (a fixed reason, no personal data).
  */
+
+/** The ownership_log reason of a leaver's handover (the dashboard leaves these out of first-response time). */
+export const HANDOVER_REASON = "Owner left the team";
 
 /** Task types raised for managers about a contact; they stay with the manager when the contact changes hands. */
 const MANAGER_TASK_TYPES: TaskType[] = ["lead_released", "transfer_request", "duplicate_review"];
@@ -128,7 +133,8 @@ export type SetOwnerResult = {
 };
 
 /**
- * Changes a contact's owner (null = the pool). No-op when unchanged. Rejects support and inactive users.
+ * Changes a contact's owner (null = the pool). No-op when unchanged. Rejects support and inactive users, and an
+ * erased contact (ContactErasedError: the reason is free text, and nobody works an erased contact).
  * Stamps owner_assigned_at, sets first_owner_id only when it is still empty, writes ownership_log and audit.
  * By default the previous owner's open tasks for this contact follow the contact (manager tasks stay put).
  */
@@ -147,6 +153,7 @@ export async function setOwner(
   if (!reason) throw new ContactValidationError("Give a reason for the owner change", "reason");
   return withTx(tx, async (t) => {
     const c = await getLiveContact(contactId, t, { forUpdate: true });
+    assertNotErased(c);
     const fromUserId = c.ownerId;
     if (fromUserId === toUserId) return { changed: false, fromUserId, toUserId };
     if (toUserId) await assertAssignableOwner(toUserId, t);
@@ -234,6 +241,17 @@ export async function reassignContacts(
   if (!ids.length) return 0;
   return withTx(tx, async (t) => {
     if (toUserId) await assertAssignableOwner(toUserId, t);
+    // a list loaded before an erasure can still hold the erased contact: say so plainly for a bulk move
+    if (ids.length > 1) {
+      const erased = await t
+        .select({ id: contacts.id })
+        .from(contacts)
+        .where(and(inArray(contacts.id, ids.filter(isUuid)), isNotNull(contacts.erasedAt)))
+        .limit(1);
+      if (erased.length) {
+        throw new ContactErasedError("One of these contacts had its personal data erased. Reload the list and try again.");
+      }
+    }
     let changed = 0;
     for (const id of ids) {
       const r = await setOwner(id, toUserId, { reason: reason.trim(), changedById: actor.id }, t);
@@ -277,12 +295,13 @@ export async function handoverAllContacts(
     // contact: owner_assigned_at stamped, first_owner_id kept (filled only when empty), one ownership_log row
     // with the reason and one audit row per contact (plus first_owner_id when it was filled).
     const now = new Date().toISOString();
-    const reason = "Owner left the team";
+    const reason = HANDOVER_REASON;
     const rows = await queryRows<{ n: number }>(sql`
       with target as (
         select id, first_owner_id is null as first_set
         from contacts
         where owner_id = ${fromUserId}::uuid and merged_into_id is null
+        -- erased contacts move too: the reason is fixed, and nobody who left should keep contacts
         order by id
         for update
       ), upd as (
@@ -372,6 +391,8 @@ export async function releaseStaleLeads(now: Date, tx: Tx = db, opts: { limit?: 
       .where(
         and(
           isNull(contacts.mergedIntoId),
+          // an erased contact is nobody's lead any more, and setOwner refuses it
+          isNull(contacts.erasedAt),
           isNotNull(contacts.ownerId),
           eq(contacts.purchaseCount, 0),
           // Lost and Dormant contacts are not open leads (old imported leads turn Dormant on recompute)
@@ -488,6 +509,7 @@ export async function requestTransfer(
   const target = toUserId ?? requester.id;
   return withTx(tx, async (t) => {
     const c = await getLiveContact(contactId, t, { forUpdate: true }); // serialises requests for one contact
+    assertNotErased(c);
     if (c.ownerId === target) throw new ContactValidationError("This contact already belongs to that person");
     if (toUserId && toUserId !== requester.id && c.ownerId !== requester.id) {
       throw new ContactForbiddenError("You can only hand over contacts you own");
@@ -587,6 +609,7 @@ export async function resolveTransferRequest(
       toUserId?: string;
       reason?: string;
     };
+    // approving moves the contact through setOwner, which refuses an erased one; declining only closes the request
     const contact = await getContact(task.contactId, t);
     let moved = false;
     if (decision === "approve") {

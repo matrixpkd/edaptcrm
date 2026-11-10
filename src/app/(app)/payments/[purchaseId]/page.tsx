@@ -83,8 +83,11 @@ export default async function PurchasePage({
   const canCredit = can(user, "credit.adjust");
   const anyVerified = d.payments.some((x) => x.kind === "payment" && x.status === "verified");
   const canCancel = editable && !cancelled && !anyVerified;
-  const canAddPart = editable && !cancelled && !refunded && totals.collectable > 0;
-  const canPayInstalment = editable && !cancelled && !refunded;
+  // an erased contact takes no new money (src/lib/money/purchases.ts); refunds, verification, cancelling and credit
+  // on what is already recorded stay open for the accounts
+  const takesMoney = editable && !contact.erasedAt && !cancelled && !refunded;
+  const canAddPart = takesMoney && totals.collectable > 0;
+  const canPayInstalment = takesMoney;
 
   const withRates = currenciesWithRates(settings.currency);
   const currencies = ["INR", ...settings.currency.enabled.map(normalizeCurrency).filter((c) => c !== "INR" && withRates.includes(c))];

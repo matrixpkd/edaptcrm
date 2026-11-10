@@ -6,7 +6,7 @@ import { audit } from "@/lib/audit";
 import { can, canEditContact } from "@/lib/auth/permissions";
 import { recomputeContact } from "@/lib/metrics/recompute";
 import { getSetting } from "@/lib/settings";
-import { ContactForbiddenError, ContactValidationError } from "./errors";
+import { ContactForbiddenError, ContactValidationError, assertNotErased } from "./errors";
 import { getContact, getLiveContact, withTx, type Actor } from "./internal";
 
 /**
@@ -47,6 +47,7 @@ export async function setManualStage(
     if (!can(actor, "contacts.setStage") || !canEditContact(actor, c)) {
       throw new ContactForbiddenError("You cannot change this contact's stage");
     }
+    assertNotErased(c);
     if (stage === "qualified" && c.purchaseCount > 0) {
       throw new ContactValidationError("Customers are already past Qualified", "stage");
     }
@@ -79,6 +80,7 @@ export async function reopenContact(contactId: string, actor: Actor, tx: Tx = db
     const c = await getLiveContact(contactId, t, { forUpdate: true });
     const allowed = actor.role === "admin" || actor.role === "manager" || (c.ownerId !== null && c.ownerId === actor.id);
     if (!allowed) throw new ContactForbiddenError("Only the owner or a manager can reopen this contact");
+    assertNotErased(c);
     if (c.stage !== "lost") throw new ContactValidationError("Only a Lost contact can be reopened", "stage");
     const now = new Date();
     await t

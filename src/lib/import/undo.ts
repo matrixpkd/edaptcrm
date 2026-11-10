@@ -164,7 +164,8 @@ async function revertContact(contactId: string, applied: AppliedRow, actor: Acto
   const after = applied.after ?? {};
   if (!Object.keys(before).length && !Object.keys(after).length) return false;
   const [c] = await t.select().from(contacts).where(eq(contacts.id, contactId)).for("update").limit(1);
-  if (!c || c.mergedIntoId) return false;
+  // an erased contact keeps nothing to put back (its erasure dropped before/after) and never changes owner
+  if (!c || c.mergedIntoId || c.erasedAt) return false;
   const current = c as unknown as Record<string, unknown>;
   const restore: Record<string, unknown> = {};
 

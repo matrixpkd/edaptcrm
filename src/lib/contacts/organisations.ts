@@ -11,6 +11,7 @@ import {
   ContactMergedError,
   ContactNotFoundError,
   ContactValidationError,
+  assertNotErased,
 } from "./errors";
 import { getContact, withTx, type Actor } from "./internal";
 import { updateContactProfile } from "./profile";
@@ -150,6 +151,7 @@ export async function linkContactToOrganisation(
     if (!can(actor, "contacts.edit") || !canEditContact(actor, before)) {
       throw new ContactForbiddenError("You cannot edit this contact");
     }
+    assertNotErased(before);
     if (orgId) {
       if (!isUuid(orgId)) throw new ContactNotFoundError("Organisation");
       const o = await t.select({ id: organisations.id }).from(organisations).where(eq(organisations.id, orgId)).limit(1);

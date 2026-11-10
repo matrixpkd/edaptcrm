@@ -18,7 +18,7 @@ export type TaskLike = {
   createdById: string | null;
   createdByName: string | null;
   completedAt: Date | null;
-  contact: { id: string; name: string; grade: "A" | "B" | "C" | "D" | null } | null;
+  contact: { id: string; name: string; grade: "A" | "B" | "C" | "D" | null; erased?: boolean } | null;
 };
 
 /** "Overdue 2 days · 14 Oct", "Today 4:30 pm", "Tomorrow 10:00 am", "Fri 17 Oct 10:00 am". */
@@ -60,6 +60,8 @@ export function toTaskRowView(
     createdByOther: t.createdById && t.createdById !== t.userId && t.createdById !== viewer.id ? t.createdByName : null,
     contact: t.contact ? { id: t.contact.id, name: t.contact.name, grade: t.contact.grade } : null,
     canChange: canChangeTask(viewer, t),
+    // a task on an erased contact stays closed (the service refuses to reopen it)
+    canReopen: canChangeTask(viewer, t) && !t.contact?.erased,
   };
 }
 

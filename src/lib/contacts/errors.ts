@@ -10,7 +10,8 @@ export type ContactErrorCode =
   | "forbidden"
   | "not_found"
   | "merged"
-  | "conflict";
+  | "conflict"
+  | "erased";
 
 export class ContactError extends Error {
   readonly code: ContactErrorCode;
@@ -69,6 +70,29 @@ export class ContactMergedError extends ContactError {
     this.name = "ContactMergedError";
     this.mergedIntoId = mergedIntoId;
   }
+}
+
+/** What every refused write on an erased contact says, and what its screens show instead of their forms. */
+export const ERASED_MESSAGE = "This contact's personal data was erased.";
+
+/**
+ * The contact's personal data was erased on request (src/lib/contacts/privacy.ts): it is locked against new
+ * personal data, so profile edits, interactions, notes, ratings, stage and owner changes, merges and new money
+ * are refused.
+ */
+export class ContactErasedError extends ContactError {
+  constructor(message = ERASED_MESSAGE, field?: string) {
+    super("erased", message, field);
+    this.name = "ContactErasedError";
+  }
+}
+
+/**
+ * The one check every write service runs on the contact it loaded: throws ContactErasedError when the contact's
+ * personal data was erased. Money already recorded stays workable (see the money services).
+ */
+export function assertNotErased(contact: { erasedAt: Date | null } | null | undefined, field?: string): void {
+  if (contact?.erasedAt) throw new ContactErasedError(ERASED_MESSAGE, field);
 }
 
 /** The change clashes with another record (e.g. the phone already belongs to someone else). */

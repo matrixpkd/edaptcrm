@@ -12,6 +12,16 @@ import "server-only";
  *
  * `actor` null means the system (webhooks, imports, cron). Every function takes an optional `tx` and runs in its
  * own transaction (a savepoint inside the caller's), so a rejected call never leaves partial rows behind.
+ *
+ * A contact whose personal data was erased (src/lib/contacts/privacy.ts) gets no NEW money: recordPurchase,
+ * addPayment and recordInstalmentPayment refuse it (ContactErasedError), since new money brings new personal data
+ * (a proof file, a payload, notes). Money ALREADY recorded stays workable on purpose: verifying, rejecting,
+ * refunding, cancelling and moving the sales credit only correct the accounts. Tax and accounting records may be
+ * kept after an erasure request (that is why the money rows survive it), and a refund can be exactly what the
+ * person asked for, e.g. a TagMango refund arriving after the erasure. The reason a manager types for a refund or
+ * cancellation is their accounting note; TagMango's own refund text (the customer's words) is left off for an
+ * erased contact (src/lib/webhooks/handlers.ts). Erasure is refused while a payment is unverified or scheduled, so
+ * there is nothing left to collect from an erased contact.
  */
 import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, max, ne, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -34,6 +44,7 @@ import {
 } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { can } from "@/lib/auth/permissions";
+import { assertNotErased } from "@/lib/contacts/errors";
 import { getSetting, getSettings, type CurrencyConfig } from "@/lib/settings";
 import { DAY_MS, formatMoney, isUuid } from "@/lib/utils";
 import { assertCreditableUser, computeSalesCredit } from "./credit";
@@ -44,6 +55,7 @@ import {
   assertActorCan,
   assertCan,
   assertReferenceFree,
+  assertTakesNewMoney,
   closePaymentTasks,
   inTx,
   loadPayment,
@@ -236,8 +248,12 @@ async function recordPurchaseTx(input: RecordPurchaseInput, actor: Actor | null,
   const now = new Date();
   if (!PURCHASE_SOURCES.includes(input.source)) throw new ValidationError("Unknown purchase source.", "source");
   assertMode(input.mode);
-  const contact = await resolveContact(input.contactId, t);
+  // locked before the erasure check, so the check holds until this purchase commits: an erasure in progress
+  // (which locks the contact first, src/lib/contacts/privacy.ts) is waited for and then refuses the purchase, and an
+  // erasure that starts after this lock waits and then clears this purchase along with the rest
+  const contact = await resolveContact(input.contactId, t, { forUpdate: true });
   if (!contact) throw new NotFoundError("Contact");
+  assertNotErased(contact);
 
   const purchasedAt = input.purchasedAt ? validDate(input.purchasedAt, "purchasedAt", "purchase date") : now;
   const amount = positiveAmount(input.amount);
@@ -547,6 +563,7 @@ async function recordInstalmentPaymentTx(
   const first = await loadPayment(paymentId, t);
   const purchase = await lockPurchase(first.purchaseId, t);
   const pay = await loadPayment(paymentId, t);
+  await assertTakesNewMoney(pay.contactId, t);
   if (pay.kind !== "payment") throw new ValidationError("This is a refund, not an instalment.");
   // cancelling or fully refunding rejects the remaining instalments, so say why rather than "already paid"
   if (purchase.status === "cancelled") throw new ValidationError("This purchase was cancelled.");
@@ -665,6 +682,7 @@ async function addPaymentTx(purchaseId: string, input: AddPaymentInput, actor: A
   assertCan(actor, "payments.record", "You can't record payments.");
   const now = new Date();
   const purchase = await lockPurchase(purchaseId, t);
+  await assertTakesNewMoney(purchase.contactId, t);
   if (purchase.status === "cancelled") throw new ValidationError("This purchase was cancelled.");
   if (purchase.status === "refunded") throw new ValidationError("This purchase was refunded.");
   assertMode(input.mode);

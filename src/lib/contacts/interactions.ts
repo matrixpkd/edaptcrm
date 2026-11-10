@@ -6,7 +6,7 @@ import { createTask } from "@/lib/alerts/core";
 import { can, canViewContact } from "@/lib/auth/permissions";
 import { recomputeContact } from "@/lib/metrics/recompute";
 import { getSetting, labelFor } from "@/lib/settings";
-import { ContactForbiddenError, ContactNotFoundError, ContactValidationError } from "./errors";
+import { ContactForbiddenError, ContactNotFoundError, ContactValidationError, assertNotErased } from "./errors";
 import { getContact, resolveSurvivor, userName, withTx, type Actor } from "./internal";
 import { cleanText, followUpReason, isUuid, laterOf } from "./rules";
 
@@ -82,6 +82,7 @@ export async function logInteraction(
     if (actor && actor.role === "sales" && !canViewContact(actor, c)) {
       throw new ContactForbiddenError("You can only log on your own contacts and the pool");
     }
+    assertNotErased(c);
 
     const summary = input.summary?.trim() || null;
     const inserted = await t

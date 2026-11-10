@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { GradeBadge } from "@/components/ui/badge";
 import { LogForm } from "@/components/today/log-form";
+import { ErasedNotice } from "@/components/contacts/erased-notice";
 import { ScreenSheet } from "@/components/today/screen-sheet";
 import { can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
@@ -43,6 +44,13 @@ export default async function LogInteractionPage({
   const contactHref = `/contacts/${screen.contact.id}`;
   const returnTo = safeReturnPath(sp.return, contactHref);
   const c = screen.contact;
+  if (screen.erased) {
+    return (
+      <ScreenSheet title="Log interaction" subtitle={<span className="font-medium text-foreground">{c.name}</span>} closeHref={returnTo}>
+        <ErasedNotice contactId={c.id} />
+      </ScreenSheet>
+    );
+  }
 
   return (
     <ScreenSheet

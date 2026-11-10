@@ -848,7 +848,7 @@ export const appErrors = pgTable(
     digest: text("digest"),
     path: text("path"),
     method: text("method"),
-    /** render | action | route | middleware | browser */
+    /** render | action | route | middleware | browser | erasure (a proof file an erasure could not delete) */
     source: text("source"),
     userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
     userAgent: text("user_agent"),

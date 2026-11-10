@@ -4,7 +4,7 @@ import { db, type Tx } from "@/db";
 import { contacts, interactions, users } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { can, canViewContact } from "@/lib/auth/permissions";
-import { ContactForbiddenError, ContactNotFoundError, ContactValidationError } from "./errors";
+import { ContactForbiddenError, ContactNotFoundError, ContactValidationError, assertNotErased } from "./errors";
 import { getLiveContact, withTx, type Actor } from "./internal";
 import { logInteraction } from "./interactions";
 import { isUuid } from "./rules";
@@ -39,7 +39,7 @@ export async function addNote(
   return withTx(tx, async (t) => {
     const c = await getLiveContact(contactId, t);
     if (!canViewContact(actor, c)) throw new ContactNotFoundError();
-    if (c.erasedAt) throw new ContactValidationError("This contact's data was erased", "note");
+    assertNotErased(c, "note");
     const id = await logInteraction(c.id, { type: "note", summary, direction: "out" }, actor, t);
     if (opts.pin) await setPinned(id, true, actor, t);
     return id;
@@ -64,6 +64,7 @@ export async function setPinned(interactionId: string, pinned: boolean, actor: A
     if (note.type !== "note") throw new ContactValidationError("Only notes can be pinned", "note");
     const c = await getLiveContact(note.contactId, t, { forUpdate: true });
     if (!canViewContact(actor, c)) throw new ContactNotFoundError();
+    assertNotErased(c);
     const now = new Date();
     if (pinned) {
       // one pinned note per contact

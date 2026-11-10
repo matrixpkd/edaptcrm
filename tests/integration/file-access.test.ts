@@ -1,9 +1,12 @@
+import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { contacts, payments, purchases } from "@/db/schema";
-import { canReadStoredFile, cleanStoredKey, isNewStorageKey, newStorageKey } from "@/lib/storage";
+import { eraseContact } from "@/lib/contacts/privacy";
+import { canReadStoredFile, cleanStoredKey, isNewStorageKey, newStorageKey, redactStoredKey, storedKeyFromUrl } from "@/lib/storage";
 import { makeUser, resetDb } from "../support/db";
 
 const session = vi.hoisted(() => ({ user: null as null | { id: string; role: "admin" | "manager" | "sales" | "support" } }));
@@ -89,6 +92,26 @@ describe("stored file access", () => {
     expect((await get(["proofs", "..", "imports", "x.csv"])).status).toBe(404);
   });
 
+  it("an erased contact's payment proof answers 404 at once, for everyone, and its file is deleted", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const owner = await makeUser({ role: "sales" });
+    const c = await contact(owner.id);
+    const p = await purchase(c.id);
+    await db.insert(payments).values({ purchaseId: p.id, contactId: c.id, amount: 999, amountInr: 999, status: "verified", proofUrl: `/api/files/${PROOF}` });
+    await mkdir(path.dirname(LOCAL), { recursive: true });
+    await writeFile(LOCAL, new Uint8Array([137, 80, 78, 71]));
+    const get = () => GET(new Request("http://localhost/api/files/x"), { params: Promise.resolve({ key: PROOF.split("/") }) });
+    session.user = owner;
+    expect((await get()).status).toBe(200);
+
+    expect(await eraseContact(c.id, admin, "Asked by email")).toMatchObject({ proofKeys: [PROOF], filesDeleted: 1, fileErrors: 0 });
+    expect((await get()).status).toBe(404);
+    session.user = admin;
+    expect((await get()).status).toBe(404);
+    expect(existsSync(LOCAL)).toBe(false);
+    expect(await db.select().from(payments).where(eq(payments.proofUrl, `/api/files/${PROOF}`))).toHaveLength(0);
+  });
+
   it("keys: path tricks are refused; browser-returned keys must look like ours", () => {
     expect(cleanStoredKey(["proofs", "2026-10", "a.png"])).toBe("proofs/2026-10/a.png");
     expect(cleanStoredKey("proofs/../imports/a.csv")).toBeNull();
@@ -99,5 +122,12 @@ describe("stored file access", () => {
     expect(isNewStorageKey("imports", key)).toBe(true);
     expect(isNewStorageKey("imports", key.replace("imports", "proofs"))).toBe(false);
     expect(isNewStorageKey("imports", "imports/2026-10/../../etc/passwd")).toBe(false);
+    // the key behind a stored URL (an outside link has none), and a key fit for a log: no file name
+    expect(storedKeyFromUrl(`/api/files/${PROOF}`)).toBe(PROOF);
+    expect(storedKeyFromUrl("/api/files/proofs/../imports/a.csv")).toBeNull();
+    expect(storedKeyFromUrl("https://example.com/proofs/a.png")).toBeNull();
+    expect(storedKeyFromUrl(null)).toBeNull();
+    expect(redactStoredKey(PROOF)).toBe("proofs/2026-10/0f8fad5b-d9cb-469f-a165-70867728950e");
+    expect(redactStoredKey("proofs/2026-10/priya-nair.png")).toBe("proofs/(file)");
   });
 });

@@ -32,13 +32,18 @@ export async function eraseContactAction(_prev: ActionResult, fd: FormData): Pro
   const contactId = str(fd, "contactId");
   if (!contactId || !isUuid(contactId)) return fail("Contact not found");
   if ((str(fd, "confirm") ?? "").toUpperCase() !== "ERASE") return fail("Type ERASE to confirm", { confirm: "Type ERASE to confirm" });
+  let fileErrors = 0;
   try {
-    await eraseContact(contactId, user, str(fd, "reason") ?? "");
+    ({ fileErrors } = await eraseContact(contactId, user, str(fd, "reason") ?? ""));
   } catch (e) {
     return actionError(e);
   }
   revalidatePath("/contacts");
   revalidatePath(`/contacts/${contactId}`);
-  await flash("Personal data erased. Money records are kept, anonymised.");
+  await flash(
+    fileErrors
+      ? `Personal data erased. ${fileErrors === 1 ? "One payment proof file" : `${fileErrors} payment proof files`} could not be deleted from storage: see Settings > Error log. Nobody can open ${fileErrors === 1 ? "it" : "them"}.`
+      : "Personal data erased. Money records are kept, anonymised.",
+  );
   redirect(`/contacts/${contactId}`);
 }

@@ -1,10 +1,11 @@
 import "server-only";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { and, eq, or } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { contacts, payments, purchases, type Role } from "@/db/schema";
+import { recordAppError } from "@/lib/app-errors";
 import { can, canViewContact } from "@/lib/auth/permissions";
 import { INLINE_IMAGE_EXTENSIONS } from "@/lib/file-types";
 
@@ -13,6 +14,9 @@ import { INLINE_IMAGE_EXTENSIONS } from "@/lib/file-types";
  * Supabase Storage when SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set, else ./uploads (dev only).
  * Files are always served through /api/files/<key>, which checks the session AND who may see the file
  * (canReadStoredFile): proofs follow the contact, import files are admin-only, anything else is never served.
+ * deleteStoredFile removes one (an erased contact's payment proofs, src/lib/contacts/privacy.ts); deleteStoredFilesOrLog
+ * does it for files nobody can open any more and logs a failure; discardUnsavedProof removes the proof of a payment
+ * that was not saved.
  *
  * Import files can be bigger than a serverless request body (Vercel stops at about 4.5 MB), so with Supabase the
  * browser uploads them straight to Storage with a signed upload URL (createSignedUpload) and hands the key over.
@@ -26,6 +30,22 @@ export const IMPORT_FOLDER = "imports";
 /** The URL stored on rows (payments.proof_url, import_batches.file_url) for a storage key. */
 export function fileUrlForKey(key: string): string {
   return `/api/files/${key}`;
+}
+
+/** The storage key behind a stored file's URL ("/api/files/<key>"); null for anything else, e.g. an outside link. */
+export function storedKeyFromUrl(url: string | null | undefined): string | null {
+  const prefix = fileUrlForKey("");
+  if (!url || !url.startsWith(prefix)) return null;
+  return cleanStoredKey(url.slice(prefix.length));
+}
+
+/**
+ * A key without its file name, for logs: "proofs/2026-11/<uuid>" (the uploaded file name can hold a person's name).
+ * A key of another shape keeps only its folder.
+ */
+export function redactStoredKey(key: string): string {
+  const m = /^([^/]+\/\d{4}-\d{2}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:-|$)/i.exec(key);
+  return m ? m[1] : `${storedKeyFolder(key)}/(file)`;
 }
 
 /** A storage key from the URL path segments (or a joined key); null when it is not a clean relative key. */
@@ -153,6 +173,89 @@ export async function saveFile(
     await writeFile(full, bytes);
   }
   return fileUrlForKey(key);
+}
+
+/**
+ * Deletes a stored file, from the same store saveFile uses: Supabase Storage when SUPABASE_URL +
+ * SUPABASE_SERVICE_ROLE_KEY are set, else ./uploads. Returns true when a file was removed and false when there was
+ * none to remove; throws when the store refuses or cannot be reached (the caller decides what a failure means).
+ */
+export async function deleteStoredFile(key: string): Promise<boolean> {
+  if (cleanStoredKey(key) !== key) throw new Error("Not a stored file key");
+  const sb = supabase();
+  if (sb) {
+    // the Storage API's bulk delete (what supabase-js remove() calls): it answers with the objects it removed
+    const res = await fetch(`${sb.url}/storage/v1/object/${sb.bucket}`, {
+      method: "DELETE",
+      headers: { ...authHeaders(sb.key), "Content-Type": "application/json" },
+      body: JSON.stringify({ prefixes: [key] }),
+    });
+    if (!res.ok) throw new Error(`Delete failed: ${res.status} ${await res.text()}`);
+    const removed: unknown = await res.json();
+    return Array.isArray(removed) && removed.length > 0;
+  }
+  try {
+    await unlink(path.join(LOCAL_ROOT, key));
+    return true;
+  } catch (e) {
+    // already gone: nothing to delete. Anything else (permissions, a folder in its place) is a real failure.
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw e;
+  }
+}
+
+/**
+ * Deletes stored files nobody can open any more (no row points at them) and never throws: a file that cannot be
+ * deleted is written to the error log (Settings > Error log) with `what` it is, for someone to delete from file
+ * storage by hand, and the rest go on. The log names a file by its folder and id only (redactStoredKey), never by
+ * its file name, which can hold a person's name.
+ */
+export async function deleteStoredFilesOrLog(
+  keys: string[],
+  ctx: { what: string; path: string | null; source: string; userId: string | null },
+): Promise<{ deleted: number; failed: number }> {
+  let deleted = 0;
+  let failed = 0;
+  for (const key of keys) {
+    try {
+      if (await deleteStoredFile(key)) deleted += 1;
+    } catch (e) {
+      failed += 1;
+      const shown = redactStoredKey(key);
+      const hide = (text: string | null | undefined) => (text ? text.split(key).join(shown) : null);
+      const err = e instanceof Error ? e : new Error(String(e));
+      await recordAppError({
+        kind: "server",
+        message: `Could not delete ${ctx.what} (${shown}). Nobody can open it any more; delete it from file storage by hand. ${hide(err.message) ?? ""}`.trim(),
+        stack: hide(err.stack),
+        path: ctx.path,
+        source: ctx.source,
+        userId: ctx.userId,
+      });
+    }
+  }
+  return { deleted, failed };
+}
+
+/** True when a purchase or payment points at this stored file URL (so /api/files may serve it). */
+export async function isProofHeld(url: string, tx: Tx = db): Promise<boolean> {
+  const [buy] = await tx.select({ id: purchases.id }).from(purchases).where(eq(purchases.proofUrl, url)).limit(1);
+  if (buy) return true;
+  const [pay] = await tx.select({ id: payments.id }).from(payments).where(eq(payments.proofUrl, url)).limit(1);
+  return !!pay;
+}
+
+/**
+ * The proof stored for a payment that was then not saved (the money service refused it, e.g. a duplicate UTR or a
+ * contact erased meanwhile): no row points at it, so nobody can open it, and it is deleted instead of staying in
+ * file storage for good. A proof some row does hold (the save went through after all) is kept. A failed delete
+ * goes to the error log (deleteStoredFilesOrLog).
+ */
+export async function discardUnsavedProof(url: string, ctx: { path: string | null; userId: string | null }): Promise<void> {
+  const key = storedKeyFromUrl(url);
+  if (!key || storedKeyFolder(key) !== PROOF_FOLDER) return;
+  if (await isProofHeld(url)) return;
+  await deleteStoredFilesOrLog([key], { what: "the proof of a payment that was not saved", path: ctx.path, source: "payments", userId: ctx.userId });
 }
 
 /** For /api/files: a short-lived signed URL (Supabase) or the local bytes. */

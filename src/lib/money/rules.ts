@@ -286,6 +286,19 @@ export function checkoutResolution(
   return "handled";
 }
 
+// ---------------------------------------------------------------------------
+// New advocate
+// ---------------------------------------------------------------------------
+
+/**
+ * The "call to thank" line on the referrer's Today when their referral first pays. Without a name it is what an
+ * erasure leaves on the referrer's task (src/lib/contacts/privacy.ts): the referrer keeps the task, the referral's
+ * name goes.
+ */
+export function newAdvocateReason(referredName: string | null): string {
+  return referredName ? `Their referral ${referredName} just paid — call to thank` : "Their referral just paid — call to thank";
+}
+
 function fmt(n: number): string {
   return n.toLocaleString("en-IN", { maximumFractionDigits: 2 });
 }

@@ -1,18 +1,25 @@
 import "server-only";
-import { count, eq, sql } from "drizzle-orm";
+import { and, count, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { MIN_PASSWORD_LENGTH } from "./account";
 import { checkLoginAllowed, recordLoginAttempt } from "./login-limit";
 import { hashPassword, needsRehash, verifyPassword } from "./password";
+import { TEMP_PASSWORD_EXPIRED, temporaryPasswordState } from "./temporary-password";
 
 /**
  * Sign-in and first-run setup, without the cookie and redirect (the server actions in src/app/(auth)/actions.ts
  * add those), so the rules are testable.
  */
 
-export type AuthResult = { ok: true; userId: string } | { ok: false; error: string };
+/**
+ * `passwordHash` is the stored hash the password matched: createSession (src/lib/auth/session.ts) opens the session
+ * only while it is still the person's, so a sign-in racing a password change or an admin's reset cannot outlive it.
+ * `mustChoosePassword` is set (true) when the person signed in with an admin's temporary password: the session that
+ * follows can only choose their own password.
+ */
+export type AuthResult = { ok: true; userId: string; passwordHash: string; mustChoosePassword?: true } | { ok: false; error: string };
 
 export const BAD_CREDENTIALS = "That email and password don't match.";
 
@@ -21,8 +28,10 @@ export const BAD_CREDENTIALS = "That email and password don't match.";
  * - refused before any password check while the email / IP is locked out (login-limit.ts);
  * - one bcrypt comparison whether or not the email exists (no timing difference);
  * - the same message for an unknown email and a wrong password;
- * - a deactivated account is refused only after the right password, so it does not reveal itself to a guesser.
- * Every checked attempt is recorded for the lockout; a successful one is audited.
+ * - a deactivated account, and an admin's temporary password past its expiry, are refused only after the right
+ *   password, so neither reveals itself to a guesser.
+ * Every checked attempt is recorded for the lockout; a successful one is audited and returns the hash the password
+ * matched, for createSession.
  */
 export async function authenticate(emailRaw: string | null, password: string | null, ip: string, now: Date = new Date()): Promise<AuthResult> {
   const email = (emailRaw ?? "").trim().toLowerCase();
@@ -38,7 +47,7 @@ export async function authenticate(emailRaw: string | null, password: string | n
   }
 
   const [user] = await db
-    .select({ id: users.id, passwordHash: users.passwordHash, active: users.active })
+    .select({ id: users.id, passwordHash: users.passwordHash, active: users.active, temporaryUntil: users.passwordTemporaryUntil })
     .from(users)
     .where(eq(sql`lower(${users.email})`, email))
     .limit(1);
@@ -47,14 +56,23 @@ export async function authenticate(emailRaw: string | null, password: string | n
   const trimmed = password.trim();
   if (!okPw && user?.passwordHash && trimmed !== password && trimmed) okPw = await verifyPassword(trimmed, user.passwordHash);
   await recordLoginAttempt(email, ip, okPw, now);
-  if (!user || !okPw) return { ok: false, error: BAD_CREDENTIALS };
+  if (!user || !okPw || !user.passwordHash) return { ok: false, error: BAD_CREDENTIALS };
   if (!user.active) return { ok: false, error: "This account has been deactivated. Ask your admin." };
+  const temporary = temporaryPasswordState(user.temporaryUntil, now);
+  if (temporary === "expired") return { ok: false, error: TEMP_PASSWORD_EXPIRED };
 
-  if (user.passwordHash && needsRehash(user.passwordHash)) {
-    await db.update(users).set({ passwordHash: await hashPassword(password) }).where(eq(users.id, user.id));
+  let passwordHash = user.passwordHash;
+  if (needsRehash(passwordHash)) {
+    // only over the hash just checked: a reset or password change saved meanwhile must not be undone
+    const rehashed = await db
+      .update(users)
+      .set({ passwordHash: await hashPassword(password) })
+      .where(and(eq(users.id, user.id), eq(users.passwordHash, passwordHash)))
+      .returning({ passwordHash: users.passwordHash });
+    if (rehashed[0]?.passwordHash) passwordHash = rehashed[0].passwordHash;
   }
   await audit({ table: "users", rowId: user.id, action: "login", userId: user.id });
-  return { ok: true, userId: user.id };
+  return temporary === "temporary" ? { ok: true, userId: user.id, passwordHash, mustChoosePassword: true } : { ok: true, userId: user.id, passwordHash };
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -83,7 +101,7 @@ export async function createFirstAdmin(input: { name: string | null; email: stri
     return u.id;
   });
   if (!id) return { ok: false, error: "Setup is already complete. Sign in instead." };
-  return { ok: true, userId: id };
+  return { ok: true, userId: id, passwordHash };
 }
 
 /** True while there are no users at all (the /setup page is only shown then). */

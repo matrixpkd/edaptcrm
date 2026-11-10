@@ -4,14 +4,16 @@ import { redirect } from "next/navigation";
 import { count } from "drizzle-orm";
 import { db } from "@/db";
 import { users } from "@/db/schema";
-import { getCurrentUser } from "@/lib/auth/session";
+import { getSessionState } from "@/lib/auth/session";
+import { CHOOSE_PASSWORD_PATH } from "@/lib/auth/temporary-password";
 import { LoginForm } from "./login-form";
 
 export const metadata = { title: "Sign in" };
 export const dynamic = "force-dynamic";
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string; reset?: string }> }) {
-  if (await getCurrentUser()) redirect("/today");
+  const session = await getSessionState();
+  if (session) redirect(session.mustChoosePassword ? CHOOSE_PASSWORD_PATH : "/today");
   const [{ n }] = await db.select({ n: count() }).from(users);
   if (n === 0) redirect("/setup");
   const { next, reset } = await searchParams;

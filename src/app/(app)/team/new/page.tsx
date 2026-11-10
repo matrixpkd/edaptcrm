@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { Card, CardBody, PageHeader } from "@/components/ui/card";
 import { requireUser } from "@/lib/auth/session";
+import { TEMP_PASSWORD_DAYS } from "@/lib/auth/temporary-password";
 import { getSetting } from "@/lib/settings";
 import { siteOrigin } from "@/lib/site";
 import { ROLE_HELP, ROLE_OPTIONS, timeZoneOptions } from "../../settings/_lib/options";
@@ -21,7 +22,7 @@ export default async function NewTeammatePage() {
           </Link>
         }
         title="Add teammate"
-        description="They sign in with their email and a temporary password you send them, then choose their own."
+        description={`They sign in with their email and a temporary password you send them. It works for ${TEMP_PASSWORD_DAYS} days, and they choose their own password when they first sign in.`}
       />
       <Card>
         <CardBody>

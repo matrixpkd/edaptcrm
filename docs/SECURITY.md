@@ -57,7 +57,8 @@ manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-
 | Session expiry | 30 days absolute, checked on every request (`expires_at > now()`); expired rows pruned nightly. |
 | Revocation | Deactivating a user deletes all their sessions and `getCurrentUser` also refuses inactive users; an admin password reset ends every session; changing your own password ends every other session; /account can sign out other sessions; sign-out deletes the session row. Role changes apply on the next request (role is read from `users` each time). |
 | Brute force | Lockout per email + IP / email / IP (finding 1). |
-| Enumeration | Same message and same bcrypt cost for unknown email and wrong password; "deactivated" only after the right password. |
+| Temporary passwords | An admin's temporary password (Add teammate, Reset password) works for 7 days (`TEMP_PASSWORD_DAYS`, `users.password_temporary_until`). Signing in with it opens a session that `requireUser` sends to /choose-password and `getCurrentUser` / `getApiUser` treat as signed out, until the person chooses their own (10–200 characters, not the temporary one; other sessions end, open reset links are voided, audited). The choice is saved only while the session that signed in is still open (checked with the person's row locked), so an admin's reset saved a moment earlier is never overwritten; and a session opens only while the password that was checked is still the person's (`createSession`, row locked FOR SHARE), so a sign-in with the old password racing a reset or password change opens nothing. Changing your own password or using a reset link also clears it. Deactivating someone voids their open reset links. |
+| Enumeration | Same message and same bcrypt cost for unknown email and wrong password; "deactivated" and "temporary password expired" only after the right password. |
 | Timing-safe comparisons | bcrypt for passwords; `safeEqual` (hash + `timingSafeEqual`) for cron and webhook secrets; session lookup is by token hash in SQL. |
 | /setup | Only while there are zero users (page redirects, action re-checks under an advisory lock). |
 | Open redirect | `safeNextPath` on `?next=`; `safeReturnPath` on `?return=`; `notificationHref` only builds internal paths. |
@@ -78,6 +79,7 @@ All rows: status OK (re-verified in this review); the ones marked * are exercise
 | (auth)/actions.ts | loginAction | public; lockout, safeNextPath | — |
 | | logoutAction | session only | — |
 | | setupAction | zero users, advisory lock | — |
+| | choosePasswordAction | `requirePasswordChoice()`: only a session still on a temporary password; acts on its own user id (no id parameter) | n/a |
 | account/actions.ts | changePasswordAction, timezoneAction, signOutOthersAction | signed in; act on the session's own user id only (no id parameter) | n/a |
 | contacts/[id]/actions.ts | setStageAction * | `contacts.setStage` + `canEditContact` (+ service) | colleague's contact refused |
 | | reopenAction * | service: owner, manager or admin | refused |

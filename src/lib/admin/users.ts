@@ -6,6 +6,7 @@ import { ROLES, contacts, sessions, tasks, users, type Role, type User } from "@
 import { audit, auditDiff } from "@/lib/audit";
 import { hashPassword } from "@/lib/auth/password";
 import { voidResetLinks } from "@/lib/auth/password-reset";
+import { temporaryPasswordExpiry } from "@/lib/auth/temporary-password";
 import { handoverAllContacts } from "@/lib/contacts/assignment";
 import { ContactError } from "@/lib/contacts/errors";
 import { normalizePhone } from "@/lib/phone";
@@ -31,6 +32,7 @@ const PASSWORD_ALPHABET = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456
 /**
  * A strong temporary password, shown to the admin once: four groups of four characters from a 56-symbol
  * alphabet (about 93 bits), e.g. "Kp7m-Xq2r-Tn9w-Hb4c". Always contains a lower-case letter, a capital and a digit.
+ * It works for TEMP_PASSWORD_DAYS, and the person chooses their own at first sign-in (src/lib/auth/temporary-password.ts).
  */
 export function generateTempPassword(): string {
   for (;;) {
@@ -46,7 +48,7 @@ export function generateTempPassword(): string {
 
 export type AdminUserRow = Pick<
   User,
-  "id" | "name" | "email" | "role" | "team" | "phone" | "timezone" | "active" | "lastLoginAt" | "lastAssignedAt" | "createdAt"
+  "id" | "name" | "email" | "role" | "team" | "phone" | "timezone" | "active" | "lastLoginAt" | "lastAssignedAt" | "createdAt" | "passwordTemporaryUntil"
 > & {
   /** live contacts they own */
   contactCount: number;
@@ -66,6 +68,8 @@ const USER_COLS = {
   lastLoginAt: users.lastLoginAt,
   lastAssignedAt: users.lastAssignedAt,
   createdAt: users.createdAt,
+  /** set while they still have an admin's temporary password (until when it works) */
+  passwordTemporaryUntil: users.passwordTemporaryUntil,
 };
 
 /** Every team member, active first, with how many contacts and open tasks each holds. */
@@ -188,7 +192,10 @@ async function ownedContactCount(id: string, t: Tx): Promise<number> {
   return Number(n);
 }
 
-/** Adds a team member with a generated temporary password, which is returned once and never stored in clear. */
+/**
+ * Adds a team member with a generated temporary password, which is returned once and never stored in clear. It
+ * works for TEMP_PASSWORD_DAYS; at first sign-in they choose their own.
+ */
 export async function createUser(
   input: UserInput,
   actor: AdminActor,
@@ -209,7 +216,7 @@ export async function createUser(
     if (dup) throw new AdminError("Someone already uses that email", "email");
     const [user] = await t
       .insert(users)
-      .values({ ...clean, email, passwordHash, active: true })
+      .values({ ...clean, email, passwordHash, passwordTemporaryUntil: temporaryPasswordExpiry(new Date()), active: true })
       .returning();
     await audit(
       {
@@ -256,15 +263,19 @@ export async function updateUser(id: string, input: UserInput, actor: AdminActor
   });
 }
 
-/** A new temporary password (returned once). Ends every session of that person, so the old password stops working. */
+/**
+ * A new temporary password (returned once), working for TEMP_PASSWORD_DAYS; at their next sign-in they choose their
+ * own. Ends every session of that person, so the old password stops working, and voids their open reset links.
+ */
 export async function resetUserPassword(id: string, actor: AdminActor, tx: Tx = db): Promise<{ tempPassword: string; sessionsEnded: number }> {
   assertAdmin(actor, "Only an admin can reset passwords");
   const tempPassword = generateTempPassword();
   const passwordHash = await hashPassword(tempPassword);
   return inTx(tx, async (t) => {
     const u = await lockUser(id, t);
-    await t.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, u.id));
-    await voidResetLinks(u.id, new Date(), t);
+    const now = new Date();
+    await t.update(users).set({ passwordHash, passwordTemporaryUntil: temporaryPasswordExpiry(now), updatedAt: now }).where(eq(users.id, u.id));
+    await voidResetLinks(u.id, now, t);
     const ended = await t.delete(sessions).where(eq(sessions.userId, u.id)).returning({ id: sessions.id });
     await audit({ table: "users", rowId: u.id, action: "update", field: "password", newValue: "reset", userId: actor.id }, t);
     return { tempPassword, sessionsEnded: ended.length };
@@ -273,8 +284,8 @@ export async function resetUserPassword(id: string, actor: AdminActor, tx: Tx = 
 
 /**
  * Spec rule 8, "When someone leaves": in one transaction, every contact they own and every open task of theirs
- * moves to `handoverToId` (handoverAllContacts: ownership_log + audit per contact), the account is switched off
- * and all of their sessions end. Refuses to remove the last active admin, or to deactivate yourself.
+ * moves to `handoverToId` (handoverAllContacts: ownership_log + audit per contact), the account is switched off,
+ * all of their sessions end and their open "forgot password" links are voided. Refuses to remove the last active admin, or to deactivate yourself.
  */
 export async function deactivateUser(
   id: string,
@@ -301,6 +312,8 @@ export async function deactivateUser(
     }
     await t.update(users).set({ active: false, updatedAt: new Date() }).where(eq(users.id, u.id));
     const ended = await t.delete(sessions).where(eq(sessions.userId, u.id)).returning({ id: sessions.id });
+    // an emailed "forgot password" link must not outlive the account (or work again after a reactivation)
+    await voidResetLinks(u.id, new Date(), t);
     await audit(
       {
         table: "users",

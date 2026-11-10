@@ -9,8 +9,8 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import bcrypt from "bcryptjs";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
+import { eq, sql } from "drizzle-orm";
+import { db, queryRows } from "@/db";
 import { contacts, loginAttempts, payments, purchases, sessions, users } from "@/db/schema";
 import { csvCell, neutraliseFormula } from "@/lib/admin/csv";
 import { csvCell as importCsvCell } from "@/lib/import/csv";
@@ -41,6 +41,23 @@ async function userWithPassword(over: { active?: boolean; email?: string } = {})
   return u;
 }
 
+async function storedHash(userId: string) {
+  const [u] = await db.select({ h: users.passwordHash }).from(users).where(eq(users.id, userId));
+  return u.h;
+}
+
+/** Waits until another connection is waiting for a row lock. */
+async function waitForLockWaiters(n: number) {
+  for (let i = 0; i < 300; i++) {
+    const [r] = await queryRows<{ n: number }>(
+      sql`select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`,
+    );
+    if (r.n >= n) return;
+    await new Promise((res) => setTimeout(res, 10));
+  }
+  throw new Error(`fewer than ${n} connections ever waited for a lock`);
+}
+
 describe("sign-in", () => {
   beforeEach(async () => {
     await resetDb();
@@ -50,7 +67,8 @@ describe("sign-in", () => {
     const u = await userWithPassword();
     expect(await authenticate("nobody@test.local", PASSWORD, "1.1.1.1")).toEqual({ ok: false, error: BAD_CREDENTIALS });
     expect(await authenticate(u.email, "wrong password", "1.1.1.1")).toEqual({ ok: false, error: BAD_CREDENTIALS });
-    expect(await authenticate(u.email.toUpperCase(), PASSWORD, "1.1.1.1")).toEqual({ ok: true, userId: u.id });
+    // a success returns the hash the password matched (the session opens only while it is still theirs)
+    expect(await authenticate(u.email.toUpperCase(), PASSWORD, "1.1.1.1")).toEqual({ ok: true, userId: u.id, passwordHash: await storedHash(u.id) });
 
     const t0 = performance.now();
     expect(await verifyPassword("anything", null)).toBe(false);
@@ -87,7 +105,7 @@ describe("sign-in", () => {
     // the refused attempt never reached the password check, so it was not recorded
     expect(await db.select().from(loginAttempts)).toHaveLength(LOGIN_LIMITS.PER_EMAIL_IP);
     // the real person on another network still gets in, and their success clears their own failures only
-    expect(await authenticate(u.email, PASSWORD, "10.0.0.1")).toEqual({ ok: true, userId: u.id });
+    expect(await authenticate(u.email, PASSWORD, "10.0.0.1")).toEqual({ ok: true, userId: u.id, passwordHash: await storedHash(u.id) });
     expect((await authenticate(u.email, PASSWORD, "6.6.6.6")).ok).toBe(false);
     // the lock lifts after the window
     const later = new Date(Date.now() + (LOGIN_LIMITS.WINDOW_MINUTES + 1) * 60_000);
@@ -114,10 +132,13 @@ describe("sign-in", () => {
   it("upgrades a weaker hash at the next sign-in, and prunes old attempts and expired sessions", async () => {
     const u = await makeUser({ role: "sales" });
     await db.update(users).set({ passwordHash: await bcrypt.hash(PASSWORD, 4) }).where(eq(users.id, u.id));
-    expect((await authenticate(u.email, PASSWORD, "1.1.1.1")).ok).toBe(true);
+    const signedIn = await authenticate(u.email, PASSWORD, "1.1.1.1");
+    expect(signedIn.ok).toBe(true);
     const [after] = await db.select({ h: users.passwordHash }).from(users).where(eq(users.id, u.id));
     expect(bcrypt.getRounds(after.h!)).toBe(11);
     expect(await bcrypt.compare(PASSWORD, after.h!)).toBe(true);
+    // the upgraded hash is the one the session is opened against
+    expect(signedIn).toMatchObject({ passwordHash: after.h });
 
     const old = new Date(Date.now() - 2 * 24 * 3600_000);
     await recordLoginAttempt("x@test.local", "1.2.3.4", false, old);
@@ -128,6 +149,33 @@ describe("sign-in", () => {
     expect((await pruneLoginAttempts(new Date())).deleted).toBe(1);
     expect((await pruneExpiredSessions(new Date())).deleted).toBe(1);
     expect((await db.select().from(sessions)).map((s) => s.id)).toEqual(["live"]);
+  });
+
+  it("upgrading a weaker hash never undoes a password change saved while the old password was being checked", async () => {
+    const u = await makeUser({ role: "sales" });
+    const weak = await bcrypt.hash(PASSWORD, 4);
+    await db.update(users).set({ passwordHash: weak }).where(eq(users.id, u.id));
+    const resetHash = await hashPassword("the admin's new temporary one");
+    // an admin's reset in flight: the row is locked and the new hash written, not yet committed
+    let commit!: () => void;
+    const committed = new Promise<void>((r) => (commit = r));
+    let markLocked!: () => void;
+    const locked = new Promise<void>((r) => (markLocked = r));
+    const reset = db.transaction(async (t) => {
+      await t.select({ id: users.id }).from(users).where(eq(users.id, u.id)).for("update");
+      await t.update(users).set({ passwordHash: resetHash }).where(eq(users.id, u.id));
+      markLocked();
+      await committed;
+    });
+    await locked;
+    // the old password still matches the committed hash; its upgrade then waits for the reset
+    const signingIn = authenticate(u.email, PASSWORD, "1.1.1.1");
+    await waitForLockWaiters(1);
+    commit();
+    await reset;
+    // it signs in against the hash it checked, which is no longer theirs (so no session opens), and the reset stays
+    expect(await signingIn).toEqual({ ok: true, userId: u.id, passwordHash: weak });
+    expect(await storedHash(u.id)).toBe(resetHash);
   });
 
   it("reads the client IP the platform reports", () => {

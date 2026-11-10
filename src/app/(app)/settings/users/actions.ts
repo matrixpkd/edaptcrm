@@ -61,8 +61,11 @@ export async function updateUserAction(_prev: ActionResult, fd: FormData): Promi
 export async function resetPasswordAction(_prev: ActionResult, fd: FormData): Promise<ActionResult<{ tempPassword: string }>> {
   const admin = await adminForAction();
   if (!admin) return fail(NOT_ADMIN);
+  const id = str(fd, "id") ?? "";
   try {
-    const { tempPassword, sessionsEnded } = await resetUserPassword(str(fd, "id") ?? "", admin);
+    const { tempPassword, sessionsEnded } = await resetUserPassword(id, admin);
+    // the page shows until when the temporary password works (the panel with the password keeps its state)
+    revalidatePath(`/team/${id}`);
     return ok(
       { tempPassword },
       sessionsEnded ? `Password reset. They were signed out on ${sessionsEnded} device${sessionsEnded === 1 ? "" : "s"}.` : "Password reset.",

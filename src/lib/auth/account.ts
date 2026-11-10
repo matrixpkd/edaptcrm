@@ -25,6 +25,9 @@ export class AccountError extends Error {
   }
 }
 
+/** Refusal when the session choosing a password was ended meanwhile (an admin's reset, a sign-out). */
+export const SIGNED_OUT = "You were signed out. Sign in again.";
+
 /**
  * Changes the user's own password: the current password is required, the new one needs MIN_PASSWORD_LENGTH
  * characters, must be typed twice and must differ from the current one. Every other session of the user ends (the
@@ -52,7 +55,8 @@ export async function changeOwnPassword(
 
   const passwordHash = await hashPassword(next);
   const sessionsEnded = await tx.transaction(async (t) => {
-    await t.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, userId));
+    // their own password now: an admin's temporary one (if any) no longer applies
+    await t.update(users).set({ passwordHash, passwordTemporaryUntil: null, updatedAt: new Date() }).where(eq(users.id, userId));
     // an emailed "forgot password" link must not undo this change (src/lib/auth/password-reset.ts)
     await t.update(passwordResets).set({ usedAt: new Date() }).where(and(eq(passwordResets.userId, userId), isNull(passwordResets.usedAt)));
     const ended = await endOtherSessions(userId, keepSessionId, t);
@@ -60,6 +64,48 @@ export async function changeOwnPassword(
     return ended;
   });
   return { sessionsEnded };
+}
+
+/**
+ * "Choose your password" right after signing in with an admin's temporary password. No current password is asked
+ * for (they just typed it); the new one needs MIN_PASSWORD_LENGTH to 200 characters, typed twice, and must not be
+ * the temporary password. `keepSessionId` is this browser's session, which signed in with the temporary password: it
+ * must still be open, checked with the person's row locked, so a reset an admin saved a moment earlier (it ends every
+ * session) is never overwritten. Clears the temporary-password expiry, voids open "forgot password" links, ends every
+ * other session (this one stays signed in) and is audited without the password.
+ */
+export async function chooseOwnPassword(
+  userId: string,
+  input: { next: string | null; confirm: string | null },
+  keepSessionId: string | null,
+  now: Date = new Date(),
+  tx: Tx = db,
+): Promise<{ sessionsEnded: number }> {
+  const next = input.next ?? "";
+  if (next.length < MIN_PASSWORD_LENGTH) throw new AccountError(`Use at least ${MIN_PASSWORD_LENGTH} characters`, "next");
+  if (next.length > 200) throw new AccountError("That password is too long", "next");
+  if (next !== (input.confirm ?? "")) throw new AccountError("The two passwords do not match", "confirm");
+  const passwordHash = await hashPassword(next);
+  return tx.transaction(async (t) => {
+    // locked, so two submits (or an admin's reset at the same moment) cannot interleave
+    const [u] = await t
+      .select({ hash: users.passwordHash, active: users.active, temporaryUntil: users.passwordTemporaryUntil })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1)
+      .for("update");
+    if (!u || !u.active) throw new AccountError("Your account is not active");
+    // The session that signed in must still be open now that the row is locked: an admin's reset (or a sign-out
+    // everywhere) that landed since the screen checked it ended it, and must not be overwritten by this choice.
+    if (!(await sessionStillOpen(userId, keepSessionId, now, t))) throw new AccountError(SIGNED_OUT);
+    if (!u.temporaryUntil) throw new AccountError("You have already chosen your password. Change it under Your account.");
+    if (await verifyPassword(next, u.hash)) throw new AccountError("Choose a password different from the temporary one", "next");
+    await t.update(users).set({ passwordHash, passwordTemporaryUntil: null, updatedAt: now }).where(eq(users.id, userId));
+    await t.update(passwordResets).set({ usedAt: now }).where(and(eq(passwordResets.userId, userId), isNull(passwordResets.usedAt)));
+    const ended = await endOtherSessions(userId, keepSessionId, t);
+    await audit({ table: "users", rowId: userId, action: "update", field: "password", newValue: "chosen by the user", userId }, t);
+    return { sessionsEnded: ended };
+  });
 }
 
 /** Sets the user's own time zone (dates, the Today list and the 8:30 digest follow it). Returns false when unchanged. */
@@ -74,6 +120,17 @@ export async function setOwnTimezone(userId: string, timezone: string | null, tx
     await audit({ table: "users", rowId: userId, action: "update", field: "timezone", oldValue: u.timezone, newValue: tz, userId }, t);
   });
   return true;
+}
+
+/** True when `sessionId` is an unexpired session of this user. */
+async function sessionStillOpen(userId: string, sessionId: string | null, now: Date, tx: Tx): Promise<boolean> {
+  if (!sessionId) return false;
+  const [s] = await tx
+    .select({ id: sessions.id })
+    .from(sessions)
+    .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId), gt(sessions.expiresAt, now)))
+    .limit(1);
+  return !!s;
 }
 
 /** Ends every session of the user except `keepSessionId` (this browser). Returns how many ended. */

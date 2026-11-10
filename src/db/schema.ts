@@ -144,6 +144,11 @@ export const users = pgTable(
     name: text("name").notNull(),
     email: text("email").notNull(),
     passwordHash: text("password_hash"),
+    /**
+     * Set while the password is a temporary one an admin issued (new teammate, reset): when it stops working if
+     * nobody signs in with it. Null once the person chose their own (src/lib/auth/temporary-password.ts).
+     */
+    passwordTemporaryUntil: ts("password_temporary_until"),
     role: text("role").$type<Role>().notNull().default("sales"),
     /** Team key from settings `teams` (e.g. "kerala", "dubai"). */
     team: text("team"),

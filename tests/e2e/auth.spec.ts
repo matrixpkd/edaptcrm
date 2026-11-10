@@ -1,4 +1,6 @@
-import { test, expect } from "./support/fixtures";
+import { eq } from "drizzle-orm";
+import { users } from "@/db/schema";
+import { test, expect, db, makeUser } from "./support/fixtures";
 import { PASSWORD, PEOPLE } from "./support/env";
 
 // signed-out browsers: no saved session
@@ -21,6 +23,17 @@ test("a wrong password says so and stays on the sign-in page", async ({ page }) 
   await page.goto("/login");
   await signIn(page, PEOPLE.admin.email, "not-the-password");
   await expect(page.getByText("That email and password don't match.")).toBeVisible();
+  await expect(page).toHaveURL(/\/login/);
+});
+
+test("an unused temporary password stops working after its days are up, said only for the right password", async ({ page }) => {
+  const u = await makeUser({ role: "sales" });
+  await db.update(users).set({ passwordTemporaryUntil: new Date(Date.now() - 60_000) }).where(eq(users.id, u.id));
+  await page.goto("/login");
+  await signIn(page, u.email, "not-the-password");
+  await expect(page.getByText("That email and password don't match.")).toBeVisible();
+  await signIn(page, u.email, PASSWORD);
+  await expect(page.getByText("This temporary password has expired. Ask an admin to reset it.")).toBeVisible();
   await expect(page).toHaveURL(/\/login/);
 });
 

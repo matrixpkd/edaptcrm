@@ -1,6 +1,9 @@
+import { TEMP_PASSWORD_DAYS } from "@/lib/auth/temporary-password";
+
 /**
  * The message an admin sends a new teammate (or someone whose password was reset): where to sign in, with which
- * email and temporary password, and to choose their own password afterwards. PURE (client and server).
+ * email and temporary password, how long it works, and that they choose their own password when they sign in.
+ * PURE (client and server).
  */
 export function inviteMessage(p: { name: string; email: string; password: string; loginUrl: string; reset?: boolean }): string {
   const first = p.name.trim().split(/\s+/)[0] || p.name;
@@ -9,7 +12,7 @@ export function inviteMessage(p: { name: string; email: string; password: string
     `Sign in at ${p.loginUrl}`,
     `Email: ${p.email}`,
     `Temporary password: ${p.password}`,
-    "After signing in, open Your account and choose your own password.",
+    `It works for ${TEMP_PASSWORD_DAYS} days. When you sign in, you will choose your own password.`,
   ].join("\n");
 }
 

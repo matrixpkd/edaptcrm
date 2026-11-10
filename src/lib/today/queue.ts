@@ -102,8 +102,12 @@ function toQueueTask(r: TaskRow): QueueTask {
   };
 }
 
-/** Open tasks whose contact (if any) is still live. */
-const liveOpen = (): SQL => and(eq(tasks.status, "open"), or(isNull(tasks.contactId), isNull(contacts.mergedIntoId)))!;
+/**
+ * Open tasks whose contact (if any) is still live: not merged away, not erased. An erasure closes the contact's tasks
+ * and the alert rules close any they raised while it was committing; this keeps any other one off Today.
+ */
+const liveOpen = (): SQL =>
+  and(eq(tasks.status, "open"), or(isNull(tasks.contactId), and(isNull(contacts.mergedIntoId), isNull(contacts.erasedAt))))!;
 
 /**
  * The ranking of ./rank.ts in SQL (used to ORDER the fetch so a safety limit only drops the tail):
@@ -216,8 +220,9 @@ function newLeadWindowHours(th: { untouchedOwnerHours: number; leadReleaseDays: 
 }
 
 /**
- * Derived rows: open leads (no purchase, not Lost) owned by these users, assigned within the window, with no
- * interaction logged by the owner since the assignment (the same test as the untouched-lead alert).
+ * Derived rows: open leads (no purchase, not Lost, not erased) owned by these users, assigned within the window, with
+ * no interaction logged by the owner since the assignment (the same test as the untouched-lead alert). An erased lead
+ * keeps its owner, but nothing can be logged on it any more.
  */
 async function loadNewLeads(ownerIds: string[], now: Date, windowHours: number, tx: Tx): Promise<QueueTask[]> {
   if (!ownerIds.length) return [];
@@ -244,6 +249,7 @@ async function loadNewLeads(ownerIds: string[], now: Date, windowHours: number, 
       and(
         inArray(contacts.ownerId, ownerIds),
         isNull(contacts.mergedIntoId),
+        isNull(contacts.erasedAt),
         eq(contacts.purchaseCount, 0),
         ne(contacts.stage, "lost"),
         gt(contacts.ownerAssignedAt, since),

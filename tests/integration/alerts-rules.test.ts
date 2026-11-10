@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
 import {
@@ -28,6 +28,7 @@ import {
 } from "@/lib/alerts/rules";
 import { setOwner } from "@/lib/contacts/assignment";
 import { logInteraction } from "@/lib/contacts/interactions";
+import { eraseContact } from "@/lib/contacts/privacy";
 import { recordInstalmentPayment, recordPurchase } from "@/lib/money/purchases";
 import { DEFAULT_SETTINGS, setSetting } from "@/lib/settings";
 import { makeUser, resetDb } from "../support/db";
@@ -541,6 +542,108 @@ describe("vipGoneQuiet", () => {
     expect(await vipGoneQuiet(at(10 * D))).toEqual({ contacts: 0, notified: 0 });
     // next quarter (January): Priya again, and the customer who has since been quiet 196 days too (no owner: Umer only)
     expect(await vipGoneQuiet(new Date("2027-01-05T09:30:00Z"))).toEqual({ contacts: 2, notified: 5 });
+  });
+});
+
+describe("erased contacts", () => {
+  // personal data erased on request (src/lib/contacts/privacy.ts): no rule raises anything about them again
+  const leftOn = async (ids: string[]) => ({
+    open: await db.select().from(tasks).where(and(inArray(tasks.contactId, ids), eq(tasks.status, "open"))),
+    alerts: await db.select().from(notifications).where(inArray(notifications.contactId, ids)),
+  });
+
+  it("an erased lead gets no untouched alert, also once the erasure has deleted the alerts that kept it from repeating", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const sales = await makeUser({ role: "sales" });
+    await makeUser({ role: "manager" });
+    const assignedAt = at(-50 * H);
+    const alerted = await contact({ name: "Lena", ownerId: sales.id, ownerAssignedAt: assignedAt });
+    expect(await untouchedLeads(NOW)).toEqual({ ownerAlerts: 1, managerAlerts: 1, closed: 0 });
+    await eraseContact(alerted.id, admin, "Asked by email", { now: NOW });
+    const never = await contact({ name: "Mira", ownerId: sales.id, ownerAssignedAt: assignedAt });
+    await eraseContact(never.id, admin, "Asked by phone", { now: NOW });
+    // an untouched task raised while the erasure was committing: the next run dismisses it
+    const raced = await contact({ name: "Nila", ownerId: sales.id, ownerAssignedAt: assignedAt });
+    await eraseContact(raced.id, admin, "Asked by phone", { now: NOW });
+    const stamp = assignedAt.toISOString();
+    await createTask({ contactId: raced.id, userId: sales.id, type: "untouched_lead", reason: "No call logged", dueAt: NOW, dedupeKey: `untouched_lead:${raced.id}:${stamp}`, payload: { assignedAt: stamp } });
+
+    expect(await untouchedLeads(at(15 * MIN))).toEqual({ ownerAlerts: 0, managerAlerts: 0, closed: 1 });
+    expect(await leftOn([alerted.id, never.id, raced.id])).toEqual({ open: [], alerts: [] });
+  });
+
+  it("an erased customer gets no next-rung, at-risk or VIP alert; a repeat-purchase task left open on one is dismissed", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const sales = await makeUser({ role: "sales" });
+    const bought = { purchaseCount: 1, stage: "first_purchase" as const, lastPurchaseAt: at(-40 * D), firstPurchaseAt: at(-40 * D) };
+    const due = await contact({ ...bought, ownerId: sales.id, nextExpectedAt: at(5 * D), nextOffer: "The AI Office" });
+    const risky = await contact({ ...bought, ownerId: sales.id, atRisk: true, nextExpectedAt: at(-45 * D) });
+    const vip = await contact({ ownerId: sales.id, grade: "A", purchaseCount: 3, stage: "repeat", ltvInr: 120000, lastActivityAt: at(-121 * D), lastPurchaseAt: at(-130 * D) });
+    for (const c of [due, risky, vip]) {
+      await eraseContact(c.id, admin, "Asked by email", { now: NOW });
+      // their money stays, so their calculated columns still describe a customer (as the nightly recompute keeps them)
+      const { purchaseCount, stage, atRisk: risk, grade, ltvInr, lastPurchaseAt, firstPurchaseAt, lastActivityAt, nextExpectedAt, nextOffer } = c;
+      await db
+        .update(contacts)
+        .set({ purchaseCount, stage, atRisk: risk, grade, ltvInr, lastPurchaseAt, firstPurchaseAt, lastActivityAt, nextExpectedAt, nextOffer })
+        .where(eq(contacts.id, c.id));
+    }
+    expect(await dueForNextRung(NOW)).toEqual({ created: 0 });
+    expect(await atRisk(NOW)).toEqual({ created: 0 });
+    expect(await vipGoneQuiet(NOW)).toEqual({ contacts: 0, notified: 0 });
+
+    // repeat-purchase tasks raised while an erasure was committing: the next run dismisses them
+    const cycle = { lastPurchaseAt: at(-40 * D).toISOString() };
+    await createTask({ contactId: due.id, userId: sales.id, type: "next_rung", reason: "Due for the next rung", dueAt: NOW, payload: cycle });
+    await createTask({ contactId: risky.id, userId: sales.id, type: "at_risk", reason: "At risk", dueAt: NOW, payload: cycle });
+    expect(await atRisk(at(D))).toEqual({ created: 0 });
+    expect(await leftOn([due.id, risky.id, vip.id])).toEqual({ open: [], alerts: [] });
+  });
+
+  it("an erased contact's checkout, follow-up, instalment or unverified payment raises nothing", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const sales = await makeUser({ role: "sales" });
+    await makeUser({ role: "manager" });
+    const c = await contact({ ownerId: sales.id });
+    await checkout(c.id, at(-2 * H));
+    const plan = await recordPurchase(
+      {
+        contactId: c.id,
+        productName: "Applied AI Mastery",
+        family: "applied_ai_mastery",
+        amount: 20000,
+        currency: "INR",
+        mode: "bank_transfer",
+        source: "manual",
+        purchasedAt: at(-D),
+        instalments: [
+          { amount: 10000, dueAt: at(2 * D) },
+          { amount: 10000, dueAt: at(32 * D) },
+        ],
+        paidNow: null,
+      },
+      sales,
+    );
+    const claim = await recordPurchase(
+      { contactId: c.id, productName: "Workshop", family: "workshop", amount: 999, currency: "INR", mode: "upi_qr", source: "manual", reference: nextRef(), paidNow: { amount: 999, reference: nextRef(), paidAt: at(-3 * D) } },
+      sales,
+    );
+    // the erasure waits for waiting money to be settled: this money is put back as it was, as if still waiting
+    const waiting = await db.select({ id: payments.id, status: payments.status }).from(payments).where(inArray(payments.id, [...plan.paymentIds, ...claim.paymentIds]));
+    expect(waiting.map((p) => p.status).sort()).toEqual(["scheduled", "scheduled", "unverified"]);
+    await db.update(payments).set({ status: "rejected" }).where(inArray(payments.id, waiting.map((p) => p.id)));
+    await eraseContact(c.id, admin, "Asked by email", { now: NOW });
+    for (const p of waiting) await db.update(payments).set({ status: p.status }).where(eq(payments.id, p.id));
+    // and a follow-up left open on it
+    await createTask({ contactId: c.id, userId: sales.id, type: "follow_up", reason: "Follow-up due", dueAt: at(-MIN) });
+
+    expect(await abandonedCheckouts(NOW)).toEqual({ abandoned: 0, tasks: 0, resolved: 0, waiting: 0 });
+    expect(await instalmentsDue(NOW)).toEqual({ dueTasks: 0, overdueTasks: 0, notified: 0 });
+    expect(await unverifiedPayments(NOW)).toEqual({ payments: 0, notified: 0 });
+    expect(await followUpsDue(NOW)).toEqual({ notified: 0 });
+    const { open, alerts } = await leftOn([c.id]);
+    expect(open.map((t) => t.type)).toEqual(["follow_up"]);
+    expect(alerts).toEqual([]);
   });
 });
 

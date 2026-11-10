@@ -102,9 +102,11 @@ export async function buildDailyDigest(
     detail: r.reason,
   }));
 
+  // an erased lead keeps its owner, but is nobody's lead any more (src/lib/contacts/privacy.ts)
   const newLeadWhere = and(
     eq(contacts.ownerId, user.id),
     isNull(contacts.mergedIntoId),
+    isNull(contacts.erasedAt),
     eq(contacts.purchaseCount, 0),
     gte(contacts.ownerAssignedAt, since),
     lte(contacts.ownerAssignedAt, now),
@@ -277,8 +279,10 @@ export async function buildWeeklySummary(now: Date, tx: Tx = db): Promise<Weekly
 
   const quietDays = Math.max(1, Number(s.thresholds.vipQuietDays) || 120);
   const lastSeen = sql<Date>`coalesce(${contacts.lastActivityAt}, ${contacts.lastPurchaseAt}, ${contacts.createdAt})`;
+  // the same customers vipGoneQuiet alerts about: erased ones keep their grade (their money stays) but are left out
   const vipWhere = and(
     isNull(contacts.mergedIntoId),
+    isNull(contacts.erasedAt),
     eq(contacts.grade, "A"),
     gt(contacts.purchaseCount, 0),
     sql`${contacts.stage} <> 'lost'`,

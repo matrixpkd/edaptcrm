@@ -17,6 +17,7 @@ import {
   organisations,
   ownershipLog,
   payments,
+  products,
   purchases,
   ratings,
   tasks,
@@ -24,6 +25,8 @@ import {
 } from "@/db/schema";
 import { getActivityFeed } from "@/lib/activity/feed";
 import { createTask } from "@/lib/alerts/core";
+import { buildDailyDigest, buildWeeklySummary } from "@/lib/alerts/digest";
+import { untouchedLeads } from "@/lib/alerts/rules";
 import { handoverAllContacts, reassignContacts, releaseStaleLeads, requestTransfer, setOwner } from "@/lib/contacts/assignment";
 import { captureEnquiry } from "@/lib/contacts/capture";
 import { ContactErasedError, ContactValidationError, ERASED_MESSAGE } from "@/lib/contacts/errors";
@@ -34,7 +37,12 @@ import { addNote, getPinnedNote, setPinned } from "@/lib/contacts/notes";
 import { linkContactToOrganisation } from "@/lib/contacts/organisations";
 import { ERASED_NAME, ERASED_REASON, eraseContact, setConsent } from "@/lib/contacts/privacy";
 import { applyRating, updateContactProfile } from "@/lib/contacts/profile";
-import { listContacts, parseContactFilters } from "@/lib/contacts/queries";
+import { getContactTimeline, getOrganisationPeople, listContacts, listOrganisations, parseContactFilters } from "@/lib/contacts/queries";
+import { createImportBatch, getBatchView, listRows, resolveAllConflictsAsNew, runCleanChunk, saveMapping } from "@/lib/import/batches";
+import { runCommitChunk, startCommit } from "@/lib/import/commit";
+import { runMatchChunk } from "@/lib/import/match";
+import type { AppliedRow, StoredClean } from "@/lib/import/types";
+import { runUndoChunk, startUndo } from "@/lib/import/undo";
 import { addPayment, adjustCredit, cancelPurchase, recordPurchase, recordRefund, rejectPayment, verifyPayment } from "@/lib/money";
 import { PROOF_FOLDER, canReadStoredFile, discardUnsavedProof, saveFile, storedKeyFromUrl } from "@/lib/storage";
 import { ingestWebhook } from "@/lib/webhooks/handlers";
@@ -43,7 +51,7 @@ import { globalSearch } from "@/lib/search/global";
 import { TaskError } from "@/lib/tasks/rules";
 import { agendaTasks, contactOpenTasks, createManualTask, listTasks, setTaskStatus, taskCounts, updateTask } from "@/lib/tasks/service";
 import { notificationHref } from "@/lib/today/inbox";
-import { getTodayQueue } from "@/lib/today/queue";
+import { getTeamQueues, getTodayQueue } from "@/lib/today/queue";
 import { makeUser, resetDb } from "../support/db";
 
 let seq = 0;
@@ -326,17 +334,8 @@ describe("data privacy", () => {
       sales,
     );
     await rejectPayment(claim.paymentIds[0], manager, "Wrong UTR from Priya");
-    // an owner change with a typed reason, and an import row that remembers her old and new email
+    // an owner change with a typed reason (import rows: see "takes the person out of every import")
     await reassignContacts([c.id], other.id, manager, "Priya prefers Hindi");
-    const [batch] = await db.insert(importBatches).values({ fileName: "leads.csv", source: "other" }).returning();
-    await db.insert(importRows).values({
-      batchId: batch.id,
-      rowNumber: 1,
-      raw: { Name: "Priya Nair" },
-      contactId: c.id,
-      issues: [`${c.phoneE164} belongs to Priya Nair, so it was not added`],
-      applied: { contactId: c.id, enquiryId: null, before: { email: "priya@old.example" }, after: { email: "priya@new.example" } },
-    });
 
     const buysBefore = await db.select().from(purchases).where(eq(purchases.contactId, c.id));
     const paysBefore = await db.select().from(payments).where(eq(payments.contactId, c.id));
@@ -379,10 +378,96 @@ describe("data privacy", () => {
     const log = await db.select().from(ownershipLog).where(eq(ownershipLog.contactId, c.id));
     expect(log).toHaveLength(2);
     expect(log.every((l) => l.reason === ERASED_REASON)).toBe(true);
-    // the import row keeps what an undo needs, not the values it would put back
-    const [row] = await db.select().from(importRows).where(eq(importRows.batchId, batch.id));
-    expect(row).toMatchObject({ raw: {}, issues: [], applied: { contactId: c.id, enquiryId: null } });
-    expect(row.applied).not.toHaveProperty("before");
+  });
+
+  it("takes the person out of every import: their rows are wiped, other contacts' rows lose what they quote of them", async () => {
+    const admin = await makeUser({ role: "admin" });
+    await db.insert(products).values({ name: "AI Workshop", family: "workshop", rung: 1, listPrice: 999 });
+    // a namesake in the same city, older than her (so the first candidate of a same-name conflict), and Anil
+    const namesake = await lead(null, "Priya Nair", { profile: { city: "Kochi" } });
+    const p = await lead(null, "Priya Nair", { email: "priya@example.com", profile: { city: "Kochi" } });
+    const anil = await lead(null, "Anil Kumar");
+    const order = `TM-${seq++}`;
+    await recordPurchase(
+      { contactId: p.id, productName: "AI Workshop", family: "workshop", amount: 999, currency: "INR", mode: "tagmango", source: "tagmango", reference: order, purchasedAt: new Date("2025-09-01T10:00:00Z") },
+      null,
+    );
+    const national = p.phoneE164.slice(3);
+    const newcomer = phone();
+    const csv = [
+      "Order ID,Name,Phone,Email,City,State,Mango,Amount,Date,Alt Phone,Referred By",
+      // 1: her order again: skipped, "already recorded on Priya Nair", linked to no contact
+      `${order},Priya Nair,${national},priya@example.com,Kochi,,AI Workshop,999,01/10/2025,,`,
+      // 2: her, by number: merged into her (the state is new: the undo would put it back)
+      `TM-${seq++},Priya Nair,${national},,Kochi,Kerala,AI Workshop,999,02/10/2025,,`,
+      // 3: Anil, with her number as his other number: "<her number> belongs to Priya Nair, so it was not added"
+      `TM-${seq++},Anil Kumar,${anil.phoneE164.slice(3)},,,,AI Workshop,999,03/10/2025,${national},`,
+      // 4: another Priya Nair of Kochi: a conflict with both Priya Nairs as candidates, imported as new
+      `TM-${seq++},Priya Nair,${newcomer},,Kochi,,AI Workshop,999,04/10/2025,,`,
+      // 5: her number with an amount that is not one: invalid, linked to no contact
+      `TM-${seq++},Priya Nair,${national},,Kochi,,AI Workshop,lots,05/10/2025,,`,
+      // 6: someone she referred, naming her by number
+      `TM-${seq++},Meera Das,${phone()},,,,AI Workshop,999,06/10/2025,,${national}`,
+    ].join("\n");
+    const batchId = await createImportBatch({ fileName: "orders.csv", fileType: "text/csv", bytes: new TextEncoder().encode(csv), source: "tagmango" }, admin);
+    const [stored] = await db.select({ fileUrl: importBatches.fileUrl }).from(importBatches).where(eq(importBatches.id, batchId));
+    if (stored.fileUrl) leftovers.push(path.join(UPLOADS, storedKeyFromUrl(stored.fileUrl)!));
+    const view = (await getBatchView(batchId, admin))!;
+    await saveMapping(batchId, { mapping: { ...(view.mapping ?? {}), State: "state", "Alt Phone": "alt_phone", "Referred By": "referrer_phone" }, defaults: {} }, admin);
+    for (let i = 0; i < 20; i++) if ((await runCleanChunk(batchId, admin)).finished) break;
+    for (let i = 0; i < 20; i++) if ((await runMatchChunk(batchId, admin)).finished) break;
+    expect(await resolveAllConflictsAsNew(batchId, admin)).toBe(1);
+    await startCommit(batchId, admin);
+    for (let i = 0; i < 20; i++) if ((await runCommitChunk(batchId, admin)).finished) break;
+
+    const rows = async () => db.select().from(importRows).where(eq(importRows.batchId, batchId)).orderBy(importRows.rowNumber);
+    const [skipped, merged, anils, conflict, invalid, referred] = await rows();
+    // what the import left: her data on rows of hers that point at no contact, and quoted on other contacts' rows
+    expect(skipped).toMatchObject({ matchResult: "skip", contactId: null, matchContactId: null, issues: [`Order ${order} is already recorded on Priya Nair`] });
+    expect(JSON.stringify(skipped.raw)).toContain("priya@example.com");
+    expect(merged).toMatchObject({ contactId: p.id, applied: { before: { state: null }, after: { state: "Kerala" } } });
+    expect(anils.contactId).toBe(anil.id);
+    expect(anils.issues).toContain(`${p.phoneE164} belongs to Priya Nair, so it was not added`);
+    const candidates = (conflict.cleaned as StoredClean).match?.candidates ?? [];
+    expect(candidates.map((x) => x.id)).toEqual([namesake.id, p.id]);
+    expect(conflict).toMatchObject({ matchContactId: namesake.id, resolution: "create" });
+    expect(conflict.contactId).not.toBeNull();
+    expect(invalid).toMatchObject({ matchResult: "invalid", contactId: null, matchContactId: null });
+    expect((invalid.cleaned as StoredClean).phone).toBe(p.phoneE164);
+    expect(referred.applied).toMatchObject({ referrerId: p.id });
+    expect(JSON.stringify(referred.raw)).toContain(national);
+
+    await eraseContact(p.id, admin, "Asked by email");
+
+    const after = await rows();
+    const [skippedA, mergedA, anilsA, conflictA, invalidA, referredA] = after;
+    // her own rows: wiped, keeping only what an undo needs (not the values it would put back)
+    for (const r of [skippedA, mergedA, invalidA]) expect(r).toMatchObject({ raw: {}, mapped: null, cleaned: null, issues: [] });
+    expect(mergedA.applied).toMatchObject({ contactId: p.id, purchaseId: (merged.applied as AppliedRow).purchaseId });
+    expect(mergedA.applied).not.toHaveProperty("before");
+    expect(mergedA.applied).not.toHaveProperty("after");
+    // other contacts' rows stay whole, without what quoted her
+    expect(anilsA).toMatchObject({ raw: anils.raw, cleaned: anils.cleaned, applied: anils.applied, contactId: anil.id });
+    expect(anilsA.issues).toEqual(anils.issues.filter((i) => !i.includes(p.phoneE164)));
+    expect((conflictA.cleaned as StoredClean).match?.candidates?.map((x) => x.id)).toEqual([namesake.id]);
+    expect(conflictA).toMatchObject({ raw: conflict.raw, applied: conflict.applied, contactId: conflict.contactId });
+    expect(referredA.raw).toEqual(Object.fromEntries(Object.entries(referred.raw).filter(([k]) => k !== "Referred By")));
+    expect((referredA.cleaned as StoredClean).referrer).toBeNull();
+    expect(referredA.mapped).not.toHaveProperty("referrer_phone");
+    expect(referredA.applied).toEqual(referred.applied);
+    // nothing in the import, nor on its review screen, ties her number or email to her any more; her number stays only
+    // where the file gave it as Anil's other number (his row's own values, kept for him)
+    const review = JSON.stringify(await listRows(batchId, admin, { pageSize: 200 }));
+    expect(review).not.toMatch(/priya@example\.com|belongs to Priya Nair|recorded on Priya Nair/);
+    const notAnils = JSON.stringify(after.map((r) => (r.id === anils.id ? { ...r, raw: null, mapped: null, cleaned: null } : r)));
+    for (const hers of [national, "priya@example.com"]) expect(notAnils).not.toContain(hers);
+
+    // the other contacts' rows still undo: Anil's purchase from this import goes, he stays as he was
+    await startUndo(batchId, admin);
+    for (let i = 0; i < 20; i++) if ((await runUndoChunk(batchId, admin)).finished) break;
+    expect((await getBatchView(batchId, admin))!.status).toBe("undone");
+    expect(await db.select().from(purchases).where(eq(purchases.contactId, anil.id))).toHaveLength(0);
+    expect((await db.select().from(contacts).where(eq(contacts.id, anil.id)))[0].altPhones).toEqual([]);
   });
 
   it("a proof file that cannot be deleted goes to the error log, without its file name, and the erasure stands", async () => {
@@ -695,6 +780,114 @@ describe("data privacy", () => {
     expect(await db.select().from(purchases).where(eq(purchases.reference, order))).toHaveLength(0);
     expect(await db.select().from(tasks).where(eq(tasks.contactId, c.id))).toHaveLength(0);
     expect((await db.select().from(contacts).where(eq(contacts.id, c.id)))[0]).toMatchObject({ name: ERASED_NAME, ltvInr: 0 });
+  });
+
+  it("an alert rule that read a lead just before its erasure committed takes back what it raised, in the same run", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const sales = await makeUser({ role: "sales" });
+    await makeUser({ role: "manager" });
+    const c = await lead(sales.id, "Priya Nair");
+    await db.update(contacts).set({ ownerAssignedAt: new Date(Date.now() - 50 * H) }).where(eq(contacts.id, c.id));
+    // the erasure has locked the contact and cleared it, but not committed yet
+    let erased!: () => void;
+    const erasedP = new Promise<void>((r) => (erased = r));
+    let commit!: () => void;
+    const gate = new Promise<void>((r) => (commit = r));
+    const erasure = db.transaction(async (t) => {
+      await eraseContact(c.id, admin, "Asked by email", {}, t);
+      erased();
+      await gate;
+    });
+    await erasedP;
+    // the 15-minute run reads the lead as it was, then waits to write its task and alerts
+    const run = untouchedLeads(new Date());
+    await waitForLockWaiters(1);
+    commit();
+    await erasure;
+    expect(await run).toMatchObject({ ownerAlerts: 1, managerAlerts: 1 });
+    // ... and closes them once they land on the erased contact: no open task, no alert with her name
+    expect(await db.select().from(tasks).where(and(eq(tasks.contactId, c.id), eq(tasks.status, "open")))).toHaveLength(0);
+    expect(await db.select().from(notifications).where(eq(notifications.contactId, c.id))).toHaveLength(0);
+    expect(JSON.stringify(await db.select().from(tasks).where(eq(tasks.contactId, c.id)))).not.toContain("Priya");
+  });
+
+  it("an erased lead or customer leaves Today and the digests", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const sales = await makeUser({ role: "sales" });
+    // assigned just now: a "new lead" row on her owner's Today and in the daily digest
+    const c = await lead(sales.id, "Priya Nair");
+    const vip = await lead(sales.id, "Ravi Menon");
+    const now = new Date(Date.now() + 1000);
+    expect((await getTodayQueue(sales, now)).rows.map((r) => r.contact?.id)).toContain(c.id);
+    await eraseContact(c.id, admin, "Asked by email");
+    await eraseContact(vip.id, admin, "Asked by email");
+    // a grade A customer gone quiet, as its money (which stays) can keep it
+    await db
+      .update(contacts)
+      .set({ grade: "A", purchaseCount: 3, ltvInr: 120000, stage: "repeat", lastActivityAt: new Date(now.getTime() - 200 * 24 * H) })
+      .where(eq(contacts.id, vip.id));
+    // and a task left open on her (raised while the erasure was committing)
+    await createTask({ contactId: c.id, userId: sales.id, type: "follow_up", reason: "Follow-up due", dueAt: new Date(now.getTime() - 60_000) });
+
+    const queue = await getTodayQueue(sales, now);
+    expect(queue.rows.map((r) => r.contact?.id)).toEqual([]);
+    expect((await getTeamQueues(admin, now)).flatMap((g) => g.queue.rows.map((r) => r.contact?.id))).toEqual([]);
+    const daily = await buildDailyDigest(sales, now);
+    expect(daily.newLeads).toEqual({ count: 0, items: [] });
+    expect(daily.today.total).toBe(0);
+    const weekly = await buildWeeklySummary(now);
+    expect(weekly.vipQuiet).toMatchObject({ count: 0, items: [] });
+  });
+
+  it("an erased contact leaves its organisation's people and their count; it cannot be unlinked, and no screen offers it", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const sales = await makeUser({ role: "sales" });
+    const other = await makeUser({ role: "sales" });
+    const [org] = await db.insert(organisations).values({ name: "Acme Traders" }).returning();
+    const kept = await lead(sales.id, "Anil Kumar");
+    const gone = await lead(sales.id, "Priya Nair");
+    for (const c of [kept, gone]) await linkContactToOrganisation(c.id, org.id, admin);
+    expect((await getOrganisationPeople(admin, org.id)).people).toHaveLength(2);
+    expect(await getOrganisationPeople(other, org.id)).toEqual({ people: [], hidden: 2 });
+
+    await eraseContact(gone.id, admin, "Asked by email");
+    expect((await getOrganisationPeople(admin, org.id)).people.map((p) => p.id)).toEqual([kept.id]);
+    expect((await getOrganisationPeople(sales, org.id)).people.map((p) => p.id)).toEqual([kept.id]);
+    expect(await getOrganisationPeople(other, org.id)).toEqual({ people: [], hidden: 1 });
+    expect((await listOrganisations(admin)).rows.find((o) => o.id === org.id)?.people).toBe(1);
+    // the link stays (the erasure lock refuses any change to the contact, unlinking too)
+    await expect(linkContactToOrganisation(gone.id, null, admin)).rejects.toThrow(ERASED_MESSAGE);
+    expect((await db.select().from(contacts).where(eq(contacts.id, gone.id)))[0].organisationId).toBe(org.id);
+  });
+
+  it("an undone merge keeps nothing of the erased person in the other contact's history, which keeps its own", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const anil = await lead(null, "Anil Kumar");
+    const p = await lead(null, "Priya Nair", { email: "priya@example.com" });
+    const extra = `+91${phone()}`;
+    const mergeId = await mergeContacts(anil.id, p.id, admin, "Same family");
+    // while merged, an edit of Anil's numbers records hers in his history
+    await updateContactProfile(anil.id, { altPhones: { add: [extra] } }, admin);
+    await undoMerge(mergeId, admin);
+    const timeline = async (id: string) => (await getContactTimeline(id)).items;
+    const mergedItem = async () => (await timeline(anil.id)).find((i) => i.kind === "merge" && i.action === "merge");
+    expect(await mergedItem()).toMatchObject({ otherName: "Priya Nair", otherPhone: p.phoneE164 });
+    // the reverse: she was the winner of a merge since undone (that entry is in her own history)
+    const ravi = await lead(null, "Ravi Menon");
+    await undoMerge(await mergeContacts(p.id, ravi.id, admin), admin);
+
+    await eraseContact(p.id, admin, "Asked by email");
+    // "Merged a duplicate record into this contact": no name, no number
+    expect(await mergedItem()).toMatchObject({ otherName: null, otherPhone: null });
+    const history = async (id: string) => db.select().from(auditLog).where(and(eq(auditLog.tableName, "contacts"), eq(auditLog.rowId, id)));
+    const anils = await history(anil.id);
+    expect(JSON.stringify(anils)).not.toMatch(/Priya|priya@example\.com/);
+    expect(JSON.stringify(anils)).not.toContain(p.phoneE164);
+    // his own entries stay: the merge (by id) and the number he was given
+    expect(anils.find((a) => a.action === "merge")?.oldValue).toEqual({ loserId: p.id });
+    expect(anils.find((a) => a.field === "altPhones")).toMatchObject({ oldValue: [], newValue: [extra] });
+    expect(JSON.stringify([await timeline(ravi.id), await history(ravi.id)])).not.toMatch(/Priya/);
+    expect((await history(p.id)).every((a) => a.action === "erase" || (a.oldValue === null && a.newValue === null))).toBe(true);
   });
 
   it("the proof of a payment that was not saved leaves file storage; a proof a payment holds stays", async () => {

@@ -406,6 +406,8 @@ async function captureInner(
   }
 
   // ---- 3. the referrer (resolved, or created when only a phone is known)
+  // a bulk import recomputes once at the end of its chunk instead of at step 7
+  const recompute = !(input.skipRecompute && input.skipAlerts);
   let referrerId: string | null = null;
   let referrerCreated = false;
   let referrerNote: string | null = null;
@@ -413,6 +415,15 @@ async function captureInner(
   if (r && hasReferrer) {
     const res = await resolveReferrer(r, contact, input, t);
     if (res) {
+      // lock order: when step 7 will recompute an existing referrer, its row is locked now, before this touch's
+      // round-robin pick (step 4), not first at step 7. A parallel touch from the referrer holds that row and then
+      // picks: when every salesperson is busy it waits for one, and if that is the one this touch picked while
+      // waiting for the referrer's row, the two deadlock. An import row (no step 7) takes no lock here: its chunk
+      // would hold the referrer from this row until it commits, and deadlock with a webhook for a later row's
+      // contact through the same referrer.
+      if (!res.created && recompute) {
+        await t.select({ id: contacts.id }).from(contacts).where(eq(contacts.id, res.id)).for("update");
+      }
       referrerId = res.id;
       referrerCreated = res.created;
       const current = await getContact(contact.id, t);
@@ -493,7 +504,6 @@ async function captureInner(
   if (selfRated) await applyRating(contact.id, self, "self", null, t, { recompute: false });
 
   // ---- 7. calculated columns (a bulk import recomputes once at the end of its chunk instead)
-  const recompute = !(input.skipRecompute && input.skipAlerts);
   if (recompute) {
     await recomputeContact(contact.id, t);
     if (referrerId) await recomputeContact(referrerId, t);

@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, eq, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
 import { db, queryRows, type Tx } from "@/db";
 import { contacts, ownershipLog, tasks, users, type TaskType } from "@/db/schema";
 import { managerIds, notify } from "@/lib/alerts/core";
@@ -34,35 +34,87 @@ const MANAGER_TASK_TYPES: TaskType[] = ["lead_released", "transfer_request", "du
 
 /**
  * Round robin: the active salesperson in the lead's team who was assigned least recently (never-assigned first)
- * gets the next lead. The chosen row is locked (FOR UPDATE SKIP LOCKED, so parallel captures pick different
- * people) and stamped with clock_timestamp() so several assignments inside one transaction still rotate.
- * Returns null — the unassigned pool — when auto-assign is off or the team has no active salesperson.
+ * gets the next lead, and is stamped with clock_timestamp() so several assignments inside one transaction still
+ * rotate. Returns null (the unassigned pool) only when auto-assign is off or the team has no active salesperson,
+ * never because everyone is busy.
+ *
+ * Parallel captures. The stamp keeps the salesperson's row locked until the caller's transaction commits, so a
+ * locked salesperson is treated as being assigned a lead right now. Each look ranks the queue from one snapshot and
+ * locks the first person in it whom nobody holds (SKIP LOCKED), so parallel captures take different people without
+ * waiting for each other. But under READ COMMITTED, Postgres locks the NEWEST version of that row and does not
+ * re-sort: someone a parallel capture assigned and committed after our snapshot can still come back first. So a
+ * look is a compare-and-set on last_assigned_at: when the stamp on the locked row is not the one we ranked by, the
+ * savepoint is rolled back (releasing that lock) and we look again from a fresh snapshot. Only when everyone is
+ * held do we wait, for the first in line, rather than send the lead to the pool. If that person was assigned while
+ * we waited, we look again, so the pick takes whoever is free by then (possibly the person just assigned) instead
+ * of queueing behind the next capture still in flight.
+ *
+ * A look locks at most one row (LIMIT 1), and a look that does not keep its row is rolled back: a pick never waits
+ * while holding a row it passed over, because two picks that each hold what the other waits for deadlock.
  */
 export async function pickAutoOwner(phoneCountry: string | null, tx: Tx = db): Promise<string | null> {
   const cfg = await getSetting("assignment", tx);
   if (!cfg.autoAssign) return null;
   const team = teamForCountry(phoneCountry, cfg);
-  // the lock and the stamp must be one unit of work: called on the root handle, a bare SELECT ... FOR UPDATE
-  // releases its lock at once and parallel callers all pick the same person
-  return withTx(tx, async (t) => {
-    const candidates = () =>
-      t
-        .select({ id: users.id })
-        .from(users)
-        .where(and(eq(users.active, true), eq(users.role, "sales"), eq(users.team, team)))
-        .orderBy(sql`${users.lastAssignedAt} asc nulls first`, asc(users.createdAt), asc(users.id))
-        .limit(1);
-    let rows = await candidates().for("update", { skipLocked: true });
-    // everyone is locked by parallel assignments: wait for the next in line rather than dropping to the pool
-    if (!rows[0]) rows = await candidates().for("update");
-    const id = rows[0]?.id;
-    if (!id) return null;
-    await t
-      .update(users)
-      .set({ lastAssignedAt: sql`clock_timestamp()` })
-      .where(eq(users.id, id));
-    return id;
-  });
+  for (let look = 1; ; look++) {
+    try {
+      // the lock and the stamp must be one unit of work: called on the root handle, a bare locking SELECT releases
+      // its lock at once and parallel callers all pick the same person
+      return await withTx(tx, async (t) => {
+        let [first] = await queryRows<NextInLine>(nextInLine(team, { wait: false }), t);
+        // everyone is held by parallel assignments: wait for the first in line rather than drop the lead to the pool
+        if (!first) [first] = await queryRows<NextInLine>(nextInLine(team, { wait: true }), t);
+        if (!first) return null;
+        // deactivated or moved out of the team since our snapshot: never theirs (each such look follows a committed
+        // change to that person, and the next snapshot leaves them out)
+        if (!first.eligible) throw new QueueMoved();
+        // assigned since our snapshot: look again; after MAX_LOOKS lost races take them anyway (still eligible, and
+        // nobody else holds them now), so a lead never keeps waiting
+        if (!first.unmoved && look < MAX_LOOKS) throw new QueueMoved();
+        await t
+          .update(users)
+          .set({ lastAssignedAt: sql`clock_timestamp()` })
+          .where(eq(users.id, first.id));
+        return first.id;
+      });
+    } catch (e) {
+      if (!(e instanceof QueueMoved)) throw e;
+    }
+  }
+}
+
+/** Lost races (our first in line was assigned after our snapshot) before a pick takes that person anyway. */
+const MAX_LOOKS = 10;
+
+/** Thrown inside pickAutoOwner's savepoint to roll it back, which releases the row that look locked. */
+class QueueMoved extends Error {}
+
+type NextInLine = { id: string; unmoved: boolean; eligible: boolean };
+
+/**
+ * The first salesperson in the team's queue (with skip locked, the first whom nobody holds), locked FOR NO KEY
+ * UPDATE: the lock the stamp itself takes. FOR UPDATE would also conflict with the KEY SHARE lock that every insert
+ * referencing the salesperson takes for its foreign key (a notification, a task, a contact's owner_id), so a pick
+ * would skip or wait for someone a parallel capture merely mentions, and that capture's insert would wait for the
+ * pick's whole capture.
+ * The queue is ranked from this statement's snapshot, in a MATERIALIZED CTE so the planner cannot fold it into the
+ * locked scan of `users`. `unmoved` and `eligible` are computed on the locked row, which Postgres re-reads at its
+ * newest version: `unmoved` is false when its stamp changed after the snapshot, `eligible` when it is no longer an
+ * active salesperson in the team.
+ */
+function nextInLine(team: string, opts: { wait: boolean }) {
+  return sql`
+    with queue as materialized (
+      select id, last_assigned_at, created_at from users
+      where active and role = 'sales' and team = ${team}
+    )
+    select u.id,
+      u.last_assigned_at is not distinct from q.last_assigned_at as unmoved,
+      coalesce(u.active and u.role = 'sales' and u.team = ${team}, false) as eligible
+    from queue q join users u on u.id = q.id
+    order by q.last_assigned_at asc nulls first, q.created_at, q.id
+    limit 1
+    for no key update of u ${opts.wait ? sql`` : sql`skip locked`}`;
 }
 
 // ---------------------------------------------------------------------------

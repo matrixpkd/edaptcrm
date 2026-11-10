@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
-import { db } from "@/db";
+import { db, queryRows } from "@/db";
 import { auditLog, contacts, notifications, ownershipLog, purchases, tasks, users } from "@/db/schema";
 import { createTask } from "@/lib/alerts/core";
 import {
@@ -20,6 +20,7 @@ import { logInteraction } from "@/lib/contacts/interactions";
 import { setManualStage } from "@/lib/contacts/lifecycle";
 import { setSetting } from "@/lib/settings";
 import { DEFAULT_SETTINGS } from "@/lib/settings/defaults";
+import { recomputeContacts } from "@/lib/metrics/recompute";
 import { DAY_MS } from "@/lib/utils";
 import { makeUser, resetDb } from "../support/db";
 
@@ -39,6 +40,106 @@ async function lead(over: Partial<Parameters<typeof captureEnquiry>[0]> = {}) {
 
 async function contactRow(id: string) {
   return (await db.select().from(contacts).where(eq(contacts.id, id)))[0];
+}
+
+/**
+ * Work the parallel-capture tests leave running (transactions holding rows, picks waiting for them). It is released
+ * after each test, so a test that fails early cannot keep salesperson rows locked into the next one, whose resetDb
+ * would wait for them.
+ */
+const openWork: (() => Promise<unknown>)[] = [];
+
+/** Registers running work and how to let it go; the test still awaits `p` itself and sees its result or error. */
+function track<T>(p: Promise<T>, release: () => void = () => {}): Promise<T> {
+  // only stops a failure that happens before the test awaits `p` from being reported a second time as unhandled
+  p.catch(() => {});
+  openWork.push(() => {
+    release();
+    return p;
+  });
+  return p;
+}
+
+async function releaseOpenWork() {
+  await Promise.allSettled(openWork.splice(0).map((release) => release()));
+}
+
+/**
+ * Another connection's transaction (a capture in flight) holding a salesperson's row, with the lock a pick takes,
+ * until `finish`: "stamp" assigns them first, "deactivate" deactivates them, "none" ends without changing them.
+ */
+function holdRow(userId: string) {
+  let finish!: (then: "stamp" | "deactivate" | "none") => void;
+  const finished = new Promise<"stamp" | "deactivate" | "none">((r) => (finish = r));
+  let markLocked!: () => void;
+  const lockedP = new Promise<void>((r) => (markLocked = r));
+  const done = track(
+    db.transaction(async (tx) => {
+      await tx.execute(sql`select id from users where id = ${userId} for no key update`);
+      markLocked();
+      const then = await finished;
+      if (then === "stamp") await tx.update(users).set({ lastAssignedAt: sql`clock_timestamp()` }).where(eq(users.id, userId));
+      if (then === "deactivate") await tx.update(users).set({ active: false }).where(eq(users.id, userId));
+    }),
+    () => finish("none"),
+  );
+  return { locked: Promise.race([lockedP, done]), finish, done };
+}
+
+/** A capture in progress: picks an owner inside its own transaction, which stays open until `end`. */
+function openCapture() {
+  let end!: () => void;
+  const ended = new Promise<void>((r) => (end = r));
+  let picked!: (id: string | null) => void;
+  const pickedP = new Promise<string | null>((r) => (picked = r));
+  const done = track(
+    db.transaction(async (tx) => {
+      picked(await pickAutoOwner("IN", tx));
+      await ended;
+    }),
+    () => end(),
+  );
+  // the pick, or the capture's error when the pick throws
+  const pick = track(Promise.race([pickedP, done.then(() => pickedP)]));
+  return { pick, end, done };
+}
+
+/** Waits until `n` connections to the test database are waiting for a lock (the pick under test has queued). */
+async function waitForLockWaiters(n: number) {
+  for (let i = 0; i < 300; i++) {
+    const [r] = await queryRows<{ n: number }>(
+      sql`select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`,
+    );
+    if (r.n >= n) return;
+    await new Promise((res) => setTimeout(res, 10));
+  }
+  throw new Error(`fewer than ${n} connections ever waited for a lock`);
+}
+
+/** The promise's value; fails when it takes longer than `ms` (something that should not wait, or a hung pick). */
+async function within<T>(ms: number, p: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`still waiting after ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([p, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const pgCode = (e: unknown) => (e as { code?: string }).code ?? (e as { cause?: { code?: string } }).cause?.code;
+
+/** True when another connection can take the lock a pick needs on this salesperson right now, without waiting. */
+async function lockableNow(userId: string): Promise<boolean> {
+  try {
+    await db.transaction((tx) => tx.execute(sql`select id from users where id = ${userId} for no key update nowait`));
+    return true;
+  } catch (e) {
+    if (pgCode(e) === "55P03") return false;
+    throw e;
+  }
 }
 
 describe("contacts assignment", () => {
@@ -113,6 +214,179 @@ describe("contacts assignment", () => {
       expect(await pickAutoOwner("SA")).toBe(k.id);
       await setSetting("assignment", { ...DEFAULT_SETTINGS.assignment, autoAssign: false }, null);
       expect(await pickAutoOwner("AE")).toBeNull();
+    });
+  });
+
+  describe("round robin and lock order under parallel captures", () => {
+    afterEach(releaseOpenWork);
+
+    it("a pick that waited for someone who was then assigned takes the next in line instead", async () => {
+      const p1 = await makeUser({ role: "sales", team: "kerala" });
+      const p2 = await makeUser({ role: "sales", team: "kerala" });
+      // two captures in flight hold both (queue order p1, p2: never assigned, oldest first)
+      const a = holdRow(p1.id);
+      const b = holdRow(p2.id);
+      await Promise.all([a.locked, b.locked]);
+      const pick = track(pickAutoOwner("IN")); // everyone is held: waits for the first in line, p1
+      await waitForLockWaiters(1);
+      b.finish("none"); // b ends without assigning p2
+      await b.done;
+      a.finish("stamp"); // a assigns p1 and commits
+      await a.done;
+      // p1 was assigned a moment ago and p2 never was
+      expect(await within(5_000, pick)).toBe(p2.id);
+    });
+
+    it("takes the person just assigned at once while everyone else is still being assigned", async () => {
+      const p1 = await makeUser({ role: "sales", team: "kerala" });
+      const p2 = await makeUser({ role: "sales", team: "kerala" });
+      const a = holdRow(p1.id);
+      const b = holdRow(p2.id);
+      await Promise.all([a.locked, b.locked]);
+      const pick = track(pickAutoOwner("IN")); // waits for p1
+      await waitForLockWaiters(1);
+      a.finish("stamp"); // p1's lead is in; p2's capture is still in flight
+      await a.done;
+      // p2 is being assigned right now, so p1 is next: no waiting for b
+      expect(await within(5_000, pick)).toBe(p1.id);
+      b.finish("stamp");
+      await b.done;
+    });
+
+    it("a pick in an open capture lets go of someone assigned while it waited and takes the free person at once", async () => {
+      const p1 = await makeUser({ role: "sales", team: "kerala" });
+      const p2 = await makeUser({ role: "sales", team: "kerala" });
+      const p3 = await makeUser({ role: "sales", team: "kerala" });
+      // three captures in flight hold everyone (queue order p1, p2, p3)
+      const x = holdRow(p1.id);
+      const y = holdRow(p2.id);
+      const z = holdRow(p3.id);
+      await Promise.all([x.locked, y.locked, z.locked]);
+      const ours = openCapture(); // waits for p1
+      await waitForLockWaiters(1);
+      z.finish("none"); // p3 is let go without being assigned (ours still waits for p1)
+      await z.done;
+      x.finish("stamp"); // p1 is assigned and committed
+      await x.done;
+      // y is still open: ours neither returns p1 (assigned after it read the queue) nor waits for y
+      expect(await within(5_000, ours.pick)).toBe(p3.id);
+      // the lock it took on p1 while waiting was released when it looked again: it holds only p3
+      expect(await lockableNow(p1.id)).toBe(true);
+      expect(await lockableNow(p3.id)).toBe(false);
+      y.finish("stamp");
+      await y.done;
+      ours.end();
+      await ours.done;
+      // one lead each: p1 (x), p2 (y), p3 (ours)
+      const stamped = await db.select({ at: users.lastAssignedAt }).from(users);
+      expect(stamped.every((u) => u.at !== null)).toBe(true);
+    });
+
+    it("never gives the lead to someone deactivated while the pick waited for them", async () => {
+      const h = await makeUser({ role: "sales", team: "kerala" });
+      const a = holdRow(h.id);
+      await a.locked;
+      const pick = track(pickAutoOwner("IN")); // waits for h
+      await waitForLockWaiters(1);
+      a.finish("deactivate");
+      await a.done;
+      expect(await within(5_000, pick)).toBeNull(); // nobody active is left: the pool
+    });
+
+    it("a salesperson a parallel capture only mentions is neither skipped nor holding that capture up", async () => {
+      const p1 = await makeUser({ role: "sales", team: "kerala" });
+      await makeUser({ role: "sales", team: "kerala" });
+      // a capture in flight notifies p1 (the foreign key locks p1's row only against deletion and key changes)
+      let end!: () => void;
+      const ended = new Promise<void>((r) => (end = r));
+      let notified!: () => void;
+      const notifiedP = new Promise<void>((r) => (notified = r));
+      const notifying = track(
+        db.transaction(async (tx) => {
+          await tx.insert(notifications).values({ userId: p1.id, type: "new_enquiry", title: "Enquired again" });
+          notified();
+          await ended;
+        }),
+        () => end(),
+      );
+      await Promise.race([notifiedP, notifying]);
+      const ours = openCapture();
+      expect(await within(5_000, ours.pick)).toBe(p1.id); // first in line, and nobody is assigning them
+      // another notification for p1 does not wait for our capture to finish
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '2s'`);
+        await tx.insert(notifications).values({ userId: p1.id, type: "new_enquiry", title: "Enquired again" });
+      });
+      ours.end();
+      await ours.done;
+      end();
+      await notifying;
+    });
+
+    it("a lead referred by a contact and that contact's own enquiry, while everyone is busy, both go through", async () => {
+      const a = await makeUser({ role: "sales", team: "kerala" });
+      const b = await makeUser({ role: "sales", team: "kerala" });
+      await db.update(users).set({ lastAssignedAt: new Date() }).where(eq(users.id, a.id)); // b is next in line
+      const r = (await captureEnquiry({ phone: inPhone(), channel: "phone_call", skipAssignment: true, skipAlerts: true })).contact;
+      const busy = holdRow(a.id); // a capture in flight is assigning a
+      await busy.locked;
+      // r's own enquiry has written r's row and is about to pick an owner
+      let pickNow!: () => void;
+      const pickNowP = new Promise<void>((res) => (pickNow = res));
+      let rowWritten!: () => void;
+      const rowWrittenP = new Promise<void>((res) => (rowWritten = res));
+      const own = track(
+        db.transaction(async (tx) => {
+          await tx.update(contacts).set({ updatedAt: new Date() }).where(eq(contacts.id, r.id));
+          rowWritten();
+          await pickNowP;
+          return pickAutoOwner("IN", tx);
+        }),
+        () => pickNow(),
+      );
+      await Promise.race([rowWrittenP, own]);
+      // a new lead referred by r: it waits for r's row before taking a salesperson
+      const referred = track(captureEnquiry({ phone: inPhone(), channel: "phone_call", referrer: { phone: r.phoneE164 }, skipAlerts: true }));
+      await waitForLockWaiters(1);
+      pickNow();
+      // had the referred lead taken b first and then waited for r's row, r's pick would wait for b: a deadlock
+      const [ownPick, referredLead] = await within(5_000, Promise.all([own, referred]));
+      expect(ownPick).toBe(b.id);
+      expect(referredLead.contact.ownerId).toBe(b.id);
+      busy.finish("none");
+      await busy.done;
+    });
+
+    it("an import step whose earlier row names a referrer does not hold up a webhook through that referrer", async () => {
+      await makeUser({ role: "sales", team: "kerala" });
+      const r = (await captureEnquiry({ phone: inPhone(), channel: "phone_call", skipAlerts: true })).contact;
+      const a = (await captureEnquiry({ phone: inPhone(), channel: "phone_call", skipAlerts: true })).contact;
+      const b = (await captureEnquiry({ phone: inPhone(), channel: "phone_call", skipAlerts: true })).contact;
+      // an import step (src/lib/import/commit.ts): its rows in one transaction, each in a savepoint with the import
+      // flags, then one recompute of every touched contact and referrer at the end
+      let rowDone!: () => void;
+      const rowDoneP = new Promise<void>((res) => (rowDone = res));
+      let nextRow!: () => void;
+      const nextRowP = new Promise<void>((res) => (nextRow = res));
+      const step = track(
+        db.transaction(async (t) => {
+          const flags = { channel: "import", skipAlerts: true, skipRecompute: true };
+          await t.transaction((s) => captureEnquiry({ ...flags, phone: a.phoneE164, referrer: { phone: r.phoneE164 } }, s));
+          rowDone();
+          await nextRowP;
+          await t.transaction((s) => captureEnquiry({ ...flags, phone: b.phoneE164 }, s));
+          await recomputeContacts([a.id, b.id, r.id], t);
+        }),
+        () => nextRow(),
+      );
+      await Promise.race([rowDoneP, step]);
+      // meanwhile a webhook for b (a later row of the step) comes through the same referrer, e.g. an affiliate
+      const webhook = track(captureEnquiry({ phone: b.phoneE164, channel: "phone_call", referrer: { phone: r.phoneE164 } }));
+      // it does not wait for the step: had the step's first row locked r, the webhook would hold b and wait for r
+      // while the step's next row waits for b, a deadlock
+      expect((await within(5_000, webhook)).contact.id).toBe(b.id);
+      nextRow();
+      await within(5_000, step);
     });
   });
 

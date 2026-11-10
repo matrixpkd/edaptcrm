@@ -31,12 +31,14 @@ deployed commit. On 30 Oct `/api/health` was ok on `b20b980` and the 15-minute p
 On 9 Nov `4f626e0` went live: `/api/health` ok, the sign-in page loads, signed-in pages redirect to it, and
 `app_errors` had no rows in the last 24 hours.
 
-Locally (10 Nov, macOS, Next 15.5.29): 1,046 unit/integration tests pass with no errors on Node 24 (what Vercel
-runs) and Node 22 (except the intermittent round-robin test under Technical notes), and 94 Playwright tests pass
-(1 phone run skipped by design). Check Vitest's summary for an "Errors" line too: an
-unhandled rejection fails the run even when every test passes.
+Locally (10 Nov, macOS, Next 15.5.29, after the round-robin fix): 1,053 unit/integration tests pass with no errors
+on Node 24 (what Vercel runs) and Node 22, and 94 Playwright tests pass (1 phone run skipped by design). Check
+Vitest's summary for an "Errors" line too: an unhandled rejection fails the run even when every test passes.
 macOS setup: Homebrew `postgresql@16` (started with `pg_ctl -D /opt/homebrew/var/postgresql@16 start`, role
 `postgres`/`postgres` added) and `node@24` / `node@22` from Homebrew on PATH (the default Node 20 cannot run Vitest 5).
+Production runs Postgres 17.11 (checked 10 Nov); `postgresql@17` is also installed from Homebrew for checking
+database behaviour on that version (point `TEST_DATABASE_URL` at a 17 server). On 10 Nov the live database had no
+active salesperson, so every new lead went to the unassigned pool.
 
 ## Open items
 
@@ -68,12 +70,22 @@ Product notes from the last QA pass, not yet changed (each needs a decision, not
 - WhatsApp on the contact page takes two taps (a message template picker opens first).
 
 Technical notes:
-- Round robin (`pickAutoOwner`, `src/lib/contacts/assignment.ts`) has a race, not yet fixed: when four leads for one
-  team are assigned at the same moment, 1–3% of rounds give one salesperson two of them and another none (measured
-  10 Nov, 2,000 rounds, on Node 24 and 22). Likely cause: `FOR UPDATE SKIP LOCKED` with `ORDER BY ... LIMIT 1` locks
-  a row a parallel pick stamped and committed after this statement's snapshot, and Postgres re-checks only the WHERE
-  clause, not the order. So `tests/integration/contacts-review.test.ts` "parallel picks on the root handle..." fails
-  now and then (it makes 10 rounds, so roughly 1 run of `npm test` in 4 to 10). Fix the race; do not loosen the test.
+- Round robin (`pickAutoOwner`, `src/lib/contacts/assignment.ts`) had a race, fixed on 10 Nov. When four leads for
+  one team arrived at the same moment, 1–3% of rounds gave one salesperson two and another none: under READ
+  COMMITTED, `FOR UPDATE SKIP LOCKED` with `ORDER BY ... LIMIT 1` could lock someone a parallel pick had just
+  assigned and committed, because Postgres re-checks the WHERE clause on the newest row, not the order. Each look is
+  now a compare-and-set: it ranks the queue from its snapshot, locks the first free person `FOR NO KEY UPDATE`, and
+  when that person's stamp has moved (or they are no longer active sales in the team) it rolls back its savepoint,
+  which releases the lock, and looks again. 0 duplicates in 3,000 stress rounds on Postgres 16 and 17 (5–16 per 500
+  before). `FOR NO KEY UPDATE` also stops picks skipping, or waiting for, a salesperson whom a parallel insert merely
+  references (a notification, a task). Capture now locks an existing referrer's row before its pick (not for import
+  rows, which recompute at the end of their chunk): that removed a deadlock between a referred lead and the
+  referrer's own enquiry when every salesperson is busy. The doc comment states the rules, and "round robin and lock
+  order under parallel captures" in `tests/integration/contacts-assignment.test.ts` replays each interleaving step
+  by step (each test releases what it holds afterwards, so one failure does not hang the rest). Still open, rare
+  and older than the fix: when every salesperson in a team is busy, a capture that picks twice (a new referrer plus
+  the new lead), or an import chunk, can deadlock with another capture; Postgres cancels one after 1 s and that
+  capture fails.
 - Services run `Promise.all` on a transaction handle; pg@8 queues those (with a deprecation warning), pg@9 will not.
   Keep `pg` on `^8` until they run in turn.
 - `src/components/shell/hydration-gate.tsx` works around a hydration bug in the React that ships with Next 15.5

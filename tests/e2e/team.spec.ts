@@ -157,6 +157,17 @@ test("the admin resets a password and deactivates a leaver, whose contacts move 
   await expect(page.getByText("Reactivated.")).toBeVisible();
 });
 
+test("an admin's own Team page sends them to Your account instead of resetting their password", async ({ pageFor }) => {
+  const me = await makeUser({ role: "admin", name: uniqueName("Self") });
+  const page = await pageFor(me);
+  await page.goto(`/team/${me.id}`);
+  // a reset there would sign them out before the new password showed
+  await expect(page.getByTestId("own-password")).toHaveText("Change your own password under Your account.");
+  await expect(page.getByRole("button", { name: "Reset password" })).toHaveCount(0);
+  await page.getByTestId("own-password").getByRole("link", { name: "Your account" }).click();
+  await expect(page).toHaveURL(/\/account$/);
+});
+
 test("a manager sees the team read-only; sales and support do not get Team", async ({ pageAs, isMobile }) => {
   const manager = await pageAs("manager");
   await openTeam(manager, isMobile);

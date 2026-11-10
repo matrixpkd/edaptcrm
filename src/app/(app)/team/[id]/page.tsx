@@ -177,19 +177,34 @@ export default async function TeammatePage({
             <Card>
               <CardHeader
                 title="Password"
-                description={`Creates a new temporary password and signs them out on every device. It works for ${TEMP_PASSWORD_DAYS} days; they choose their own when they sign in.`}
+                description={
+                  isMe
+                    ? undefined
+                    : `Creates a new temporary password and signs them out on every device. It works for ${TEMP_PASSWORD_DAYS} days; they choose their own when they sign in.`
+                }
               />
               <CardBody>
-                <div className="flex flex-col gap-3">
-                  {tempState !== "own" && (
-                    <p className="text-sm" data-testid="temp-password-status">
-                      {tempState === "temporary"
-                        ? `${u.name.split(" ")[0]} still has a temporary password. It works until ${formatDateTime(u.passwordTemporaryUntil, tz)}.`
-                        : `${u.name.split(" ")[0]}'s temporary password expired on ${formatDateTime(u.passwordTemporaryUntil, tz)}. Reset it to send a new one.`}
-                    </p>
-                  )}
-                  <ResetPassword id={u.id} name={u.name} share={{ email: u.email, phone: u.phone, loginUrl: `${origin}/login` }} />
-                </div>
+                {isMe ? (
+                  // a reset here would sign you out before you saw the new password
+                  <p className="text-sm text-muted" data-testid="own-password">
+                    Change your own password under{" "}
+                    <Link href="/account" className="font-medium text-foreground underline underline-offset-2">
+                      Your account
+                    </Link>
+                    .
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    {tempState !== "own" && (
+                      <p className="text-sm" data-testid="temp-password-status">
+                        {tempState === "temporary"
+                          ? `${u.name.split(" ")[0]} still has a temporary password. It works until ${formatDateTime(u.passwordTemporaryUntil, tz)}.`
+                          : `${u.name.split(" ")[0]}'s temporary password expired on ${formatDateTime(u.passwordTemporaryUntil, tz)}. Reset it to send a new one.`}
+                      </p>
+                    )}
+                    <ResetPassword id={u.id} name={u.name} share={{ email: u.email, phone: u.phone, loginUrl: `${origin}/login` }} />
+                  </div>
+                )}
               </CardBody>
             </Card>
 

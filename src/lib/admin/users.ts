@@ -26,6 +26,9 @@ import { isTimeZone, normalizeUserEmail } from "./validate";
 // Temporary passwords
 // ---------------------------------------------------------------------------
 
+/** Why an admin cannot reset their own password from the Team page. */
+export const OWN_PASSWORD = "Change your own password under Your account.";
+
 /** No 0/O, 1/l/I: easy to read out over the phone. */
 const PASSWORD_ALPHABET = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -266,6 +269,8 @@ export async function updateUser(id: string, input: UserInput, actor: AdminActor
 /**
  * A new temporary password (returned once), working for TEMP_PASSWORD_DAYS; at their next sign-in they choose their
  * own. Ends every session of that person, so the old password stops working, and voids their open reset links.
+ * Refuses the admin's own account: it would end the admin's own session before they saw the new password (and a
+ * sole admin would be locked out). Their own password is changed under Your account.
  */
 export async function resetUserPassword(id: string, actor: AdminActor, tx: Tx = db): Promise<{ tempPassword: string; sessionsEnded: number }> {
   assertAdmin(actor, "Only an admin can reset passwords");
@@ -273,6 +278,8 @@ export async function resetUserPassword(id: string, actor: AdminActor, tx: Tx = 
   const passwordHash = await hashPassword(tempPassword);
   return inTx(tx, async (t) => {
     const u = await lockUser(id, t);
+    // compared on the stored id, so the same uuid written another way (capitals) is still you
+    if (u.id === actor.id) throw new AdminError(OWN_PASSWORD);
     const now = new Date();
     await t.update(users).set({ passwordHash, passwordTemporaryUntil: temporaryPasswordExpiry(now), updatedAt: now }).where(eq(users.id, u.id));
     await voidResetLinks(u.id, now, t);

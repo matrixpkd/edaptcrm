@@ -119,8 +119,9 @@ nightly recompute and the alert rules, timing each phase (about 2.5 minutes loca
    `crm-files`. Copy the database connection strings and the service role key.
 2. **Database schema**: from your laptop, apply the migrations to Supabase using a *session* connection string on
    port 5432 (the session pooler shown below, or the direct connection), not the transaction pooler on 6543.
-   `db:migrate` first runs `drizzle/custom/*.sql` (the `pg_trgm` extension the contact-search indexes need; Drizzle
-   cannot create extensions), then the generated migrations. With `DATABASE_URL` set on the command line the scripts
+   `db:migrate` first runs `drizzle/custom/*.sql` (the `pg_trgm` extension the contact-search indexes need, and the
+   `edapt_take_rate_limit` function the lookup limit calls; Drizzle cannot create either), then the generated
+   migrations. With `DATABASE_URL` set on the command line the scripts
    ignore `.env.local`, so pass the admin's details too; away from localhost the seed refuses the example password and
    anything under 10 characters:
    ```bash

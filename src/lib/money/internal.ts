@@ -4,7 +4,7 @@ import "server-only";
  * and what happens after money moves (recompute, new advocate, abandoned-checkout recovery, alert cleanup).
  * Not part of the public API: import from ./purchases, ./credit or ./index instead.
  */
-import { and, asc, eq, inArray, like, lte, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, like, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import { queryRows, type Database, type Tx } from "@/db";
 import { contacts, enquiries, payments, purchases, tasks, type Contact, type Purchase, type TaskType } from "@/db/schema";
 import { createTask } from "@/lib/alerts/core";
@@ -36,21 +36,31 @@ export function assertActorCan(actor: Actor | null | undefined, permission: Perm
 
 /**
  * Follows merged_into_id to the surviving contact. With `forUpdate` the surviving row is locked for the rest of the
- * transaction (only that one: the merged rows on the way stay unlocked), so a check made on it holds until the
- * commit: an erasure or merge in progress is waited for and then read as it committed.
+ * transaction (the merged rows on the way stay unlocked), so a check made on it holds until the commit: an erasure
+ * or merge in progress is waited for and then read as it committed.
+ *
+ * With `forUpdate`, a live contact (the usual case: every purchase on the import and webhook paths) takes one read:
+ * a locked read that only matches a row that is not merged. A row merged earlier does not match, so it is neither
+ * returned nor locked, and is then read unlocked to follow merged_into_id. A merge that commits while the locked read
+ * waits for it makes the row stop matching in the same way (Postgres keeps the lock it took on that row while
+ * waiting until this transaction ends, as a locked read by id alone would).
  */
 export async function resolveContact(contactId: string, t: Tx, opts: { forUpdate?: boolean } = {}): Promise<Contact | null> {
   // a malformed id from a form or URL is simply "not found", never a raw database error
   if (!isUuid(contactId)) return null;
   let id: string | null = contactId;
   for (let hop = 0; id && hop < 10; hop++) {
-    let [c]: Contact[] = await selectContacts(eq(contacts.id, id), t, { limit: 1 });
-    if (!c) return null;
-    if (!c.mergedIntoId && opts.forUpdate) {
-      [c] = await selectContacts(eq(contacts.id, id), t, { limit: 1, forUpdate: true });
-      if (!c) return null;
+    if (opts.forUpdate) {
+      const [live] = await selectContacts(and(eq(contacts.id, id), isNull(contacts.mergedIntoId))!, t, { limit: 1, forUpdate: true });
+      if (live) return live;
     }
-    if (!c.mergedIntoId) return c;
+    const [c] = await selectContacts(eq(contacts.id, id), t, { limit: 1 });
+    if (!c) return null;
+    if (!c.mergedIntoId) {
+      if (!opts.forUpdate) return c;
+      // its merge was undone between the two reads: read it again, locked
+      continue;
+    }
     id = c.mergedIntoId;
   }
   return null;

@@ -42,28 +42,23 @@ export class RateLimitedError extends Error {
 export type RateGate = { allowed: true } | { allowed: false; retryAfterMinutes: number };
 
 /**
- * Counts one lookup for `subject` when it is under the limit, in one statement (one round trip while typing).
- * Over the limit nothing is recorded and the gate says when a slot frees up.
+ * Counts one lookup for `subject` when it is under the limit. Over the limit nothing is recorded and the gate says
+ * when a slot frees up.
+ *
+ * One statement (one round trip while typing), and race-safe: it calls `edapt_take_rate_limit`
+ * (drizzle/custom/0001_take_rate_limit.sql), which takes a transaction-scoped advisory lock for this bucket and
+ * subject, then counts and inserts, all on the server. Lookups sent at the same moment (a script, or several tabs)
+ * take turns and never overshoot the limit, and the lock is held only while the server runs that call, never across a
+ * round trip, so a burst from one person does not tie up pooled connections. Inside a caller's transaction the lock
+ * is held until that transaction ends. Transaction-scoped locks are safe on Supabase's transaction pooler.
  */
 export async function takeRateLimit(limit: RateLimit, subject: string, now: Date = new Date(), tx: Tx = db): Promise<RateGate> {
   const since = new Date(now.getTime() - limit.windowMinutes * 60_000);
-  const [row] = await queryRows<{ n: number; oldest: string | Date | null }>(
-    sql`
-      with recent as (
-        select count(*)::int as n, min(created_at) as oldest
-        from rate_limit_hits
-        where bucket = ${limit.bucket} and subject = ${subject} and created_at > ${since.toISOString()}::timestamptz
-      ),
-      hit as (
-        insert into rate_limit_hits (bucket, subject, created_at)
-        select ${limit.bucket}, ${subject}, ${now.toISOString()}::timestamptz from recent where n < ${limit.max}
-        returning id
-      )
-      select n, oldest from recent
-    `,
+  const [row] = await queryRows<{ counted: number; oldest: string | Date | null }>(
+    sql`select counted, oldest from edapt_take_rate_limit(${limit.bucket}::text, ${subject}::text, ${limit.max}::integer, ${since.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz)`,
     tx,
   );
-  if ((row?.n ?? 0) < limit.max) return { allowed: true };
+  if ((row?.counted ?? 0) < limit.max) return { allowed: true };
   // a slot frees up when the oldest counted lookup leaves the window
   const oldest = row?.oldest ? new Date(row.oldest).getTime() : now.getTime();
   const frees = oldest + limit.windowMinutes * 60_000;

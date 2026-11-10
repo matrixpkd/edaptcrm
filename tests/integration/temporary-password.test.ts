@@ -34,7 +34,9 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 
-const { createUser, deactivateUser, getAdminUser, reactivateUser, resetUserPassword } = await import("@/lib/admin/users");
+const { revalidatePath } = await import("next/cache");
+const { AdminError } = await import("@/lib/admin/errors");
+const { createUser, deactivateUser, getAdminUser, OWN_PASSWORD, reactivateUser, resetUserPassword } = await import("@/lib/admin/users");
 const { AccountError, changeOwnPassword, chooseOwnPassword, SIGNED_OUT } = await import("@/lib/auth/account");
 const { authenticate, BAD_CREDENTIALS } = await import("@/lib/auth/login");
 const { LOGIN_LIMITS } = await import("@/lib/auth/login-limit");
@@ -155,6 +157,50 @@ describe("temporary passwords from an admin", () => {
     const row = await userRow(old.id);
     expect(await verifyPassword(tempPassword, row.passwordHash)).toBe(true);
     expectWithin(row.passwordTemporaryUntil, t0 + TEMP_PASSWORD_DAYS * DAY, Date.now() + TEMP_PASSWORD_DAYS * DAY);
+  });
+
+  it("an admin cannot reset their own password on the Team page: refused, still signed in, password unchanged", async () => {
+    const admin = await makeUser({ role: "admin" });
+    await db.update(users).set({ passwordHash: await hashPassword("the admin's own password") }).where(eq(users.id, admin.id));
+    expect(await signIn(admin.email, "the admin's own password", "/team")).toEqual({ redirect: "/team" });
+    const here = (await session.currentSessionId())!;
+    await db.insert(sessions).values({ id: "admin-phone", userId: admin.id, expiresAt: new Date(Date.now() + DAY) });
+    const token = "the-admins-own-open-reset-link-01";
+    await db.insert(passwordResets).values({ id: hashResetToken(token), userId: admin.id, expiresAt: new Date(Date.now() + 3600_000) });
+    const before = await userRow(admin.id);
+    vi.mocked(revalidatePath).mockClear();
+
+    // through the Team page's action, and the same uuid in capitals
+    for (const id of [admin.id, admin.id.toUpperCase()]) {
+      expect(await run(() => userActions.resetPasswordAction(null, form({ id })))).toEqual({ ok: false, error: OWN_PASSWORD });
+    }
+    // and the service itself
+    await expect(resetUserPassword(admin.id, admin)).rejects.toThrow(AdminError);
+    expect(OWN_PASSWORD).toBe("Change your own password under Your account.");
+
+    // nothing changed: the same password, no temporary one, every session and the reset link still there
+    const after = await userRow(admin.id);
+    expect(after.passwordHash).toBe(before.passwordHash);
+    expect(after.passwordTemporaryUntil).toBeNull();
+    expect(await sessionIds(admin.id)).toEqual([here, "admin-phone"].sort());
+    expect(await checkResetToken(token)).toMatchObject({ ok: true, userId: admin.id });
+    expect(await db.select().from(auditLog).where(and(eq(auditLog.rowId, admin.id), eq(auditLog.field, "password")))).toEqual([]);
+    expect(revalidatePath).not.toHaveBeenCalled();
+    expect(await session.requireUser()).toMatchObject({ id: admin.id });
+
+    // someone else's reset works as before, and the admin stays signed in to see the new password
+    const mate = await makeUser({ role: "sales" });
+    await db.insert(sessions).values({ id: "mate-laptop", userId: mate.id, expiresAt: new Date(Date.now() + DAY) });
+    const reset = await run(() => userActions.resetPasswordAction(null, form({ id: mate.id })));
+    expect(reset).toEqual({ ok: true, data: { tempPassword: expect.any(String) }, message: "Password reset. They were signed out on 1 device." });
+    const { tempPassword } = (reset as { data: { tempPassword: string } }).data;
+    const mateRow = await userRow(mate.id);
+    expect(await verifyPassword(tempPassword, mateRow.passwordHash)).toBe(true);
+    expect(mateRow.passwordTemporaryUntil).not.toBeNull();
+    expect(await sessionIds(mate.id)).toEqual([]);
+    expect(revalidatePath).toHaveBeenCalledWith(`/team/${mate.id}`);
+    expect(await sessionIds(admin.id)).toEqual([here, "admin-phone"].sort());
+    expect(await session.requireUser(["admin"])).toMatchObject({ id: admin.id });
   });
 
   it("a valid temporary password signs in, but every page, action and API sends the person to choose their own", async () => {

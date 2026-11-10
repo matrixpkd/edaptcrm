@@ -38,9 +38,10 @@ async function editable(user: SessionUser, contactId: string | null): Promise<st
 }
 
 /**
- * A number looked up on the Edit page (a new primary number or an added alternate: a clash says who holds it) counts
- * against the same per-user limit as the Quick Add check, so the Edit page cannot be used to get round it. Counted on
- * its own, before the save, so a save refused for the clash still counts. Returns the message when over the limit.
+ * A number looked up on the Edit page (a new primary number or an added alternate: a clash says who holds it; a
+ * referrer's number: the reply says whether it is in the CRM) counts against the same per-user limit as the Quick Add
+ * check, so the Edit page cannot be used to get round it. Counted on its own, before the save, so a save refused for
+ * the clash still counts. Returns the message when over the limit.
  */
 async function lookupRefused(user: SessionUser): Promise<string | null> {
   try {
@@ -127,7 +128,11 @@ export async function alternateAction(_prev: ActionResult, fd: FormData): Promis
   return ok(undefined, op === "add" ? "Added" : "Removed");
 }
 
-/** Links the referrer found by phone, or clears it (clear=1). */
+/**
+ * Links the referrer found by phone, or clears it (clear=1). The reply says whether the number is in the CRM, so
+ * every valid number looked up counts against the lookup limit, like the other number checks on this page;
+ * clearing and an invalid number look nothing up and count nothing.
+ */
 export async function referrerAction(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   const user = await requireUser();
   const contactId = str(fd, "contactId");
@@ -139,6 +144,8 @@ export async function referrerAction(_prev: ActionResult, fd: FormData): Promise
     if (!raw) return fail("Enter the referrer's phone number", { phone: "Enter a phone number" });
     const np = normalizePhone(raw);
     if (!np) return fail("That is not a valid number", { phone: "That is not a valid number" });
+    const refused = await lookupRefused(user);
+    if (refused) return fail(refused, { phone: refused });
     const ref = await findContactByPhone(np.e164);
     if (!ref)
       return fail("Nobody has this number yet. Add them with Quick Add first.", { phone: "Not in the CRM yet" });

@@ -63,8 +63,11 @@ export async function resetPasswordAction(_prev: ActionResult, fd: FormData): Pr
   if (!admin) return fail(NOT_ADMIN);
   const id = str(fd, "id") ?? "";
   try {
+    // refused for the admin's own account (it would end this session and the re-rendered page would go to /login
+    // before the new password was shown), so the admin is still signed in here
     const { tempPassword, sessionsEnded } = await resetUserPassword(id, admin);
-    // the page shows until when the temporary password works (the panel with the password keeps its state)
+    // The response re-renders /team/[id], which now says until when the temporary password works. The panel with
+    // the password is client state in the same place in the tree, so it stays on screen.
     revalidatePath(`/team/${id}`);
     return ok(
       { tempPassword },

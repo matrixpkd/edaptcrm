@@ -1,16 +1,18 @@
 /**
  * What a salesperson can learn about contacts outside their scope (their own plus the unassigned pool), called the
  * way the browser (or an attacker) would: the Quick Add duplicate check route and save action (the name and owner
- * the spec asks for, nothing more, rate limited per user), the Edit page's number checks (the same limit, and a
- * colleague's contact is not named), the pipeline board's move action and the organisation page's link action (a
- * hidden contact answers like one that does not exist), and the contact page's referrals (a colleague's contacts are
- * only counted). Organisation read models are covered in contacts-queries.test.ts. The session is mocked; routes,
- * actions, services and the database are real.
+ * the spec asks for, nothing more, rate limited per user, and lookups sent at once cannot overshoot the limit), the
+ * Edit page's number checks (the same limit, a referrer's number too, and a colleague's contact is not named), the
+ * pipeline board's move action and the organisation page's link action (a hidden contact answers like one that does
+ * not exist), and the contact page's referrals (a colleague's contacts are only counted). Organisation read models
+ * are covered in contacts-queries.test.ts. The session is mocked; routes, actions, services and the database are
+ * real.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { and, eq, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, queryRows } from "@/db";
+import { poolConfig } from "@/db/connection";
 import { contacts, rateLimitHits, tasks, type Role } from "@/db/schema";
 import {
   QUICK_ADD_LOOKUP_LIMIT,
@@ -56,7 +58,7 @@ const { quickAddAction } = await import("@/app/(app)/contacts/new/actions");
 const { requestTransferAction } = await import("@/app/(app)/contacts/[id]/actions");
 const { moveCardAction } = await import("@/app/(app)/pipeline/actions");
 const { linkPersonAction } = await import("@/app/(app)/organisations/actions");
-const { alternateAction, updateProfileAction } = await import("@/app/(app)/contacts/[id]/edit/actions");
+const { alternateAction, referrerAction, updateProfileAction } = await import("@/app/(app)/contacts/[id]/edit/actions");
 
 function form(values: Record<string, string>): FormData {
   const fd = new FormData();
@@ -238,6 +240,65 @@ describe("rate limit store", () => {
     expect(await takeRateLimit(LIMIT, "u1", at(10.5))).toEqual({ allowed: true });
     const rows = await db.select().from(rateLimitHits).where(and(eq(rateLimitHits.bucket, LIMIT.bucket), eq(rateLimitHits.subject, "u1")));
     expect(rows).toHaveLength(4);
+  });
+
+  /** Waits until another connection is waiting for a lock (here: the advisory lock of a subject). */
+  async function waitForLockWaiters(n: number) {
+    for (let i = 0; i < 300; i++) {
+      const [r] = await queryRows<{ n: number }>(
+        sql`select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`,
+      );
+      if (r.n >= n) return;
+      await new Promise((res) => setTimeout(res, 10));
+    }
+    throw new Error(`fewer than ${n} connections ever waited for a lock`);
+  }
+  const hits = async (bucket: string, subject: string) =>
+    (
+      await db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(rateLimitHits)
+        .where(and(eq(rateLimitHits.bucket, bucket), eq(rateLimitHits.subject, subject)))
+    )[0].n;
+
+  it("lookups sent at the same moment take turns: at one below the limit, exactly one of many is counted", async () => {
+    const limit = { bucket: "test_parallel", max: 300, windowMinutes: 10 };
+    const minuteAgo = new Date(Date.now() - 60_000);
+    await db.insert(rateLimitHits).values(Array.from({ length: limit.max - 1 }, () => ({ bucket: limit.bucket, subject: "u1", createdAt: minuteAgo })));
+    // Open every connection of the pool first, so the lookups below really run at the same moment (a cold pool
+    // connects one by one and staggers them)
+    const poolSize = poolConfig(process.env.DATABASE_URL!).max!; // what src/db opens its pool with
+    expect(poolSize).toBeGreaterThanOrEqual(4);
+    await Promise.all(Array.from({ length: poolSize }, () => db.execute(sql`select pg_sleep(0.05)`)));
+    const gates = await Promise.all(Array.from({ length: 40 }, () => takeRateLimit(limit, "u1")));
+    expect(gates.filter((g) => g.allowed)).toHaveLength(1);
+    expect(gates.filter((g) => !g.allowed)).toEqual(Array(39).fill({ allowed: false, retryAfterMinutes: 9 }));
+    expect(await hits(limit.bucket, "u1")).toBe(limit.max);
+  });
+
+  it("inside a caller's transaction the lookup holds the lock until it commits; one sent meanwhile waits, then counts it", async () => {
+    await db.insert(rateLimitHits).values([0, 1].map(() => ({ bucket: LIMIT.bucket, subject: "u1", createdAt: new Date(Date.now() - 60_000) })));
+    let commit!: () => void;
+    const gate = new Promise<void>((r) => (commit = r));
+    let taken!: (g: unknown) => void;
+    const takenP = new Promise((r) => (taken = r));
+    const held = db.transaction(async (t) => {
+      taken(await takeRateLimit(LIMIT, "u1", new Date(), t));
+      await gate;
+    });
+    // the last slot, counted in the open transaction
+    expect(await takenP).toEqual({ allowed: true });
+    const racing = takeRateLimit(LIMIT, "u1");
+    try {
+      await waitForLockWaiters(1);
+    } finally {
+      commit();
+      await held;
+    }
+    expect(await racing).toEqual({ allowed: false, retryAfterMinutes: 9 });
+    expect(await hits(LIMIT.bucket, "u1")).toBe(LIMIT.max);
+    // another subject never waits for this one
+    expect(await takeRateLimit(LIMIT, "u2")).toEqual({ allowed: true });
   });
 
   it("the nightly prune deletes lookups older than the retention window", async () => {
@@ -475,5 +536,39 @@ describe("Edit page: number checks", () => {
       ok: false,
       error: "This number already belongs to Colleague Secret",
     });
+  });
+
+  it("a referrer's number counts as a lookup: at the limit it is refused before the lookup; clearing and invalid numbers count nothing", async () => {
+    const mine = await contact(s1.id);
+    const theirs = await contact(s2.id, { name: "Colleague Secret" });
+    const other = await contact(s2.id, { name: "Another Secret" });
+    const referrer = async () => (await db.select({ id: contacts.referredById }).from(contacts).where(eq(contacts.id, mine.id)))[0].id;
+    await prefill(s1.id, QUICK_ADD_LOOKUP_LIMIT.max - 1);
+    session.user = s1;
+
+    // under the limit: looked up, linked, and counted once
+    expect(await referrerAction(null, form({ contactId: mine.id, phone: theirs.phoneE164 }))).toMatchObject({ ok: true, message: "Referrer linked" });
+    expect(await referrer()).toBe(theirs.id);
+    expect(await counted(s1.id)).toBe(QUICK_ADD_LOOKUP_LIMIT.max);
+
+    // at the limit: refused before the lookup, whether the number is in the CRM or not, and nothing changes
+    for (const number of [other.phoneE164, "+919847277777"]) {
+      const r = await referrerAction(null, form({ contactId: mine.id, phone: number }));
+      expect(r).toEqual({ ok: false, error: LIMITED, fieldErrors: { phone: LIMITED } });
+    }
+    expect(await referrer()).toBe(theirs.id);
+    expect(await counted(s1.id)).toBe(QUICK_ADD_LOOKUP_LIMIT.max);
+
+    // nothing looked up: an invalid number, and clearing the referrer (which still works at the limit)
+    expect(await referrerAction(null, form({ contactId: mine.id, phone: "12345" }))).toMatchObject({ ok: false, error: "That is not a valid number" });
+    expect(await referrerAction(null, form({ contactId: mine.id, clear: "1" }))).toMatchObject({ ok: true, message: "Referrer removed" });
+    expect(await referrer()).toBeNull();
+    expect(await counted(s1.id)).toBe(QUICK_ADD_LOOKUP_LIMIT.max);
+
+    // the limit is per person: a manager links and is counted once
+    session.user = manager;
+    expect(await referrerAction(null, form({ contactId: mine.id, phone: other.phoneE164 }))).toMatchObject({ ok: true, message: "Referrer linked" });
+    expect(await referrer()).toBe(other.id);
+    expect(await counted(manager.id)).toBe(1);
   });
 });

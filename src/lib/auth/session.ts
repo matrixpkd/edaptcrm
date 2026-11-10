@@ -3,8 +3,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { and, eq, gt } from "drizzle-orm";
-import { db } from "@/db";
+import { and, eq, gt, sql } from "drizzle-orm";
+import { db, queryRows } from "@/db";
 import { sessions, users, type Role, type User } from "@/db/schema";
 import { CHOOSE_PASSWORD_PATH } from "./temporary-password";
 
@@ -17,16 +17,28 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export async function createSession(userId: string): Promise<void> {
+/**
+ * Opens a session for someone who just signed in and sets the cookie. `passwordHash` is the stored hash their
+ * password matched (from authenticate / createFirstAdmin). The session is written only while the person is active
+ * and that is still their password, checked with their row locked (FOR SHARE). So a password change, an admin's
+ * reset or a deactivation that lands between the password check and this insert either commits first (nothing is
+ * opened: returns false, no cookie) or waits for this insert and then ends this session with the others. Without
+ * that, a sign-in with the old password could outlive a reset and choose a password over the admin's new temporary
+ * one.
+ */
+export async function createSession(userId: string, passwordHash: string): Promise<boolean> {
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 3600 * 1000);
   const h = await headers();
-  await db.insert(sessions).values({
-    id: hashToken(token),
-    userId,
-    expiresAt,
-    userAgent: h.get("user-agent")?.slice(0, 300) ?? null,
-  });
+  const userAgent = h.get("user-agent")?.slice(0, 300) ?? null;
+  const opened = await queryRows<{ id: string }>(sql`
+    insert into sessions (id, user_id, expires_at, user_agent)
+    select ${hashToken(token)}::text, u.id, ${expiresAt.toISOString()}::timestamptz, ${userAgent}::text
+    from users u
+    where u.id = ${userId}::uuid and u.active and u.password_hash = ${passwordHash}::text
+    for share
+    returning id`);
+  if (opened.length === 0) return false;
   await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, userId));
   const jar = await cookies();
   jar.set(SESSION_COOKIE, token, {
@@ -36,6 +48,7 @@ export async function createSession(userId: string): Promise<void> {
     path: "/",
     expires: expiresAt,
   });
+  return true;
 }
 
 export async function destroySession(): Promise<void> {

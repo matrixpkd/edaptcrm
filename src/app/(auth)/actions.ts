@@ -2,7 +2,7 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { createSession, currentSessionId, destroySession, requirePasswordChoice } from "@/lib/auth/session";
-import { authenticate, createFirstAdmin } from "@/lib/auth/login";
+import { authenticate, BAD_CREDENTIALS, createFirstAdmin } from "@/lib/auth/login";
 import { AccountError, chooseOwnPassword } from "@/lib/auth/account";
 import { requestPasswordReset, resetPasswordWithToken } from "@/lib/auth/password-reset";
 import { clientIp } from "@/lib/auth/login-limit";
@@ -21,7 +21,8 @@ export async function loginAction(_prev: ActionResult, formData: FormData): Prom
   const ip = clientIp(await headers());
   const r = await authenticate(str(formData, "email"), rawField(formData, "password"), ip);
   if (!r.ok) return fail(r.error);
-  await createSession(r.userId);
+  // false when the password changed (or an admin reset it) in the moment since it was checked
+  if (!(await createSession(r.userId, r.passwordHash))) return fail(BAD_CREDENTIALS);
   // signed in with an admin's temporary password: their own password first (every other page sends them there too)
   if (r.mustChoosePassword) redirect(CHOOSE_PASSWORD_PATH);
   // only a path on this site: never "//evil.com", "/\evil.com" or an absolute URL
@@ -58,7 +59,7 @@ export async function setupAction(_prev: ActionResult, formData: FormData): Prom
     password: rawField(formData, "password"),
   });
   if (!r.ok) return fail(r.error);
-  await createSession(r.userId);
+  if (!(await createSession(r.userId, r.passwordHash))) return fail("Setup is complete. Sign in instead.");
   // Today shows the new owner the "Getting started" checklist: team, prices, assignment, integrations, ...
   redirect("/today");
 }

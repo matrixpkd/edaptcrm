@@ -43,6 +43,16 @@ active salesperson, so every new lead went to the unassigned pool.
 
 ## Open items
 
+**Release step before pushing the temporary-passwords change** (the commits that add
+`drizzle/0003_temporary_passwords.sql`): apply that migration to Supabase first, then push. The new code reads
+`users.password_temporary_until` on every sign-in and every signed-in request, so a deploy without the column breaks
+sign-in and every page. Run `npm run db:migrate` from the laptop with a *session* connection string (README "Deploy",
+step 2); it applies only the migrations not yet recorded, here one `ALTER TABLE "users" ADD COLUMN`, which the
+version now live ignores, so it is safe to run before the push. Check it with
+`select 1 from information_schema.columns where table_name = 'users' and column_name = 'password_temporary_until'`.
+Every later schema change works the same way: `npm run db:generate`, commit the migration with the schema edit, and
+run `npm run db:migrate` against Supabase before the push that deploys it.
+
 Owner actions (outside the code):
 1. Vercel → Settings → Environment Variables: **delete `DATABASE_POOL_MAX`** (it is 3; unset means 1 per instance,
    which leaves more room under load) and **add `SUPABASE_SERVICE_ROLE_KEY`** (file uploads need it).

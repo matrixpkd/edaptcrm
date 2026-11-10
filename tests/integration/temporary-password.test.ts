@@ -5,8 +5,8 @@
  * database are real.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
-import { db } from "@/db";
+import { and, eq, sql } from "drizzle-orm";
+import { db, queryRows } from "@/db";
 import { auditLog, loginAttempts, passwordResets, sessions, users } from "@/db/schema";
 import { makeUser, resetDb } from "../support/db";
 
@@ -35,7 +35,7 @@ vi.mock("next/navigation", () => ({
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 
 const { createUser, deactivateUser, getAdminUser, reactivateUser, resetUserPassword } = await import("@/lib/admin/users");
-const { AccountError, changeOwnPassword, chooseOwnPassword } = await import("@/lib/auth/account");
+const { AccountError, changeOwnPassword, chooseOwnPassword, SIGNED_OUT } = await import("@/lib/auth/account");
 const { authenticate, BAD_CREDENTIALS } = await import("@/lib/auth/login");
 const { LOGIN_LIMITS } = await import("@/lib/auth/login-limit");
 const { hashPassword, verifyPassword } = await import("@/lib/auth/password");
@@ -72,6 +72,36 @@ async function userRow(id: string) {
   return (await db.select().from(users).where(eq(users.id, id)))[0];
 }
 
+async function hashOf(id: string) {
+  return (await userRow(id)).passwordHash;
+}
+
+/** Waits until another connection is waiting for a row lock. */
+async function waitForLockWaiters(n: number) {
+  for (let i = 0; i < 300; i++) {
+    const [r] = await queryRows<{ n: number }>(
+      sql`select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`,
+    );
+    if (r.n >= n) return;
+    await new Promise((res) => setTimeout(res, 10));
+  }
+  throw new Error(`fewer than ${n} connections ever waited for a lock`);
+}
+
+/** An admin's reset of `userId` in its own transaction, held open (row locked, sessions ended) until `commit`. */
+function heldReset(userId: string, admin: Parameters<typeof resetUserPassword>[1]) {
+  let commit!: () => void;
+  const committed = new Promise<void>((r) => (commit = r));
+  let markReady!: (tempPassword: string) => void;
+  const ready = new Promise<string>((r) => (markReady = r));
+  const done = db.transaction(async (t) => {
+    const { tempPassword } = await resetUserPassword(userId, admin, t);
+    markReady(tempPassword);
+    await committed;
+  });
+  return { ready, commit, done };
+}
+
 /** A teammate added by an admin, with the temporary password the admin was shown. */
 async function newTeammate(role: "sales" | "admin" = "sales") {
   const admin = await makeUser({ role: "admin" });
@@ -80,6 +110,13 @@ async function newTeammate(role: "sales" | "admin" = "sales") {
     admin,
   );
   return { admin, user, tempPassword };
+}
+
+/** The hash a correct sign-in matched (what createSession is given). */
+async function checkedHash(email: string, password: string, ip = IP): Promise<string> {
+  const r = await authenticate(email, password, ip);
+  if (!r.ok) throw new Error(r.error);
+  return r.passwordHash;
 }
 
 /** Signs in through the real login action; the session cookie lands in the stubbed jar. */
@@ -122,7 +159,7 @@ describe("temporary passwords from an admin", () => {
 
   it("a valid temporary password signs in, but every page, action and API sends the person to choose their own", async () => {
     const { user, tempPassword } = await newTeammate("admin");
-    expect(await authenticate(user.email, tempPassword, IP)).toEqual({ ok: true, userId: user.id, mustChoosePassword: true });
+    expect(await authenticate(user.email, tempPassword, IP)).toEqual({ ok: true, userId: user.id, passwordHash: await hashOf(user.id), mustChoosePassword: true });
 
     expect(await signIn(user.email, tempPassword, "/contacts")).toEqual({ redirect: "/choose-password" });
     expect(jar.has(session.SESSION_COOKIE)).toBe(true);
@@ -244,7 +281,95 @@ describe("temporary passwords from an admin", () => {
       /already chosen your password/,
     );
     // and the new password signs in like anyone's
-    expect(await authenticate(user.email, "  my very own password ", "10.0.0.7")).toEqual({ ok: true, userId: user.id });
+    expect(await authenticate(user.email, "  my very own password ", "10.0.0.7")).toEqual({ ok: true, userId: user.id, passwordHash: row.passwordHash });
+  });
+
+  it("an admin's reset saved while the person is choosing their password wins: the ended session cannot overwrite it", async () => {
+    const { admin, user, tempPassword } = await newTeammate();
+    const other = await makeUser({ role: "sales" });
+    expect(await signIn(user.email, tempPassword)).toEqual({ redirect: "/choose-password" });
+    const here = (await session.currentSessionId())!;
+    const chosen = { next: "the intruder's choice", confirm: "the intruder's choice" };
+
+    // the screen checked the session, then the admin's reset landed before the choice was saved
+    const { tempPassword: fresh } = await resetUserPassword(user.id, admin);
+    const reset = await userRow(user.id);
+    await expect(chooseOwnPassword(user.id, chosen, here)).rejects.toThrow(SIGNED_OUT);
+    // nor with no session, someone else's session, or an expired one of theirs
+    await db.insert(sessions).values([
+      { id: "someone-else", userId: other.id, expiresAt: new Date(Date.now() + DAY) },
+      { id: "expired-one", userId: user.id, expiresAt: new Date(Date.now() - 60_000) },
+    ]);
+    for (const sid of [null, "someone-else", "expired-one"]) {
+      await expect(chooseOwnPassword(user.id, chosen, sid)).rejects.toThrow(SIGNED_OUT);
+    }
+    // through the screen, the ended session is simply signed out
+    expect(await run(() => authActions.choosePasswordAction(null, form(chosen)))).toEqual({ redirect: "/login" });
+
+    // what the admin set stands: their new temporary password and its expiry
+    const row = await userRow(user.id);
+    expect(row.passwordHash).toBe(reset.passwordHash);
+    expect(row.passwordTemporaryUntil?.getTime()).toBe(reset.passwordTemporaryUntil!.getTime());
+    expect(await verifyPassword(fresh, row.passwordHash)).toBe(true);
+    expect(await db.select().from(auditLog).where(and(eq(auditLog.rowId, user.id), eq(auditLog.newValue, "chosen by the user")))).toEqual([]);
+  });
+
+  it("a choice that waits for an admin's reset in flight is refused once the reset commits", async () => {
+    const { admin, user, tempPassword } = await newTeammate();
+    expect(await signIn(user.email, tempPassword)).toEqual({ redirect: "/choose-password" });
+    const here = (await session.currentSessionId())!;
+
+    const reset = heldReset(user.id, admin);
+    const fresh = await reset.ready;
+    const choosing = chooseOwnPassword(user.id, { next: "the intruder's choice", confirm: "the intruder's choice" }, here);
+    choosing.catch(() => {}); // awaited below, after the reset commits
+    await waitForLockWaiters(1);
+    reset.commit();
+    await reset.done;
+
+    await expect(choosing).rejects.toThrow(SIGNED_OUT);
+    const row = await userRow(user.id);
+    expect(await verifyPassword(fresh, row.passwordHash)).toBe(true);
+    expect(row.passwordTemporaryUntil).not.toBeNull();
+    expect(await sessionIds(user.id)).toEqual([]);
+  });
+
+  it("a sign-in with the old password that races an admin's reset opens no session", async () => {
+    const { admin, user, tempPassword } = await newTeammate();
+
+    // the password was checked just before the reset was saved, the session opened just after: refused
+    const before = await checkedHash(user.email, tempPassword);
+    const { tempPassword: second } = await resetUserPassword(user.id, admin);
+    expect(await session.createSession(user.id, before)).toBe(false);
+    expect(jar.has(session.SESSION_COOKIE)).toBe(false);
+    expect(await sessionIds(user.id)).toEqual([]);
+
+    // a reset in flight: opening the session waits for it, then finds the password changed and opens nothing
+    const checked = await checkedHash(user.email, second);
+    const inFlight = heldReset(user.id, admin);
+    const third = await inFlight.ready;
+    const opening = session.createSession(user.id, checked);
+    await waitForLockWaiters(1);
+    inFlight.commit();
+    await inFlight.done;
+    expect(await opening).toBe(false);
+    expect(jar.has(session.SESSION_COOKIE)).toBe(false);
+    expect(await sessionIds(user.id)).toEqual([]);
+
+    // the sign-in form says the password does not match (it no longer does) and opens nothing either
+    const again = heldReset(user.id, admin);
+    const fourth = await again.ready;
+    const signingIn = signIn(user.email, third);
+    await waitForLockWaiters(1);
+    again.commit();
+    await again.done;
+    expect(await signingIn).toEqual({ ok: false, error: BAD_CREDENTIALS });
+    expect(jar.has(session.SESSION_COOKIE)).toBe(false);
+    expect(await sessionIds(user.id)).toEqual([]);
+
+    // with nothing in the way, the newest temporary password signs in as usual
+    expect(await signIn(user.email, fourth)).toEqual({ redirect: "/choose-password" });
+    expect(await sessionIds(user.id)).toHaveLength(1);
   });
 
   it("changing your own password, or using an emailed reset link, also clears the temporary one", async () => {
@@ -259,7 +384,7 @@ describe("temporary passwords from an admin", () => {
     await resetPasswordWithToken(token, { next: "chosen from the email link", confirm: "chosen from the email link" });
     const row = await userRow(user.id);
     expect(row.passwordTemporaryUntil).toBeNull();
-    expect(await authenticate(user.email, "chosen from the email link", IP)).toEqual({ ok: true, userId: user.id });
+    expect(await authenticate(user.email, "chosen from the email link", IP)).toEqual({ ok: true, userId: user.id, passwordHash: row.passwordHash });
   });
 
   it("chooseOwnPassword refuses a deactivated account", async () => {
@@ -297,7 +422,7 @@ describe("temporary passwords from an admin", () => {
     const u = await makeUser({ role: "manager" });
     expect(u.passwordTemporaryUntil).toBeNull();
     await db.update(users).set({ passwordHash: await hashPassword("their own password") }).where(eq(users.id, u.id));
-    expect(await authenticate(u.email, "their own password", IP)).toEqual({ ok: true, userId: u.id });
+    expect(await authenticate(u.email, "their own password", IP)).toEqual({ ok: true, userId: u.id, passwordHash: await hashOf(u.id) });
     expect(await signIn(u.email, "their own password", "/contacts?q=asha")).toEqual({ redirect: "/contacts?q=asha" });
     expect(await session.requireUser(["manager"])).toMatchObject({ id: u.id, role: "manager" });
     expect(await session.getApiUser()).toMatchObject({ id: u.id });

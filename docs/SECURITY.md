@@ -84,7 +84,7 @@ All rows: status OK (re-verified in this review); the ones marked * are exercise
 | | reassignAction * | `contacts.reassign` (+ service; target must be an active non-support user) | sales/support refused |
 | | requestTransferAction * | `contacts.requestTransfer` (sales only); handing to a colleague only for contacts you own | support refused |
 | | mergeAction *, undoMergeAction * | `contacts.merge` (+ service) | sales refused |
-| contacts/[id]/edit/actions.ts | updateProfileAction *, alternateAction *, referrerAction * | `contacts.edit` + `canEditContact` on the loaded contact; first door only by admin | colleague's / support refused |
+| contacts/[id]/edit/actions.ts | updateProfileAction *, alternateAction *, referrerAction * | `contacts.edit` + `canEditContact` on the loaded contact; first door only by admin; a new primary or alternate number counts against the Quick Add lookup limit before the save (`patchLooksUpPhones`); tested in `visibility.test.ts` | colleague's / support refused; a number held by a colleague's contact is refused without naming it |
 | contacts/[id]/log/actions.ts | logInteractionAction * | `interactions.log` + visible contact (`loadLogScreen`); Mark lost needs edit rights; logging never changes the owner | colleague's refused; support logs anywhere, owner unchanged |
 | contacts/[id]/rate/actions.ts | rateContactAction * | `ratings.edit` + `rateAccess` (never support, own + pool for sales) | refused |
 | contacts/[id]/payment/actions.ts | recordPaymentAction * | `payments.record` + view + `canEditContact`; "verified now" needs `payments.verify` | refused |
@@ -96,7 +96,7 @@ All rows: status OK (re-verified in this review); the ones marked * are exercise
 | duplicates/actions.ts | mergePairAction *, dismissPairAction * | `contacts.merge` (+ service) | sales/support refused |
 | import/actions.ts | prepareImportUploadAction, uploadImportAction, changeSheetAction, saveMappingAction, runImportPhaseAction *, startCommitAction *, startUndoAction *, skipRowsAction, resolveConflictAction, resolveAllConflictsAction, discardBatchAction * | `import.run` (admin) in every action and again in the services; a browser-uploaded key must match `isNewStorageKey("imports", …)` | manager refused |
 | notifications/actions.ts | markReadAction *, markAllReadAction, openNotificationAction * | user id in the WHERE; opening checks the contact is still visible | colleague's notification untouched |
-| organisations/actions.ts | createOrganisationAction *, updateOrganisationAction | `canManageOrganisations` (sales, manager, admin) | support refused |
+| organisations/actions.ts | createOrganisationAction *, updateOrganisationAction, linkPersonAction | `canManageOrganisations` (sales, manager, admin); linking checks view + edit on the contact before any reply about it (`linkContactToOrganisation`); tested in `visibility.test.ts` | support refused; a colleague's contact answers "Contact not found", like a missing one |
 | payments/actions.ts | verifyPaymentAction *, rejectPaymentAction * | `payments.verify` + visible contact | sales/support refused |
 | | recordInstalmentAction *, addPaymentAction *, cancelPurchaseAction * | `payments.record` + view + edit on the row's contact | colleague's purchase refused |
 | | recordRefundAction * | `payments.refund` (manager/admin) | sales refused |
@@ -124,7 +124,8 @@ All rows: status OK (re-verified in this review); the ones marked * are exercise
 ### Pages
 
 Every page under `src/app/(app)` is inside the layout that calls `requireUser()`, and each page re-checks:
-`contacts/[id]` (+ `edit`, `log`, `rate`, `payment`) use `canViewContact` / the screen loaders and 404 otherwise;
+`contacts/[id]` (+ `edit`, `log`, `rate`, `payment`) use `canViewContact` / the screen loaders and 404 otherwise (its
+Referrals tab lists only the referred people the viewer may open and counts the others, in SQL);
 `contacts`, `payments`, `today` scope lists with `contactScope`; `organisations` and `organisations/[id]` scope people
 and deals in SQL (`canViewContactSql`): a salesperson sees only the people and deals of their own and pool contacts,
 a count of the others, and no organisation revenue totals (only roles that see every contact get those); `payments/[purchaseId]` checks the contact; `dashboard` needs

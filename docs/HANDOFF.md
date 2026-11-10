@@ -77,7 +77,10 @@ Technical notes:
   additive table `rate_limit_hits`, pruned nightly: generate its migration with `npm run db:generate` at release,
   and `db:push` `edapt_perf` before benching); organisations show a salesperson only the people and deals of their
   own and pool contacts, a count of the others and no revenue totals; a pipeline drop on a colleague's contact
-  answers like a missing contact. Tests: `tests/integration/visibility.test.ts`, `contacts-queries.test.ts`.
+  answers like a missing contact, and so does linking one to an organisation; a contact's Referrals tab lists only
+  the referred people they may open and counts the others; the Edit page's number checks count against the same
+  lookup limit and do not name a colleague's contact. Tests: `tests/integration/visibility.test.ts`,
+  `contacts-queries.test.ts`.
 - Round robin (`pickAutoOwner`, `src/lib/contacts/assignment.ts`) had a race, fixed on 10 Nov. When four leads for
   one team arrived at the same moment, 1–3% of rounds gave one salesperson two and another none: under READ
   COMMITTED, `FOR UPDATE SKIP LOCKED` with `ORDER BY ... LIMIT 1` could lock someone a parallel pick had just

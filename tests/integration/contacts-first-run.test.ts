@@ -7,7 +7,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { contacts, ownershipLog, type Contact } from "@/db/schema";
 import { captureEnquiry } from "@/lib/contacts/capture";
-import { ContactForbiddenError } from "@/lib/contacts/errors";
+import { ContactForbiddenError, ContactNotFoundError } from "@/lib/contacts/errors";
 import { createOrganisation, linkContactToOrganisation } from "@/lib/contacts/organisations";
 import { updateContactProfile } from "@/lib/contacts/profile";
 import { reassignContacts, requestTransfer } from "@/lib/contacts/assignment";
@@ -108,11 +108,13 @@ describe("linking people from an organisation's page", () => {
     await expect(updateContactProfile(c.id, { type: "business" }, sales)).rejects.toThrow(/Link the school/);
   });
 
-  it("a salesperson cannot link someone else's contact", async () => {
+  it("a salesperson cannot link someone else's contact (it answers like a missing one); support cannot link anyone", async () => {
     const sales = await makeUser({ role: "sales" });
     const other = await makeUser({ role: "sales" });
+    const support = await makeUser({ role: "support", team: null });
     const org = await createOrganisation({ name: "Acme" }, sales);
     const c = await lead({ ownerId: other.id });
-    await expect(linkContactToOrganisation(c.id, org.id, sales)).rejects.toBeInstanceOf(ContactForbiddenError);
+    await expect(linkContactToOrganisation(c.id, org.id, sales)).rejects.toBeInstanceOf(ContactNotFoundError);
+    await expect(linkContactToOrganisation(c.id, org.id, support)).rejects.toBeInstanceOf(ContactForbiddenError);
   });
 });

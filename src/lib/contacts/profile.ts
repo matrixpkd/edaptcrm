@@ -15,7 +15,7 @@ import {
   type RatingSource,
 } from "@/db/schema";
 import { auditDiff } from "@/lib/audit";
-import { can, canEditContact } from "@/lib/auth/permissions";
+import { can, canEditContact, canViewContact } from "@/lib/auth/permissions";
 import { recomputeContact } from "@/lib/metrics/recompute";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
 import { getSettings } from "@/lib/settings";
@@ -208,7 +208,7 @@ export async function updateContactProfile(
       const np = normalizePhone(patch.phone, { defaultCountry });
       if (!np) throw new InvalidPhoneError(patch.phone);
       if (np.e164 !== primary) {
-        await assertPhoneFree(np.e164, c.id, t, "phone");
+        await assertPhoneFree(np.e164, c.id, actor, t, "phone");
         if (altPhones.includes(np.e164)) {
           // promoting an alternate: the old primary stays as an alternate
           altPhones = addUnique(altPhones, [primary], [np.e164]);
@@ -227,7 +227,7 @@ export async function updateContactProfile(
         const np = normalizePhone(raw, { defaultCountry });
         if (!np) throw new InvalidPhoneError(raw, "altPhones");
         if (np.e164 === primary || altPhones.includes(np.e164)) continue;
-        await assertPhoneFree(np.e164, c.id, t, "altPhones");
+        await assertPhoneFree(np.e164, c.id, actor, t, "altPhones");
         altPhones.push(np.e164);
       }
     }
@@ -393,10 +393,14 @@ export async function updateContactProfile(
   });
 }
 
-/** Throws when another contact already holds this number (as primary — merged rows included — or as a live alternate). */
-async function assertPhoneFree(e164: string, selfId: string, tx: Tx, field: string): Promise<void> {
+/**
+ * Throws when another contact already holds this number (as primary — merged rows included — or as a live alternate).
+ * The message names the holder only when the actor may open it; a colleague's contact is not named (the spec shows
+ * a colleague's contact by name and owner only in the Quick Add check, which is rate limited).
+ */
+async function assertPhoneFree(e164: string, selfId: string, actor: Actor, tx: Tx, field: string): Promise<void> {
   const rows = await tx
-    .select({ id: contacts.id, name: contacts.name, mergedIntoId: contacts.mergedIntoId })
+    .select({ id: contacts.id, name: contacts.name, ownerId: contacts.ownerId, mergedIntoId: contacts.mergedIntoId })
     .from(contacts)
     .where(
       and(
@@ -413,7 +417,32 @@ async function assertPhoneFree(e164: string, selfId: string, tx: Tx, field: stri
   if (other.mergedIntoId === selfId) {
     throw new ContactConflictError("This number belongs to a record merged into this one; undo that merge first", other.id, field);
   }
+  if (!canViewContact(actor, other)) {
+    throw new ContactConflictError("This number already belongs to a colleague's contact", undefined, field);
+  }
   throw new ContactConflictError(`This number already belongs to ${other.name}`, other.id, field);
+}
+
+/**
+ * True when saving `patch` on contact `c` would look a number up among other contacts: a new primary number, or an
+ * alternate to add that is not already on the record (the checks in updateContactProfile). The Edit page counts
+ * these against the per-user lookup limit (QUICK_ADD_LOOKUP_LIMIT), since a conflict answers who holds the number,
+ * as the Quick Add check does. Invalid numbers look nothing up.
+ */
+export function patchLooksUpPhones(
+  c: Pick<Contact, "phoneE164" | "phoneCountry" | "altPhones">,
+  patch: Pick<ProfilePatch, "phone" | "altPhones">,
+): boolean {
+  const defaultCountry = c.phoneCountry ?? "IN";
+  if (patch.phone !== undefined) {
+    const np = normalizePhone(patch.phone, { defaultCountry });
+    if (np && np.e164 !== c.phoneE164) return true;
+  }
+  for (const raw of patch.altPhones?.add ?? []) {
+    const np = normalizePhone(raw, { defaultCountry });
+    if (np && np.e164 !== c.phoneE164 && !c.altPhones.includes(np.e164)) return true;
+  }
+  return false;
 }
 
 function sameArray(a: readonly string[], b: readonly string[]): boolean {

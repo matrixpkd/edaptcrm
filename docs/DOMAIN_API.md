@@ -39,11 +39,11 @@ Every service takes an optional `tx: Tx = db` as its last argument and runs insi
 
 **`contacts/queries.ts`** (read models for the screens; highlights)
 - `listAssignableUsers(tx?)` (active sales, then managers, then admins; never support) and `assigneeOptions(tx?)` (the same as picker options, "Kiran (Sales, Kerala)"); `countPoolContacts(viewer, tx?)` (the Contacts list's Pool chip).
-- `getContactReferrals(contactId, viewer?, tx?)`: contacts the viewer may not open come back as `HIDDEN_CONTACT_LABEL` ("Another salesperson's contact") with `hidden: true` and their LTV kept (no name, phone or owner).
+- `getContactReferrals(contactId, viewer, tx?) → { referred, hidden }`: the people this contact referred whom the viewer may open, highest LTV first; the others (a colleague's contacts) are only counted in `hidden` (no name, owner, grade, stage, money or date). Scoped in SQL with `canViewContactSql`. The contact's network value stays the spec's total over everyone they referred.
 - Organisations: `listOrganisations(viewer, opts)`, `getOrganisation(id, viewer | null, tx?)`, `getOrganisationPeople(viewer, orgId, tx?) → { people, hidden }`, `getOrganisationPurchases(orgId, viewer, tx?)`. Scoped in SQL (`canViewContactSql` in `auth/scope.ts`): people and deals signed by contacts the viewer may not open are left out (people only counted in `hidden`); revenue totals and purchase counts only for `canSeeOrganisationTotals(viewer)` (anyone who may open every contact: admin, manager, support), otherwise `null`.
 
 **`contacts/organisations.ts`** (highlights)
-- `linkContactToOrganisation(contactId, orgId | null, actor, tx?) → { changed }`: from the organisation's page; linking makes the person a Business contact, unlinking makes them Individual again (through `updateContactProfile`, so rights, audit and recompute are the same).
+- `linkContactToOrganisation(contactId, orgId | null, actor, tx?) → { changed }`: from the organisation's page; linking makes the person a Business contact, unlinking makes them Individual again (through `updateContactProfile`, so rights, audit and recompute are the same). Rights first: a contact the actor may not open throws `ContactNotFoundError`, like one that does not exist, before any "already linked" reply.
 
 **`contacts/lifecycle.ts`**
 - `setManualStage(contactId, "qualified" | "lost", { lostReason? }, actor, tx?) → Contact`
@@ -57,7 +57,8 @@ Every service takes an optional `tx: Tx = db` as its last argument and runs insi
 - `mergeHistory(contactId, tx?)`
 
 **`contacts/profile.ts`**
-- `updateContactProfile(contactId, patch: ProfilePatch, actor, tx?) → Contact`
+- `updateContactProfile(contactId, patch: ProfilePatch, actor, tx?) → Contact`: a number that belongs to another contact is refused with the holder's name only when the actor may open it ("This number already belongs to a colleague's contact" otherwise).
+- `patchLooksUpPhones(contact, patch) → boolean` (pure): true when the save would look a number up (a new primary number or a new alternate). The Edit page counts those against `QUICK_ADD_LOOKUP_LIMIT` before saving.
 - `applyRating(contactId, RatingInput, "sales" | "self" | "import", actorId | null, tx?, { recompute? }?) → { ratingId, applied, skipped }`
 
 **`contacts/interactions.ts`**

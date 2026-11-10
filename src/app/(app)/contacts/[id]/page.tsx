@@ -390,7 +390,8 @@ export default async function ContactPage({
             <ReferralsTab
               referrer={c.referrer}
               referrerVisible={referrerVisible}
-              referred={referrals}
+              referred={referrals.referred}
+              hiddenReferrals={referrals.hidden}
               networkValueInr={c.networkValueInr}
               referralCount={c.referralCount}
               tz={tz}

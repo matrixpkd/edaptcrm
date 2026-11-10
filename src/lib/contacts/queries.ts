@@ -28,7 +28,7 @@ import {
   type Role,
   type Stage,
 } from "@/db/schema";
-import { can, canViewContact } from "@/lib/auth/permissions";
+import { can } from "@/lib/auth/permissions";
 import { canViewContactSql, contactScope } from "@/lib/auth/scope";
 import { normalizePhone } from "@/lib/phone";
 import { getSetting } from "@/lib/settings";
@@ -47,7 +47,8 @@ type Viewer = { id: string; role: Role };
 
 /**
  * Shown instead of the name of a contact the viewer may not open (a salesperson looking at a colleague's
- * contact): names and phones of other people's contacts are never revealed, but their money still counts.
+ * contact): names and phones of other people's contacts are never revealed. Their money still counts in totals
+ * such as a referrer's network value, but is never shown row by row.
  */
 export const HIDDEN_CONTACT_LABEL = "Another salesperson's contact";
 
@@ -998,17 +999,23 @@ export type ReferralRow = {
   ltvInr: number;
   purchaseCount: number;
   createdAt: Date;
-  /** true when the viewer may not open this contact: the name is HIDDEN_CONTACT_LABEL and the owner is left out */
-  hidden: boolean;
 };
 
 /**
- * The people this contact brought in (live records), highest LTV first. With a viewer, contacts they may not
- * open keep their LTV but lose their name and owner (HIDDEN_CONTACT_LABEL).
+ * The people this contact brought in (live records) whom the viewer may open, highest LTV first. People they may
+ * not open (a colleague's contacts) are only counted in `hidden`: no name, owner, grade, stage, money or date, and
+ * they do not take part in the ordering (as getOrganisationPeople). The contact's network value stays the spec's
+ * total over everyone they referred. Scoped in SQL.
  */
-export async function getContactReferrals(contactId: string, viewer: Viewer | null = null, tx: Tx = db): Promise<ReferralRow[]> {
-  if (!isUuid(contactId)) return [];
-  const rows = await tx
+export async function getContactReferrals(
+  contactId: string,
+  viewer: Viewer,
+  tx: Tx = db,
+): Promise<{ referred: ReferralRow[]; hidden: number }> {
+  if (!isUuid(contactId)) return { referred: [], hidden: 0 };
+  const referredBy = and(eq(contacts.referredById, contactId), isNull(contacts.mergedIntoId));
+  const visible = canViewContactSql(viewer);
+  const referred = await tx
     .select({
       id: contacts.id,
       name: contacts.name,
@@ -1022,14 +1029,18 @@ export async function getContactReferrals(contactId: string, viewer: Viewer | nu
     })
     .from(contacts)
     .leftJoin(users, eq(users.id, contacts.ownerId))
-    .where(and(eq(contacts.referredById, contactId), isNull(contacts.mergedIntoId)))
+    .where(and(referredBy, visible))
     .orderBy(desc(contacts.ltvInr), desc(contacts.createdAt))
     .limit(500);
-  return rows.map((r) =>
-    viewer && !canViewContact(viewer, r)
-      ? { ...r, name: HIDDEN_CONTACT_LABEL, ownerName: null, hidden: true }
-      : { ...r, hidden: false },
-  ) as ReferralRow[];
+  let hidden = 0;
+  if (!can(viewer, "contacts.viewAll")) {
+    const [row] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(contacts)
+      .where(and(referredBy, sql`not ${visible}`));
+    hidden = Number(row?.n ?? 0);
+  }
+  return { referred, hidden };
 }
 
 export type MergeHistoryRow = {

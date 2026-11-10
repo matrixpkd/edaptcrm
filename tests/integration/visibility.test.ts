@@ -1,9 +1,11 @@
 /**
  * What a salesperson can learn about contacts outside their scope (their own plus the unassigned pool), called the
  * way the browser (or an attacker) would: the Quick Add duplicate check route and save action (the name and owner
- * the spec asks for, nothing more, rate limited per user) and the pipeline board's move action (a hidden contact
- * answers like one that does not exist). Organisations are covered with their read models in
- * contacts-queries.test.ts. The session is mocked; routes, actions, services and the database are real.
+ * the spec asks for, nothing more, rate limited per user), the Edit page's number checks (the same limit, and a
+ * colleague's contact is not named), the pipeline board's move action and the organisation page's link action (a
+ * hidden contact answers like one that does not exist), and the contact page's referrals (a colleague's contacts are
+ * only counted). Organisation read models are covered in contacts-queries.test.ts. The session is mocked; routes,
+ * actions, services and the database are real.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
@@ -18,6 +20,8 @@ import {
   takeRateLimit,
 } from "@/lib/auth/rate-limit";
 import { checkQuickAddDuplicate } from "@/lib/contacts/identity";
+import { createOrganisation } from "@/lib/contacts/organisations";
+import { getContactReferrals } from "@/lib/contacts/queries";
 import { makeUser, resetDb } from "../support/db";
 
 type U = { id: string; name: string; email: string; role: Role; team: string | null; timezone: string; active: boolean };
@@ -51,6 +55,8 @@ const checkRoute = await import("@/app/(app)/contacts/new/check/route");
 const { quickAddAction } = await import("@/app/(app)/contacts/new/actions");
 const { requestTransferAction } = await import("@/app/(app)/contacts/[id]/actions");
 const { moveCardAction } = await import("@/app/(app)/pipeline/actions");
+const { linkPersonAction } = await import("@/app/(app)/organisations/actions");
+const { alternateAction, updateProfileAction } = await import("@/app/(app)/contacts/[id]/edit/actions");
 
 function form(values: Record<string, string>): FormData {
   const fd = new FormData();
@@ -304,5 +310,170 @@ describe("pipeline board moves", () => {
       error: "You cannot change stages",
     });
     expect((await db.select().from(contacts).where(eq(contacts.id, mine.id)))[0].stage).toBe("qualified");
+  });
+});
+
+describe("organisation page: linking people", () => {
+  const GONE = { ok: false, error: "Contact not found" };
+  const missing = "00000000-0000-4000-8000-000000000000";
+
+  it("a colleague's contact gets the same reply as one that does not exist, linked, unlinked or merged", async () => {
+    const orgA = await createOrganisation({ name: "GHSS Kozhikode", kind: "school" }, admin);
+    const orgB = await createOrganisation({ name: "Acme" }, admin);
+    const linked = await contact(s2.id, { type: "business", organisationId: orgA.id });
+    const unlinked = await contact(s2.id);
+    const survivor = await contact(s2.id);
+    const merged = await contact(s2.id, { mergedIntoId: survivor.id });
+    session.user = s1;
+
+    for (const id of [linked.id, unlinked.id, merged.id, missing]) {
+      for (const org of [orgA.id, orgB.id]) {
+        expect(await linkPersonAction(null, form({ orgId: org, contactId: id })), `${id} -> ${org}`).toEqual(GONE);
+        expect(await linkPersonAction(null, form({ orgId: org, contactId: id, unlink: "1" })), `${id} unlink`).toEqual(GONE);
+      }
+    }
+    const after = await db.select({ id: contacts.id, org: contacts.organisationId, type: contacts.type }).from(contacts);
+    expect(Object.fromEntries(after.map((c) => [c.id, [c.org, c.type]]))).toEqual({
+      [linked.id]: [orgA.id, "business"],
+      [unlinked.id]: [null, "individual"],
+      [survivor.id]: [null, "individual"],
+      [merged.id]: [null, "individual"],
+    });
+  });
+
+  it("own and pool contacts keep their replies; managers and admins link anyone's; support cannot link", async () => {
+    const org = await createOrganisation({ name: "GHSS Kozhikode", kind: "school" }, admin);
+    const mine = await contact(s1.id);
+    const pool = await contact(null);
+    const theirs = await contact(s2.id, { type: "business", organisationId: org.id });
+    const survivor = await contact(s2.id);
+    const merged = await contact(s2.id, { mergedIntoId: survivor.id });
+
+    session.user = s1;
+    expect(await linkPersonAction(null, form({ orgId: org.id, contactId: mine.id }))).toMatchObject({ ok: true, message: "Linked to this organisation" });
+    expect(await linkPersonAction(null, form({ orgId: org.id, contactId: mine.id }))).toMatchObject({ ok: true, message: "Already linked" });
+    expect(await linkPersonAction(null, form({ orgId: org.id, contactId: pool.id, unlink: "1" }))).toMatchObject({
+      ok: true,
+      message: "Already unlinked",
+    });
+
+    for (const boss of [manager, admin]) {
+      session.user = boss;
+      expect(await linkPersonAction(null, form({ orgId: org.id, contactId: theirs.id }))).toMatchObject({ ok: true, message: "Already linked" });
+      expect(await linkPersonAction(null, form({ orgId: org.id, contactId: merged.id }))).toEqual({
+        ok: false,
+        error: "This contact was merged into another record",
+      });
+    }
+    session.user = manager;
+    expect(await linkPersonAction(null, form({ orgId: org.id, contactId: theirs.id, unlink: "1" }))).toMatchObject({ ok: true, message: "Unlinked" });
+
+    session.user = support;
+    expect(await linkPersonAction(null, form({ orgId: org.id, contactId: mine.id, unlink: "1" }))).toEqual({
+      ok: false,
+      error: "Only sales, managers and admins can link people",
+    });
+    expect((await db.select().from(contacts).where(eq(contacts.id, mine.id)))[0].organisationId).toBe(org.id);
+  });
+});
+
+describe("contact page: referrals", () => {
+  it("a salesperson sees the people they may open and only a count of a colleague's; everyone else sees all", async () => {
+    const referrer = await contact(s1.id, { name: "Ravi", networkValueInr: 61000 });
+    const own = await contact(s1.id, { name: "Own Friend", referredById: referrer.id, ltvInr: 1000, grade: "C", stage: "first_purchase" });
+    const pool = await contact(null, { name: "Pool Friend", referredById: referrer.id, ltvInr: 0, grade: "D", stage: "new" });
+    const theirs = await contact(s2.id, { name: "Their Friend", referredById: referrer.id, ltvInr: 60000, grade: "A", stage: "repeat" });
+    const theirsToo = await contact(s2.id, { name: "Another Friend", referredById: referrer.id, ltvInr: 500 });
+    // merged-away rows are never listed or counted
+    await contact(s2.id, { referredById: referrer.id, mergedIntoId: theirs.id, ltvInr: 9 });
+
+    const forSales = await getContactReferrals(referrer.id, s1);
+    expect(forSales.hidden).toBe(2);
+    expect(forSales.referred.map((r) => r.id)).toEqual([own.id, pool.id]);
+    expect(forSales.referred[0]).toMatchObject({ name: "Own Friend", ownerName: "Asha", ltvInr: 1000, grade: "C", stage: "first_purchase" });
+    const sent = JSON.stringify(forSales);
+    for (const leak of [theirs.id, theirsToo.id, "Their Friend", "Another Friend", "Biju", "60000", '"A"', "repeat"]) {
+      expect(sent).not.toContain(leak);
+    }
+
+    for (const viewer of [manager, admin, support]) {
+      const all = await getContactReferrals(referrer.id, viewer);
+      expect(all.hidden).toBe(0);
+      expect(all.referred.map((r) => r.id)).toEqual([theirs.id, own.id, theirsToo.id, pool.id]);
+      expect(all.referred[0]).toMatchObject({ name: "Their Friend", ownerName: "Biju", ltvInr: 60000, grade: "A", stage: "repeat" });
+    }
+    // the colleague sees their own two and the pool's, and counts Asha's
+    const forColleague = await getContactReferrals(referrer.id, s2);
+    expect(forColleague.hidden).toBe(1);
+    expect(forColleague.referred.map((r) => r.id)).toEqual([theirs.id, theirsToo.id, pool.id]);
+  });
+});
+
+describe("Edit page: number checks", () => {
+  const LIMITED = "Too many number checks in a short time. Try again in 9 minutes.";
+  const counted = async (userId: string) =>
+    (await db.select({ n: sql<number>`count(*)::int` }).from(rateLimitHits).where(eq(rateLimitHits.subject, userId)))[0].n;
+  function profileForm(c: { id: string; name: string }, phone: string) {
+    return form({ contactId: c.id, name: c.name, phone, type: "individual" });
+  }
+
+  it("a clash with a colleague's contact does not name it; whoever may open the holder gets its name", async () => {
+    const mine = await contact(s1.id);
+    const theirs = await contact(s2.id, { name: "Colleague Secret", altPhones: ["+919847299999"] });
+    const pool = await contact(null, { name: "Pool Holder" });
+    const hidden = "This number already belongs to a colleague's contact";
+
+    session.user = s1;
+    for (const number of [theirs.phoneE164, "+919847299999"]) {
+      expect(await alternateAction(null, form({ contactId: mine.id, kind: "phone", op: "add", value: number }))).toEqual({
+        ok: false,
+        error: hidden,
+        fieldErrors: { altPhones: hidden },
+      });
+      expect(await updateProfileAction(null, profileForm(mine, number))).toEqual({ ok: false, error: hidden, fieldErrors: { phone: hidden } });
+    }
+    expect(await alternateAction(null, form({ contactId: mine.id, kind: "phone", op: "add", value: pool.phoneE164 }))).toMatchObject({
+      ok: false,
+      error: "This number already belongs to Pool Holder",
+    });
+    // every number looked up counted, the refused ones too
+    expect(await counted(s1.id)).toBe(5);
+
+    for (const boss of [manager, admin]) {
+      session.user = boss;
+      expect(await alternateAction(null, form({ contactId: mine.id, kind: "phone", op: "add", value: theirs.phoneE164 }))).toMatchObject({
+        ok: false,
+        error: "This number already belongs to Colleague Secret",
+      });
+    }
+    expect((await db.select().from(contacts).where(eq(contacts.id, mine.id)))[0].altPhones).toEqual([]);
+  });
+
+  it("over the lookup limit the Edit page refuses before looking the number up; saves that look nothing up still work", async () => {
+    const mine = await contact(s1.id, { altPhones: ["+919847288888"] });
+    const theirs = await contact(s2.id, { name: "Colleague Secret" });
+    await prefill(s1.id, QUICK_ADD_LOOKUP_LIMIT.max);
+    session.user = s1;
+
+    const add = await alternateAction(null, form({ contactId: mine.id, kind: "phone", op: "add", value: theirs.phoneE164 }));
+    expect(add).toEqual({ ok: false, error: LIMITED, fieldErrors: { value: LIMITED } });
+    const save = await updateProfileAction(null, profileForm(mine, theirs.phoneE164));
+    expect(save).toEqual({ ok: false, error: LIMITED, fieldErrors: { phone: LIMITED } });
+    for (const r of [add, save]) expect(JSON.stringify(r)).not.toContain("Colleague");
+    expect(await counted(s1.id)).toBe(QUICK_ADD_LOOKUP_LIMIT.max);
+
+    // nothing looked up: the same number (typed differently), a number already on the record, removing, emails
+    await expect(updateProfileAction(null, profileForm(mine, mine.phoneE164.replace("+91", "0")))).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(await alternateAction(null, form({ contactId: mine.id, kind: "phone", op: "add", value: "+919847288888" }))).toMatchObject({ ok: true });
+    expect(await alternateAction(null, form({ contactId: mine.id, kind: "phone", op: "remove", value: "+919847288888" }))).toMatchObject({ ok: true });
+    expect(await alternateAction(null, form({ contactId: mine.id, kind: "email", op: "add", value: "x@example.com" }))).toMatchObject({ ok: true });
+    expect(await counted(s1.id)).toBe(QUICK_ADD_LOOKUP_LIMIT.max);
+
+    // the limit is per person: a manager is not held up
+    session.user = manager;
+    expect(await alternateAction(null, form({ contactId: mine.id, kind: "phone", op: "add", value: theirs.phoneE164 }))).toMatchObject({
+      ok: false,
+      error: "This number already belongs to Colleague Secret",
+    });
   });
 });

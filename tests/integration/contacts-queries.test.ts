@@ -413,20 +413,14 @@ describe("contacts read models", () => {
         firstOwnerName: "Asha",
         organisation: { id: org.id, name: "Govt School Koduvally" },
       });
-      const refs = await getContactReferrals(referrer.id);
-      expect(refs).toHaveLength(1);
-      expect(refs[0]).toMatchObject({ id: friend.id, ltvInr: 999, name: "Sana", hidden: false });
-      // another salesperson sees the money but not who it is
+      const refs = await getContactReferrals(referrer.id, admin);
+      expect(refs).toEqual({ referred: [expect.objectContaining({ id: friend.id, ltvInr: 999, name: "Sana" })], hidden: 0 });
+      // another salesperson only learns that one more person was referred (the network value stays the spec's total);
+      // the referral row itself is covered for every role in visibility.test.ts
       await db.update(contacts).set({ ownerId: sales.id }).where(eq(contacts.id, friend.id));
       const colleague = await makeUser({ role: "sales", name: "Binu" });
-      expect((await getContactReferrals(referrer.id, colleague))[0]).toMatchObject({
-        id: friend.id,
-        name: "Another salesperson's contact",
-        ownerName: null,
-        ltvInr: 999,
-        hidden: true,
-      });
-      expect((await getContactReferrals(referrer.id, sales))[0]).toMatchObject({ name: "Sana", ownerName: "Asha", hidden: false });
+      expect(await getContactReferrals(referrer.id, colleague)).toEqual({ referred: [], hidden: 1 });
+      expect((await getContactReferrals(referrer.id, sales)).referred[0]).toMatchObject({ name: "Sana", ownerName: "Asha" });
       expect(rh?.networkValueInr).toBe(999);
 
       const x = await newContact({ name: "Twin" });

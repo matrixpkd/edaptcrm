@@ -2,7 +2,8 @@ import "server-only";
 import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { contacts, duplicateReviews, users, type Contact, type Role, type Stage } from "@/db/schema";
-import { canViewContact } from "@/lib/auth/permissions";
+import { can, canViewContact } from "@/lib/auth/permissions";
+import { enforceRateLimit, QUICK_ADD_LOOKUP_LIMIT } from "@/lib/auth/rate-limit";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
 import { resolveSurvivor } from "./internal";
 import { selectContacts } from "./rows";
@@ -148,35 +149,54 @@ export async function flagPossibleDuplicates(
   return flagged;
 }
 
+export type QuickAddExisting =
+  | {
+      /** the user may open the contact (their own, the pool, or anyone's for manager, admin and support) */
+      visible: true;
+      id: string;
+      name: string;
+      ownerId: string | null;
+      ownerName: string | null;
+      stage: Stage;
+      grade: "A" | "B" | "C" | "D" | null;
+    }
+  | {
+      /**
+       * A salesperson typing a colleague's number: only the name and owner the spec asks for, so they can ask for a
+       * transfer instead of creating a clash. Never the stage, grade or anything else on the record.
+       */
+      visible: false;
+      /** only for someone who may request a transfer (requestTransferAction re-checks every right on the server) */
+      id: string | null;
+      name: string;
+      ownerId: string | null;
+      ownerName: string | null;
+    };
+
 export type QuickAddDuplicate = {
   valid: boolean;
   e164: string | null;
   international: string | null;
-  existing: null | {
-    id: string;
-    name: string;
-    ownerId: string | null;
-    ownerName: string | null;
-    stage: Stage;
-    grade: "A" | "B" | "C" | "D" | null;
-    /** false when this user cannot open the contact (a salesperson looking at a colleague's contact) */
-    visible: boolean;
-  };
+  existing: QuickAddExisting | null;
 };
 
 /**
- * The live duplicate check while typing in Quick Add: shows the existing contact and its owner before
- * anything is saved. A salesperson who cannot open the contact still sees its name and owner (visible=false)
- * so they can ask for a transfer instead of creating a clash.
+ * The live duplicate check while typing in Quick Add (and again on save): shows the existing contact and its owner
+ * before anything is saved (spec "One person, one record", rule 5). A salesperson who cannot open the contact sees
+ * only its name and owner (visible=false) so they can ask for a transfer instead of creating a clash.
+ *
+ * Every lookup of a valid number counts against QUICK_ADD_LOOKUP_LIMIT for the user; over it, RateLimitedError is
+ * thrown before anything is looked up.
  */
 export async function checkQuickAddDuplicate(
   rawPhone: string,
   user: { id: string; role: Role },
-  opts: { dialCode?: string | null; defaultCountry?: string; tx?: Tx } = {},
+  opts: { dialCode?: string | null; defaultCountry?: string; tx?: Tx; now?: Date } = {},
 ): Promise<QuickAddDuplicate> {
   const tx = opts.tx ?? db;
   const np = normalizePhone(rawPhone, { dialCode: opts.dialCode, defaultCountry: opts.defaultCountry });
   if (!np) return { valid: false, e164: null, international: null, existing: null };
+  await enforceRateLimit(QUICK_ADD_LOOKUP_LIMIT, user.id, opts.now ?? new Date(), tx);
   const contact = await findContactByPhone(np.e164, tx);
   if (!contact) return { valid: true, e164: np.e164, international: np.international, existing: null };
   let ownerName: string | null = null;
@@ -184,18 +204,22 @@ export async function checkQuickAddDuplicate(
     const rows = await tx.select({ name: users.name }).from(users).where(eq(users.id, contact.ownerId)).limit(1);
     ownerName = rows[0]?.name ?? null;
   }
-  return {
-    valid: true,
-    e164: np.e164,
-    international: np.international,
-    existing: {
-      id: contact.id,
-      name: contact.name,
-      ownerId: contact.ownerId,
-      ownerName,
-      stage: contact.stage,
-      grade: contact.grade,
-      visible: canViewContact(user, contact),
-    },
-  };
+  const existing: QuickAddExisting = canViewContact(user, contact)
+    ? {
+        visible: true,
+        id: contact.id,
+        name: contact.name,
+        ownerId: contact.ownerId,
+        ownerName,
+        stage: contact.stage,
+        grade: contact.grade,
+      }
+    : {
+        visible: false,
+        id: can(user, "contacts.requestTransfer") ? contact.id : null,
+        name: contact.name,
+        ownerId: contact.ownerId,
+        ownerName,
+      };
+  return { valid: true, e164: np.e164, international: np.international, existing };
 }

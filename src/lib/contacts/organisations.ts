@@ -3,10 +3,16 @@ import { and, eq, ne, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { ORG_KINDS, organisations, type OrgKind, type Organisation } from "@/db/schema";
 import { audit, auditDiff } from "@/lib/audit";
-import { can } from "@/lib/auth/permissions";
+import { can, canEditContact, canViewContact } from "@/lib/auth/permissions";
 import { normalizePhone } from "@/lib/phone";
-import { ContactConflictError, ContactForbiddenError, ContactNotFoundError, ContactValidationError } from "./errors";
-import { getLiveContact, withTx, type Actor } from "./internal";
+import {
+  ContactConflictError,
+  ContactForbiddenError,
+  ContactMergedError,
+  ContactNotFoundError,
+  ContactValidationError,
+} from "./errors";
+import { getContact, withTx, type Actor } from "./internal";
 import { updateContactProfile } from "./profile";
 import { cleanText, countryCode, isUuid } from "./rules";
 
@@ -127,6 +133,9 @@ export async function updateOrganisation(
  * Links a person to an organisation from the organisation's page (they become a Business contact), or unlinks
  * them (`orgId` null: back to Individual, since a business contact needs its organisation). Goes through
  * updateContactProfile, so the edit rights, the audit trail and the recompute are the same as the Edit page's.
+ * The rights are checked before any reply about the contact: one the actor may not open (a colleague's) throws
+ * ContactNotFoundError like an id that does not exist, so "already linked" cannot tell a salesperson which
+ * organisation a colleague's contact belongs to.
  */
 export async function linkContactToOrganisation(
   contactId: string,
@@ -135,7 +144,12 @@ export async function linkContactToOrganisation(
   tx: Tx = db,
 ): Promise<{ changed: boolean }> {
   return withTx(tx, async (t) => {
-    const before = await getLiveContact(contactId, t);
+    const before = await getContact(contactId, t);
+    if (!canViewContact(actor, before)) throw new ContactNotFoundError();
+    if (before.mergedIntoId) throw new ContactMergedError(before.mergedIntoId);
+    if (!can(actor, "contacts.edit") || !canEditContact(actor, before)) {
+      throw new ContactForbiddenError("You cannot edit this contact");
+    }
     if (orgId) {
       if (!isUuid(orgId)) throw new ContactNotFoundError("Organisation");
       const o = await t.select({ id: organisations.id }).from(organisations).where(eq(organisations.id, orgId)).limit(1);

@@ -4,11 +4,12 @@ import { redirect } from "next/navigation";
 import type { Contact, ContactType } from "@/db/schema";
 import { fail, list, ok, str, type ActionResult } from "@/lib/action";
 import { can, canEditContact } from "@/lib/auth/permissions";
+import { QUICK_ADD_LOOKUP_LIMIT, RateLimitedError, enforceRateLimit } from "@/lib/auth/rate-limit";
 import { requireUser, type SessionUser } from "@/lib/auth/session";
 import { ContactNotFoundError } from "@/lib/contacts/errors";
 import { findContactByPhone } from "@/lib/contacts/identity";
 import { getContact } from "@/lib/contacts/internal";
-import { updateContactProfile, type ProfilePatch } from "@/lib/contacts/profile";
+import { patchLooksUpPhones, updateContactProfile, type ProfilePatch } from "@/lib/contacts/profile";
 import { normalizePhone } from "@/lib/phone";
 import { isUuid } from "@/lib/utils";
 import { actionError } from "../../_components/action-errors";
@@ -34,6 +35,21 @@ async function loadEditable(
 
 async function editable(user: SessionUser, contactId: string | null): Promise<string | null> {
   return (await loadEditable(user, contactId)).error;
+}
+
+/**
+ * A number looked up on the Edit page (a new primary number or an added alternate: a clash says who holds it) counts
+ * against the same per-user limit as the Quick Add check, so the Edit page cannot be used to get round it. Counted on
+ * its own, before the save, so a save refused for the clash still counts. Returns the message when over the limit.
+ */
+async function lookupRefused(user: SessionUser): Promise<string | null> {
+  try {
+    await enforceRateLimit(QUICK_ADD_LOOKUP_LIMIT, user.id);
+    return null;
+  } catch (e) {
+    if (e instanceof RateLimitedError) return e.message;
+    throw e;
+  }
 }
 
 function refresh(contactId: string) {
@@ -72,6 +88,10 @@ export async function updateProfileAction(_prev: ActionResult, fd: FormData): Pr
   if ((country ?? null) !== (loaded.contact.country ?? null)) patch.country = country;
   const door = str(fd, "firstDoor");
   if (door && user.role === "admin") patch.firstDoor = door;
+  if (patchLooksUpPhones(loaded.contact, patch)) {
+    const refused = await lookupRefused(user);
+    if (refused) return fail(refused, { phone: refused });
+  }
   try {
     await updateContactProfile(contactId!, patch, user);
   } catch (e) {
@@ -85,16 +105,21 @@ export async function updateProfileAction(_prev: ActionResult, fd: FormData): Pr
 export async function alternateAction(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   const user = await requireUser();
   const contactId = str(fd, "contactId");
-  const denied = await editable(user, contactId);
-  if (denied) return fail(denied);
+  const loaded = await loadEditable(user, contactId);
+  if (loaded.error !== null) return fail(loaded.error);
   const kind = str(fd, "kind");
   const op = str(fd, "op");
   const value = str(fd, "value");
   if ((kind !== "phone" && kind !== "email") || (op !== "add" && op !== "remove")) return fail("Unknown change");
   if (!value) return fail(kind === "phone" ? "Enter a phone number" : "Enter an email address", { value: "Required" });
   const change = op === "add" ? { add: [value] } : { remove: [value] };
+  const patch: ProfilePatch = kind === "phone" ? { altPhones: change } : { altEmails: change };
+  if (patchLooksUpPhones(loaded.contact, patch)) {
+    const refused = await lookupRefused(user);
+    if (refused) return fail(refused, { value: refused });
+  }
   try {
-    await updateContactProfile(contactId!, kind === "phone" ? { altPhones: change } : { altEmails: change }, user);
+    await updateContactProfile(contactId!, patch, user);
   } catch (e) {
     return actionError(e);
   }

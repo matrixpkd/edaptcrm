@@ -86,18 +86,19 @@ All rows: status OK (re-verified in this review); the ones marked * are exercise
 | | reassignAction * | `contacts.reassign` (+ service; target must be an active non-support user) | sales/support refused |
 | | requestTransferAction * | `contacts.requestTransfer` (sales only); handing to a colleague only for contacts you own | support refused |
 | | mergeAction *, undoMergeAction * | `contacts.merge` (+ service) | sales refused |
-| contacts/[id]/edit/actions.ts | updateProfileAction *, alternateAction *, referrerAction * | `contacts.edit` + `canEditContact` on the loaded contact; first door only by admin | colleague's / support refused |
+| contacts/[id]/edit/actions.ts | updateProfileAction *, alternateAction *, referrerAction * | `contacts.edit` + `canEditContact` on the loaded contact; first door only by admin; a new primary or alternate number counts against the Quick Add lookup limit before the save (`patchLooksUpPhones`); tested in `visibility.test.ts` | colleague's / support refused; a number held by a colleague's contact is refused without naming it |
 | contacts/[id]/log/actions.ts | logInteractionAction * | `interactions.log` + visible contact (`loadLogScreen`); Mark lost needs edit rights; logging never changes the owner | colleague's refused; support logs anywhere, owner unchanged |
 | contacts/[id]/rate/actions.ts | rateContactAction * | `ratings.edit` + `rateAccess` (never support, own + pool for sales) | refused |
 | contacts/[id]/payment/actions.ts | recordPaymentAction * | `payments.record` + view + `canEditContact`; "verified now" needs `payments.verify` | refused |
-| contacts/new/actions.ts | quickAddAction | `contacts.create`; sales own what they add; owner choice only for manager/admin (validated assignable); support never owns | duplicate shows owner name by spec |
+| contacts/new/actions.ts | quickAddAction | `contacts.create`; sales own what they add; owner choice only for manager/admin (validated assignable); support never owns; its duplicate check counts against the Quick Add lookup limit | duplicate shows name and owner only, by spec |
+| pipeline/actions.ts | moveCardAction | `contacts.setStage`, then view + edit on the contact before any reply about it (`moveBoardCard`); tested in `visibility.test.ts` | colleague's contact answers "That contact no longer exists", like a missing one |
 | contacts/actions.ts | bulkReassignAction * | `contacts.reassign`, ≤ 4 pages of ids | sales refused |
 | | saveViewAction * | own views; sharing needs manager/admin | sales cannot share |
 | | deleteViewAction * | own views (admin also shared ones), in the WHERE | colleague's view untouched |
 | duplicates/actions.ts | mergePairAction *, dismissPairAction * | `contacts.merge` (+ service) | sales/support refused |
 | import/actions.ts | prepareImportUploadAction, uploadImportAction, changeSheetAction, saveMappingAction, runImportPhaseAction *, startCommitAction *, startUndoAction *, skipRowsAction, resolveConflictAction, resolveAllConflictsAction, discardBatchAction * | `import.run` (admin) in every action and again in the services; a browser-uploaded key must match `isNewStorageKey("imports", …)` | manager refused |
 | notifications/actions.ts | markReadAction *, markAllReadAction, openNotificationAction * | user id in the WHERE; opening checks the contact is still visible | colleague's notification untouched |
-| organisations/actions.ts | createOrganisationAction *, updateOrganisationAction | `canManageOrganisations` (sales, manager, admin) | support refused |
+| organisations/actions.ts | createOrganisationAction *, updateOrganisationAction, linkPersonAction | `canManageOrganisations` (sales, manager, admin); linking checks view + edit on the contact before any reply about it (`linkContactToOrganisation`); tested in `visibility.test.ts` | support refused; a colleague's contact answers "Contact not found", like a missing one |
 | payments/actions.ts | verifyPaymentAction *, rejectPaymentAction * | `payments.verify` + visible contact | sales/support refused |
 | | recordInstalmentAction *, addPaymentAction *, cancelPurchaseAction * | `payments.record` + view + edit on the row's contact | colleague's purchase refused |
 | | recordRefundAction * | `payments.refund` (manager/admin) | sales refused |
@@ -119,15 +120,17 @@ All rows: status OK (re-verified in this review); the ones marked * are exercise
 | POST/GET /api/webhooks/{tagmango,libromi,pabbly/meta-lead,pabbly/website-form,pabbly/whatsapp} | shared secret (`?token=`, `x-webhook-secret` or Bearer), constant-time, fail closed in production | 1 MB streamed cap, ≤ `MAX_EVENTS_PER_DELIVERY` events, stored raw in `webhook_events` (jsonb, NULs and `__proto__`/`constructor`/`prototype` keys dropped) before processing, idempotent on `event_key` and the domain references; no outbound requests (no SSRF surface) |
 | GET /api/export/{contacts,purchases} * | session + `export.run` (admin) in `prepareExport` | refused attempts audited (`export_denied`); successful ones audited with filters and row count before the first byte; CSV formula-safe; `nosniff`, `no-store` |
 | GET /api/files/[...key] | session + `canReadStoredFile` (proofs: may view the contact; imports: `import.run`; other folders: nobody) | 404 for anything not allowed; key cleaned (finding 13); headers (finding 12) |
-| GET /contacts/new/check | session + `contacts.create` | Quick Add duplicate check: returns the existing contact's name and owner even when the caller cannot open it (spec "The duplicate check runs while typing … shows the existing contact and its owner") |
+| GET /contacts/new/check | session + `contacts.create`; 300 lookups per user per 10 minutes (`QUICK_ADD_LOOKUP_LIMIT`, table `rate_limit_hits`), then 429 | Quick Add duplicate check: for a contact the caller cannot open, only its name and owner (and its id, for a transfer request, which re-checks the rights) (spec "The duplicate check runs while typing … shows the existing contact and its owner"); stage and grade only for contacts the caller may open |
 | GET /import/[batchId]/invalid-rows * | session + `import.run`; refused attempts audited | CSV formula-safe (finding 10) |
 
 ### Pages
 
 Every page under `src/app/(app)` is inside the layout that calls `requireUser()`, and each page re-checks:
-`contacts/[id]` (+ `edit`, `log`, `rate`, `payment`) use `canViewContact` / the screen loaders and 404 otherwise;
-`contacts`, `payments`, `today`, `organisations/[id]` scope lists with `contactScope` (organisation people outside
-the viewer's scope are shown without details); `payments/[purchaseId]` checks the contact; `dashboard` needs
+`contacts/[id]` (+ `edit`, `log`, `rate`, `payment`) use `canViewContact` / the screen loaders and 404 otherwise (its
+Referrals tab lists only the referred people the viewer may open and counts the others, in SQL);
+`contacts`, `payments`, `today` scope lists with `contactScope`; `organisations` and `organisations/[id]` scope people
+and deals in SQL (`canViewContactSql`): a salesperson sees only the people and deals of their own and pool contacts,
+a count of the others, and no organisation revenue totals (only roles that see every contact get those); `payments/[purchaseId]` checks the contact; `dashboard` needs
 `dashboard.view`, `dashboard/calibration` also `settings.manage`; `duplicates` needs `contacts.merge`; `import*`
 need `import.run`; every `settings/*` page is `requireUser(["admin"])`; `notifications` and `account` show the
 user's own rows only. `(auth)/login` and `(auth)/setup` are public (setup only with zero users).
@@ -171,5 +174,5 @@ user's own rows only. `(auth)/login` and `(auth)/setup` are public (setup only w
 | Cookie name has no `__Host-` prefix | Changing it signs everyone out and the middleware reads it by name; `Secure` + `Path=/` + no `Domain` already give the same scope in production. |
 | Server action body limit is 25 MB for every action | Needed for import uploads in local mode. On Vercel the platform caps request bodies at about 4.5 MB anyway. Next decodes an action's body before the action runs, so the public `loginAction` accepts one too: keep `next` patched (GHSA-p3m5-59mp-jv5r, a CPU denial of service in that decoding, is fixed from 15.5.28; the app runs 15.5.29). |
 | `npm audit` lists `next` as moderate | Next 15.5.29 still ships its own postcss 8.4.31 (sourceMappingURL advisories). It runs only at build time, on our own `src/app/globals.css`; no 15.x release changes it. |
-| Quick Add duplicate check reveals an existing contact's name and owner to any salesperson typing the number | Required by the spec to stop ownership clashes. |
+| Quick Add duplicate check reveals an existing contact's name and owner to any salesperson typing the number | Required by the spec to stop ownership clashes. Nothing else of the record is sent, and the per-user lookup limit stops anyone walking through numbers. |
 | Clients can be identified only by the IP the platform reports | `x-real-ip` / `x-forwarded-for` are set by Vercel; when self-hosting behind another proxy, make sure it overwrites them. |

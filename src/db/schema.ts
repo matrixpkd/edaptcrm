@@ -222,6 +222,26 @@ export const loginAttempts = pgTable(
   ],
 );
 
+/**
+ * Per-user rate limits on lookups (src/lib/auth/rate-limit.ts), stored here so they hold across serverless
+ * instances: one row per counted lookup, counted in a sliding window and pruned nightly.
+ */
+export const rateLimitHits = pgTable(
+  "rate_limit_hits",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    /** which limit, e.g. "quick_add_lookup" */
+    bucket: text("bucket").notNull(),
+    /** who is limited (a user id) */
+    subject: text("subject").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("rate_limit_hits_subject_idx").on(t.bucket, t.subject, t.createdAt),
+    index("rate_limit_hits_created_idx").on(t.createdAt),
+  ],
+);
+
 // ---------------------------------------------------------------------------
 // People and accounts
 // ---------------------------------------------------------------------------

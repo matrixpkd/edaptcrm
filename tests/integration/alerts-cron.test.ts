@@ -79,6 +79,7 @@ describe("cron routes", () => {
       "vipGoneQuiet",
       "pruneWebhookEvents",
       "pruneLoginAttempts",
+      "pruneRateLimitHits",
       "pruneExpiredSessions",
       "prunePasswordResets",
       "pruneAppErrors",

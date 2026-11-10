@@ -124,11 +124,21 @@ describe("contacts identity", () => {
       const local = inPhone();
       const c = await newContact({ phone: local, name: "Gopika", ownerId: owner.id });
 
+      // a colleague: the name and owner only (the id is for a transfer request); never the stage or grade
       const forOther = await checkQuickAddDuplicate(`+91 ${local}`, other);
-      expect(forOther.existing).toMatchObject({ id: c.id, name: "Gopika", ownerId: owner.id, ownerName: "Rahul", stage: "new", visible: false });
-      expect((await checkQuickAddDuplicate(local, owner)).existing?.visible).toBe(true);
-      expect((await checkQuickAddDuplicate(local, manager)).existing?.visible).toBe(true);
-      expect((await checkQuickAddDuplicate(local, support)).existing?.visible).toBe(true);
+      expect(forOther.existing).toEqual({ visible: false, id: c.id, name: "Gopika", ownerId: owner.id, ownerName: "Rahul" });
+      // everyone who may open it gets the whole card
+      for (const viewer of [owner, manager, support]) {
+        expect((await checkQuickAddDuplicate(local, viewer)).existing).toEqual({
+          visible: true,
+          id: c.id,
+          name: "Gopika",
+          ownerId: owner.id,
+          ownerName: "Rahul",
+          stage: "new",
+          grade: c.grade,
+        });
+      }
     });
 
     it("pool contacts are visible to sales; UAE numbers typed locally are found with the dial code", async () => {

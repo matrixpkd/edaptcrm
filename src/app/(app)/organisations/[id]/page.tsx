@@ -36,7 +36,7 @@ type SP = Record<string, string | string[] | undefined>;
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const { id } = await params;
-  const o = await getOrganisation(id);
+  const o = await getOrganisation(id, null);
   return { title: o?.name ?? "Organisation" };
 }
 
@@ -50,7 +50,8 @@ export default async function OrganisationPage({
   const user = await requireUser();
   const { id } = await params;
   const sp = await searchParams;
-  const org = await getOrganisation(id);
+  // revenue only for people who see every contact; a salesperson's lists hold only the people and deals they may open
+  const org = await getOrganisation(id, user);
   if (!org) notFound();
   const tz = user.timezone || "Asia/Kolkata";
   const canManage = canManageOrganisations(user);
@@ -63,6 +64,7 @@ export default async function OrganisationPage({
   ]);
   const linkedIds = new Set(people.map((p) => p.id));
   const paid = purchases.filter((p) => p.status !== "cancelled");
+  const showTotals = org.revenueInr !== null;
 
   return (
     <div className="space-y-5">
@@ -123,11 +125,18 @@ export default async function OrganisationPage({
         </Card>
       )}
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <Stat label="Total revenue" value={formatINR(org.revenueInr)} hint="Verified payments minus refunds" />
-        <Stat label="Purchases" value={paid.length} />
-        <Stat label="People" value={people.length} className="col-span-2 sm:col-span-1" />
-      </div>
+      {showTotals ? (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <Stat label="Total revenue" value={formatINR(org.revenueInr ?? 0)} hint="Verified payments minus refunds" />
+          <Stat label="Purchases" value={paid.length} />
+          <Stat label="People" value={people.length + hidden} className="col-span-2 sm:col-span-1" />
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3">
+          <Stat label="Purchases" value={paid.length} hint="Signed by your contacts or the pool" />
+          <Stat label="People" value={people.length + hidden} />
+        </div>
+      )}
 
       {org.notes && !editing && (
         <Card>
@@ -142,60 +151,54 @@ export default async function OrganisationPage({
           title="People"
           description={
             hidden > 0
-              ? `${hidden} owned by colleagues: their LTV counts, their details stay private`
+              ? `${hidden} more ${hidden === 1 ? "person is" : "people are"} linked here, owned by colleagues. Their details stay private.`
               : canManage
                 ? "Find a person below to link them, or pick this organisation on their Edit page"
                 : "The people who work here"
           }
         />
         {people.length === 0 ? (
-          <EmptyState
-            title="No people linked"
-            description={
-              canManage ? "Search for the principal, MLA or owner below and link them." : "Nobody is linked yet."
-            }
-          />
+          hidden > 0 ? null : (
+            <EmptyState
+              title="No people linked"
+              description={
+                canManage ? "Search for the principal, MLA or owner below and link them." : "Nobody is linked yet."
+              }
+            />
+          )
         ) : (
           <ul className="divide-y divide-border">
-            {people.map((p) =>
-              p.hidden ? (
-                <li key={p.id} className="flex items-center gap-3 px-4 py-3">
-                  <GradeBadge grade={null} size="sm" />
-                  <p className="min-w-0 flex-1 truncate text-sm text-muted">{p.name}</p>
-                  <p className="tabular w-24 text-right text-sm font-semibold">{formatINR(p.ltvInr)}</p>
-                </li>
-              ) : (
-                <li key={p.id} className="flex items-center gap-3 px-4 py-3">
-                  <GradeBadge grade={p.grade} size="sm" />
-                  <div className="min-w-0 flex-1">
-                    <Link
-                      href={`/contacts/${p.id}`}
-                      className="block truncate text-sm font-medium underline-offset-2 hover:underline"
-                    >
-                      {p.name}
-                    </Link>
-                    <p className="truncate text-xs text-muted">
-                      {p.designation ? `${p.designation} · ` : ""}
-                      {p.phoneE164 && <span className="tabular">{formatPhone(p.phoneE164)}</span>} · {p.ownerName ?? "Pool"}
-                    </p>
-                  </div>
-                  <div className="hidden sm:block">
-                    <StageBadge stage={p.stage} />
-                  </div>
-                  <p className="tabular w-24 text-right text-sm font-semibold">{formatINR(p.ltvInr)}</p>
-                  {canManage && (
-                    <ActionForm action={linkPersonAction} confirm={`Unlink ${p.name} from ${org.name}?`}>
-                      <input type="hidden" name="orgId" value={org.id} />
-                      <input type="hidden" name="contactId" value={p.id} />
-                      <input type="hidden" name="unlink" value="1" />
-                      <SubmitButton variant="ghost" size="sm" pendingText="…" aria-label={`Unlink ${p.name}`}>
-                        Unlink
-                      </SubmitButton>
-                    </ActionForm>
-                  )}
-                </li>
-              ),
-            )}
+            {people.map((p) => (
+              <li key={p.id} className="flex items-center gap-3 px-4 py-3">
+                <GradeBadge grade={p.grade} size="sm" />
+                <div className="min-w-0 flex-1">
+                  <Link
+                    href={`/contacts/${p.id}`}
+                    className="block truncate text-sm font-medium underline-offset-2 hover:underline"
+                  >
+                    {p.name}
+                  </Link>
+                  <p className="truncate text-xs text-muted">
+                    {p.designation ? `${p.designation} · ` : ""}
+                    {p.phoneE164 && <span className="tabular">{formatPhone(p.phoneE164)}</span>} · {p.ownerName ?? "Pool"}
+                  </p>
+                </div>
+                <div className="hidden sm:block">
+                  <StageBadge stage={p.stage} />
+                </div>
+                <p className="tabular w-24 text-right text-sm font-semibold">{formatINR(p.ltvInr)}</p>
+                {canManage && (
+                  <ActionForm action={linkPersonAction} confirm={`Unlink ${p.name} from ${org.name}?`}>
+                    <input type="hidden" name="orgId" value={org.id} />
+                    <input type="hidden" name="contactId" value={p.id} />
+                    <input type="hidden" name="unlink" value="1" />
+                    <SubmitButton variant="ghost" size="sm" pendingText="…" aria-label={`Unlink ${p.name}`}>
+                      Unlink
+                    </SubmitButton>
+                  </ActionForm>
+                )}
+              </li>
+            ))}
           </ul>
         )}
         {canManage && (
@@ -256,10 +259,17 @@ export default async function OrganisationPage({
       </Card>
 
       <Card>
-        <CardHeader title="Purchases" description="B2B deals linked to this organisation and the person who signed" />
+        <CardHeader
+          title="Purchases"
+          description={
+            showTotals
+              ? "B2B deals linked to this organisation and the person who signed"
+              : "B2B deals signed by your contacts or the pool. Deals signed by colleagues' contacts stay private."
+          }
+        />
         {purchases.length === 0 ? (
           <EmptyState
-            title="No purchases linked"
+            title={showTotals ? "No purchases linked" : "No purchases you can see"}
             description="Choose this organisation when recording a B2B payment."
           />
         ) : (
@@ -281,13 +291,9 @@ export default async function OrganisationPage({
                     <span className="text-xs text-muted">{formatDate(p.purchasedAt, tz)}</span>
                   </Td>
                   <Td className="hidden text-sm sm:table-cell">
-                    {p.contactHidden ? (
-                      <span className="text-muted">{p.contactName}</span>
-                    ) : (
-                      <Link href={`/contacts/${p.contactId}`} className="underline-offset-2 hover:underline">
-                        {p.contactName}
-                      </Link>
-                    )}
+                    <Link href={`/contacts/${p.contactId}`} className="underline-offset-2 hover:underline">
+                      {p.contactName}
+                    </Link>
                   </Td>
                   <Td className="tabular hidden text-right sm:table-cell">{formatAmount(p.amount, p.currency)}</Td>
                   <Td className="tabular text-right font-medium">{formatINR(p.netInr)}</Td>

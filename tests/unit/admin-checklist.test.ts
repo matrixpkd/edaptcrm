@@ -70,14 +70,16 @@ describe("getting started checklist", () => {
 });
 
 describe("invite message", () => {
-  it("says where to sign in, with which email and temporary password, and to change it", () => {
+  it("says where to sign in, with which email and temporary password, how long it works, and that they choose their own", () => {
     const m = inviteMessage({ name: "Asha Nair", email: "asha@edapt.in", password: "Kp7m-Xq2r-Tn9w-Hb4c", loginUrl: "https://crm.edapt.in/login" });
     expect(m).toContain("Hi Asha, your Edapt CRM account is ready.");
     expect(m).toContain("https://crm.edapt.in/login");
     expect(m).toContain("asha@edapt.in");
     expect(m).toContain("Kp7m-Xq2r-Tn9w-Hb4c");
-    expect(m).toContain("choose your own password");
-    expect(inviteMessage({ name: "Asha", email: "a@b.in", password: "x", loginUrl: "u", reset: true })).toContain("password was reset");
+    expect(m).toContain("It works for 7 days. When you sign in, you will choose your own password.");
+    const reset = inviteMessage({ name: "Asha", email: "a@b.in", password: "x", loginUrl: "u", reset: true });
+    expect(reset).toContain("password was reset");
+    expect(reset).toContain("It works for 7 days.");
   });
 
   it("opens WhatsApp to the teammate's number when known", () => {

@@ -14,6 +14,7 @@ import { showValue } from "@/lib/admin/diff";
 import { defaultHandoverTarget, getAdminUser, listHandoverTargets } from "@/lib/admin/users";
 import { ROLE_LABELS, can } from "@/lib/auth/permissions";
 import { requireUser } from "@/lib/auth/session";
+import { TEMP_PASSWORD_DAYS, temporaryPasswordState } from "@/lib/auth/temporary-password";
 import { formatPhone } from "@/lib/phone";
 import { getSetting } from "@/lib/settings";
 import { siteOrigin } from "@/lib/site";
@@ -58,6 +59,7 @@ export default async function TeammatePage({
   }));
   const moving = `${u.contactCount.toLocaleString("en-IN")} contact${u.contactCount === 1 ? "" : "s"} and ${u.openTaskCount.toLocaleString("en-IN")} open task${u.openTaskCount === 1 ? "" : "s"}`;
   const isMe = u.id === me.id;
+  const tempState = temporaryPasswordState(u.passwordTemporaryUntil, now);
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -173,9 +175,21 @@ export default async function TeammatePage({
             </Card>
 
             <Card>
-              <CardHeader title="Password" description="Creates a new temporary password and signs them out on every device." />
+              <CardHeader
+                title="Password"
+                description={`Creates a new temporary password and signs them out on every device. It works for ${TEMP_PASSWORD_DAYS} days; they choose their own when they sign in.`}
+              />
               <CardBody>
-                <ResetPassword id={u.id} name={u.name} share={{ email: u.email, phone: u.phone, loginUrl: `${origin}/login` }} />
+                <div className="flex flex-col gap-3">
+                  {tempState !== "own" && (
+                    <p className="text-sm" data-testid="temp-password-status">
+                      {tempState === "temporary"
+                        ? `${u.name.split(" ")[0]} still has a temporary password. It works until ${formatDateTime(u.passwordTemporaryUntil, tz)}.`
+                        : `${u.name.split(" ")[0]}'s temporary password expired on ${formatDateTime(u.passwordTemporaryUntil, tz)}. Reset it to send a new one.`}
+                    </p>
+                  )}
+                  <ResetPassword id={u.id} name={u.name} share={{ email: u.email, phone: u.phone, loginUrl: `${origin}/login` }} />
+                </div>
               </CardBody>
             </Card>
 
@@ -304,10 +318,18 @@ function userHistory(id: string) {
     .limit(8);
 }
 
+/** The audit log's password entries (never the password itself), as the history shows them. */
+const PASSWORD_CHANGES = new Map<unknown, string>([
+  ["reset", "Password reset"],
+  ["chosen by the user", "Chose their own password"],
+  ["changed by the user", "Changed their password"],
+  ["reset by email link", "Reset their password by email link"],
+]);
+
 function describeUserChange(h: { action: string; field: string | null; oldValue: unknown; newValue: unknown }): string {
   if (h.action === "insert") return "Added";
   if (h.action === "login") return "Signed in";
-  if (h.field === "password") return "Password reset";
+  if (h.field === "password") return PASSWORD_CHANGES.get(h.newValue) ?? "Password reset";
   if (h.field === "active") return h.newValue === false ? "Deactivated" : "Reactivated";
   if (h.field === "handover") {
     const n = (h.newValue as { contacts?: number } | null)?.contacts ?? 0;

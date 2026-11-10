@@ -161,7 +161,8 @@ export async function resetPasswordWithToken(
   return tx.transaction(async (t) => {
     const state = await checkResetToken(token, now, t, true);
     if (!state.ok) throw new AccountError(RESET_REFUSALS[state.reason]);
-    await t.update(users).set({ passwordHash, updatedAt: now }).where(eq(users.id, state.userId));
+    // a password they chose: an admin's temporary one (if any) no longer applies
+    await t.update(users).set({ passwordHash, passwordTemporaryUntil: null, updatedAt: now }).where(eq(users.id, state.userId));
     await t
       .update(passwordResets)
       .set({ usedAt: now })
@@ -178,7 +179,7 @@ export const RESET_REFUSALS: Record<"invalid" | "expired" | "used", string> = {
   used: "This reset link has already been used. Ask for a new one if you need to.",
 };
 
-/** Voids every open reset link of a person (an admin reset their password, or they changed it themselves). */
+/** Voids every open reset link of a person (an admin reset their password or deactivated them). */
 export async function voidResetLinks(userId: string, now: Date = new Date(), tx: Tx = db): Promise<void> {
   await tx
     .update(passwordResets)

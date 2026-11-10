@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/session";
 import { emailResetAvailable } from "@/lib/auth/password-reset";
+import { TEMP_PASSWORD_DAYS } from "@/lib/auth/temporary-password";
 import { AuthCard } from "../_components/auth-card";
 import { ForgotForm } from "./forgot-form";
 
@@ -31,8 +32,8 @@ export default async function ForgotPage() {
         <div className="space-y-2 text-sm">
           <p className="font-medium">{byEmail ? "No email arriving?" : "Ask an admin to reset it"}</p>
           <p className="text-muted">
-            An admin can give you a new temporary password: <span className="text-foreground">Team → your name → Reset password</span>. Sign in with
-            it, then choose your own under <span className="text-foreground">Your account</span>.
+            An admin can give you a new temporary password: <span className="text-foreground">Team → your name → Reset password</span>. It works
+            for {TEMP_PASSWORD_DAYS} days. Sign in with it and you will be asked to choose your own.
           </p>
         </div>
       </div>

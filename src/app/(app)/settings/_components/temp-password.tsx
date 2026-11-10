@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Check, Copy, KeyRound, MessageCircle } from "lucide-react";
 import { Button, buttonClass } from "@/components/ui/button";
 import { inviteMessage, whatsappShareLink } from "@/lib/admin/invite";
+import { TEMP_PASSWORD_DAYS } from "@/lib/auth/temporary-password";
 
 export type ShareDetails = { email: string; phone?: string | null; loginUrl: string; reset?: boolean };
 
@@ -44,6 +45,9 @@ export function TempPassword({ password, who, share }: { password: string; who: 
           <p className="mt-0.5 text-xs text-muted">
             Shown only now: it is not stored anywhere you can read it again. Send it to {who.split(" ")[0]} privately; if it gets lost, reset it
             again.
+          </p>
+          <p className="mt-1 text-xs text-muted" data-testid="temp-password-rules">
+            It works for {TEMP_PASSWORD_DAYS} days. When {who.split(" ")[0]} signs in with it, they choose their own password.
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <code className="select-all rounded-lg bg-surface-muted px-3 py-2 font-mono text-base tracking-wide" data-testid="temp-password">

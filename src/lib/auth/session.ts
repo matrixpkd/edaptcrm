@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { and, eq, gt } from "drizzle-orm";
 import { db } from "@/db";
 import { sessions, users, type Role, type User } from "@/db/schema";
+import { CHOOSE_PASSWORD_PATH } from "./temporary-password";
 
 export const SESSION_COOKIE = "edapt_session";
 const SESSION_DAYS = 30;
@@ -56,8 +57,15 @@ export async function destroyUserSessions(userId: string): Promise<void> {
   await db.delete(sessions).where(eq(sessions.userId, userId));
 }
 
-/** The signed-in user for this request, or null. Cached per request. */
-export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
+/** A session's person, and whether they must still choose their own password (they signed in with a temporary one). */
+export type SessionState = { user: SessionUser; mustChoosePassword: boolean };
+
+/**
+ * Who this browser's session belongs to, or null. Cached per request. Includes someone who signed in with an
+ * admin's temporary password and has not chosen their own yet: only the sign-in and "Choose your password" screens
+ * use this. Everything else goes through getCurrentUser / requireUser / getApiUser, which shut such a session out.
+ */
+export const getSessionState = cache(async (): Promise<SessionState | null> => {
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE)?.value;
   if (!token) return null;
@@ -70,28 +78,55 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
       team: users.team,
       timezone: users.timezone,
       active: users.active,
+      passwordTemporaryUntil: users.passwordTemporaryUntil,
     })
     .from(sessions)
     .innerJoin(users, eq(users.id, sessions.userId))
     .where(and(eq(sessions.id, hashToken(token)), gt(sessions.expiresAt, new Date())))
     .limit(1);
-  const u = rows[0];
-  if (!u || !u.active) return null;
-  return u;
+  const row = rows[0];
+  if (!row || !row.active) return null;
+  const { passwordTemporaryUntil, ...user } = row;
+  // Sessions of someone on a temporary password were opened with it (a new teammate has none before, and a reset
+  // ends them all), so one may still choose a password after the temporary one expires; it can do nothing else.
+  return { user, mustChoosePassword: passwordTemporaryUntil !== null };
 });
 
 /**
- * For pages and server actions: the signed-in user, redirecting to /login when signed out.
- * When `roles` is given and the user's role is not in it, redirects to /today.
+ * The signed-in user for this request, or null. Cached per request. Null as well while the person still has to
+ * choose their own password, so nothing that reads it treats a temporary-password session as signed in.
+ */
+export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
+  const s = await getSessionState();
+  return s && !s.mustChoosePassword ? s.user : null;
+});
+
+/**
+ * For pages and server actions: the signed-in user, redirecting to /login when signed out and to "Choose your
+ * password" while the person is on a temporary password. When `roles` is given and the user's role is not in it,
+ * redirects to /today.
  */
 export async function requireUser(roles?: Role[]): Promise<SessionUser> {
-  const user = await getCurrentUser();
-  if (!user) redirect("/login");
+  const s = await getSessionState();
+  if (!s) redirect("/login");
+  if (s.mustChoosePassword) redirect(CHOOSE_PASSWORD_PATH);
+  const user = s.user;
   if (roles && !roles.includes(user.role)) redirect("/today?denied=1");
   return user;
 }
 
-/** For route handlers: the user or null (never redirects). */
+/**
+ * For the "Choose your password" screen and its action only: the person who signed in with a temporary password.
+ * Redirects to /login when signed out and to /today when they already chose their own.
+ */
+export async function requirePasswordChoice(): Promise<SessionUser> {
+  const s = await getSessionState();
+  if (!s) redirect("/login");
+  if (!s.mustChoosePassword) redirect("/today");
+  return s.user;
+}
+
+/** For route handlers: the user or null (never redirects). Null while the person must still choose their password. */
 export async function getApiUser(roles?: Role[]): Promise<SessionUser | null> {
   const user = await getCurrentUser();
   if (!user) return null;

@@ -8,7 +8,8 @@ import { PEOPLE } from "./support/env";
 /**
  * First run and team administration, as a brand-new owner meets them: the "Getting started" checklist on Today,
  * Team in the main navigation, adding a teammate (temporary password shown once, with a message to send), that
- * teammate signing in, reset, deactivate with handover, and "Forgot password?" on the sign-in page.
+ * teammate signing in and choosing their own password, reset, deactivate with handover, and "Forgot password?" on
+ * the sign-in page.
  */
 
 async function openTeam(page: Page, isMobile: boolean) {
@@ -61,7 +62,7 @@ test("a new admin sees the getting started checklist on Today, can hide it and b
   expect(errors).toEqual([]);
 });
 
-test("the admin adds a teammate from Team; the temporary password and a ready message are shown once, and it signs them in", async ({ pageAs, browser, isMobile }, testInfo) => {
+test("the admin adds a teammate from Team; the temporary password and a ready message are shown once, and they choose their own at first sign-in", async ({ pageAs, browser, isMobile }, testInfo) => {
   const page = await pageAs("admin");
   await openTeam(page, isMobile);
   await page.getByRole("link", { name: "Add teammate" }).click();
@@ -81,6 +82,8 @@ test("the admin adds a teammate from Team; the temporary password and a ready me
   await expect(message).toContainText(`${email}`);
   await expect(message).toContainText(password);
   await expect(message).toContainText("/login");
+  await expect(message).toContainText("It works for 7 days. When you sign in, you will choose your own password.");
+  await expect(page.getByTestId("temp-password-rules")).toContainText("It works for 7 days.");
   await expect(page.getByRole("link", { name: "Send on WhatsApp" })).toHaveAttribute("href", /^https:\/\/wa\.me\/\?text=/);
 
   // the same email again is refused, next to the field
@@ -90,14 +93,30 @@ test("the admin adds a teammate from Team; the temporary password and a ready me
   await page.getByRole("button", { name: "Add teammate" }).click();
   await expect(page.getByText("Someone already uses that email")).toBeVisible();
 
-  // the new teammate signs in with the temporary password and gets the salesperson's menu
+  // the new teammate signs in with the temporary password, chooses their own, then gets the salesperson's menu
   const ctx = await browser.newContext({ baseURL: testInfo.project.use.baseURL, viewport: testInfo.project.use.viewport, serviceWorkers: "block" });
   const theirs = await ctx.newPage();
   await theirs.goto("/login");
   await theirs.getByLabel("Email").fill(email);
   await theirs.getByLabel("Password").fill(password);
   await theirs.getByRole("button", { name: "Sign in" }).click();
+  await expect(theirs).toHaveURL(/\/choose-password$/);
+  await expect(theirs.getByText("You signed in with a temporary password.")).toBeVisible();
+  // nothing else opens until they have chosen
+  await theirs.goto("/contacts");
+  await expect(theirs).toHaveURL(/\/choose-password$/);
+  const own = "my own e2e password";
+  await theirs.getByLabel("New password", { exact: true }).fill(own);
+  await theirs.getByLabel("New password again").fill("my own e2e passwrod");
+  await theirs.getByRole("button", { name: "Save and continue" }).click();
+  await expect(theirs.getByText("The two passwords do not match")).toBeVisible();
+  await theirs.getByLabel("New password", { exact: true }).fill(own);
+  await theirs.getByLabel("New password again").fill(own);
+  await theirs.getByRole("button", { name: "Save and continue" }).click();
   await expect(theirs).toHaveURL(/\/today$/);
+  await expect(theirs.locator("[data-toast]")).toContainText("Password saved. Use it from now on.");
+  const [mate] = await db.select({ until: users.passwordTemporaryUntil }).from(users).where(eq(users.email, email));
+  expect(mate.until).toBeNull();
   await theirs.goto("/team");
   await expect(theirs).toHaveURL(/\/today\?denied=1$/);
   await ctx.close();
@@ -115,6 +134,9 @@ test("the admin resets a password and deactivates a leaver, whose contacts move 
   await page.getByRole("button", { name: "Reset password" }).click();
   await expect(page.getByTestId("temp-password")).toBeVisible();
   await expect(page.getByTestId("invite-message")).toContainText("password was reset");
+  // the page now says until when the temporary password works, and the password stays on screen
+  await expect(page.getByTestId("temp-password-status")).toContainText("still has a temporary password. It works until");
+  await expect(page.getByTestId("temp-password")).toBeVisible();
 
   const form = page.getByRole("form", { name: "Deactivate" });
   const receiver = form.getByLabel("Who receives their contacts?");

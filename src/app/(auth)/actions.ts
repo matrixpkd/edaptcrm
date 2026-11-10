@@ -1,13 +1,15 @@
 "use server";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { createSession, destroySession } from "@/lib/auth/session";
+import { createSession, currentSessionId, destroySession, requirePasswordChoice } from "@/lib/auth/session";
 import { authenticate, createFirstAdmin } from "@/lib/auth/login";
-import { AccountError } from "@/lib/auth/account";
+import { AccountError, chooseOwnPassword } from "@/lib/auth/account";
 import { requestPasswordReset, resetPasswordWithToken } from "@/lib/auth/password-reset";
 import { clientIp } from "@/lib/auth/login-limit";
 import { safeNextPath } from "@/lib/auth/redirect";
+import { CHOOSE_PASSWORD_PATH } from "@/lib/auth/temporary-password";
 import { fail, ok, str, type ActionResult } from "@/lib/action";
+import { flash } from "@/lib/flash";
 
 /** Passwords are read as typed: spaces at either end are part of the password. */
 function rawField(fd: FormData, key: string): string | null {
@@ -20,8 +22,27 @@ export async function loginAction(_prev: ActionResult, formData: FormData): Prom
   const r = await authenticate(str(formData, "email"), rawField(formData, "password"), ip);
   if (!r.ok) return fail(r.error);
   await createSession(r.userId);
+  // signed in with an admin's temporary password: their own password first (every other page sends them there too)
+  if (r.mustChoosePassword) redirect(CHOOSE_PASSWORD_PATH);
   // only a path on this site: never "//evil.com", "/\evil.com" or an absolute URL
   redirect(safeNextPath(str(formData, "next"), "/today"));
+}
+
+/**
+ * "Choose your password" after signing in with an admin's temporary password. requirePasswordChoice is this
+ * screen's requireUser: it lets in only a session that still has to choose (signed out → /login, done → /today).
+ * This browser stays signed in, every other session ends, and the person lands on Today.
+ */
+export async function choosePasswordAction(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
+  const user = await requirePasswordChoice();
+  try {
+    await chooseOwnPassword(user.id, { next: rawField(formData, "next"), confirm: rawField(formData, "confirm") }, await currentSessionId());
+  } catch (e) {
+    if (e instanceof AccountError) return fail(e.message, e.field ? { [e.field]: e.message } : undefined);
+    throw e;
+  }
+  await flash("Password saved. Use it from now on.");
+  redirect("/today");
 }
 
 export async function logoutAction(): Promise<void> {

@@ -6,13 +6,18 @@ import { audit } from "@/lib/audit";
 import { MIN_PASSWORD_LENGTH } from "./account";
 import { checkLoginAllowed, recordLoginAttempt } from "./login-limit";
 import { hashPassword, needsRehash, verifyPassword } from "./password";
+import { TEMP_PASSWORD_EXPIRED, temporaryPasswordState } from "./temporary-password";
 
 /**
  * Sign-in and first-run setup, without the cookie and redirect (the server actions in src/app/(auth)/actions.ts
  * add those), so the rules are testable.
  */
 
-export type AuthResult = { ok: true; userId: string } | { ok: false; error: string };
+/**
+ * `mustChoosePassword` is set (true) when the person signed in with an admin's temporary password: the session that
+ * follows can only choose their own password (src/lib/auth/session.ts).
+ */
+export type AuthResult = { ok: true; userId: string; mustChoosePassword?: true } | { ok: false; error: string };
 
 export const BAD_CREDENTIALS = "That email and password don't match.";
 
@@ -21,7 +26,8 @@ export const BAD_CREDENTIALS = "That email and password don't match.";
  * - refused before any password check while the email / IP is locked out (login-limit.ts);
  * - one bcrypt comparison whether or not the email exists (no timing difference);
  * - the same message for an unknown email and a wrong password;
- * - a deactivated account is refused only after the right password, so it does not reveal itself to a guesser.
+ * - a deactivated account, and an admin's temporary password past its expiry, are refused only after the right
+ *   password, so neither reveals itself to a guesser.
  * Every checked attempt is recorded for the lockout; a successful one is audited.
  */
 export async function authenticate(emailRaw: string | null, password: string | null, ip: string, now: Date = new Date()): Promise<AuthResult> {
@@ -38,7 +44,7 @@ export async function authenticate(emailRaw: string | null, password: string | n
   }
 
   const [user] = await db
-    .select({ id: users.id, passwordHash: users.passwordHash, active: users.active })
+    .select({ id: users.id, passwordHash: users.passwordHash, active: users.active, temporaryUntil: users.passwordTemporaryUntil })
     .from(users)
     .where(eq(sql`lower(${users.email})`, email))
     .limit(1);
@@ -49,12 +55,14 @@ export async function authenticate(emailRaw: string | null, password: string | n
   await recordLoginAttempt(email, ip, okPw, now);
   if (!user || !okPw) return { ok: false, error: BAD_CREDENTIALS };
   if (!user.active) return { ok: false, error: "This account has been deactivated. Ask your admin." };
+  const temporary = temporaryPasswordState(user.temporaryUntil, now);
+  if (temporary === "expired") return { ok: false, error: TEMP_PASSWORD_EXPIRED };
 
   if (user.passwordHash && needsRehash(user.passwordHash)) {
     await db.update(users).set({ passwordHash: await hashPassword(password) }).where(eq(users.id, user.id));
   }
   await audit({ table: "users", rowId: user.id, action: "login", userId: user.id });
-  return { ok: true, userId: user.id };
+  return temporary === "temporary" ? { ok: true, userId: user.id, mustChoosePassword: true } : { ok: true, userId: user.id };
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

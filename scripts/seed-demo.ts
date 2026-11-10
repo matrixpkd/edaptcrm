@@ -326,8 +326,9 @@ async function setup(
   const passwordHash = await hashPassword(DEMO_PASSWORD);
   for (const t of DEMO_TEAM) {
     const { user } = await createUser({ name: t.name, email: t.email, role: t.role, team: t.team, timezone: t.timezone, phone: null }, actor);
-    // the team starts with the shared demo password instead of the generated temporary one
-    await db.update(users).set({ passwordHash }).where(eq(users.id, user.id));
+    // the team starts with the shared demo password instead of the generated temporary one (so no "Choose your
+    // password" step at their first sign-in)
+    await db.update(users).set({ passwordHash, passwordTemporaryUntil: null }).where(eq(users.id, user.id));
     m[t.key] = { key: t.key, id: user.id, name: user.name, role: user.role, team: user.team, timezone: user.timezone };
   }
 

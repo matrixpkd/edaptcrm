@@ -29,7 +29,8 @@ Last verified on the live site (21 Oct, version `56d41a4`): all 32 screens load,
 succeed, and `/api/health?deep=1` (needs `Authorization: Bearer <CRON_SECRET>`) is fine. `/api/health` shows the
 deployed commit. On 30 Oct `/api/health` was ok on `b20b980` and the 15-minute pg_cron job had no failures.
 On 9 Nov `4f626e0` went live: `/api/health` ok, the sign-in page loads, signed-in pages redirect to it, and
-`app_errors` had no rows in the last 24 hours.
+`app_errors` had no rows in the last 24 hours. On 10 Nov `3d4ce53` (Next 15.5.29 and the round-robin fix) went
+live and passed the same checks; the 15-minute pg_cron job had no failures in the 2 hours before.
 
 Locally (10 Nov, macOS, Next 15.5.29, after the round-robin fix): 1,053 unit/integration tests pass with no errors
 on Node 24 (what Vercel runs) and Node 22, and 94 Playwright tests pass (1 phone run skipped by design). Check

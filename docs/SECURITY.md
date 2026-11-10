@@ -130,7 +130,8 @@ Every page under `src/app/(app)` is inside the layout that calls `requireUser()`
 Referrals tab lists only the referred people the viewer may open and counts the others, in SQL);
 `contacts`, `payments`, `today` scope lists with `contactScope`; `organisations` and `organisations/[id]` scope people
 and deals in SQL (`canViewContactSql`): a salesperson sees only the people and deals of their own and pool contacts,
-a count of the others, and no organisation revenue totals (only roles that see every contact get those); `payments/[purchaseId]` checks the contact; `dashboard` needs
+a count of the others, and no organisation revenue totals (only roles that see every contact get those); erased
+contacts are neither listed nor counted as people; `payments/[purchaseId]` checks the contact; `dashboard` needs
 `dashboard.view`, `dashboard/calibration` also `settings.manage`; `duplicates` needs `contacts.merge`; `import*`
 need `import.run`; every `settings/*` page is `requireUser(["admin"])`; `notifications` and `account` show the
 user's own rows only. `(auth)/login` and `(auth)/setup` are public (setup only with zero users).
@@ -151,6 +152,14 @@ user's own rows only. `(auth)/login` and `(auth)/setup` are public (setup only w
 - Marketing consent is stored with its date (`contacts.consent`, `consent_at`), set by capture, profile edits,
   imports and merges, and included in the contacts export.
 - Import files (thousands of people's raw rows) are served to admins only.
+- Erasure on request (`src/lib/contacts/privacy.ts`, admin only) also reaches what other rows hold of the person: the
+  import rows (theirs are wiped, linked or not; other contacts' rows lose the issues, conflict candidates and referrer
+  columns that quote them), the history of a contact they were merged into by a merge since undone, and their
+  referrer's task and alert. No alert rule, Today queue, digest or organisation page brings an erased contact back.
+  It never takes another living person's data with it: a row that went to someone else (a namesake's conflict
+  imported as new) only loses the quote, an email they share (emails are not unique) wipes no row the import tied to
+  someone else, and the other contact of an undone merge keeps its history outside the merge and every number or
+  email it holds now.
 
 ## Secrets
 

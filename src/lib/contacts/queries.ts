@@ -1187,7 +1187,8 @@ export async function listOrganisations(
           kind: organisations.kind,
           city: organisations.city,
           country: organisations.country,
-          people: sql<number>`(select count(*)::int from contacts c where c.organisation_id = ${ORG_ID} and c.merged_into_id is null)`,
+          // live people only: merged-away rows and erased contacts (which keep their link) are no one's people
+          people: sql<number>`(select count(*)::int from contacts c where c.organisation_id = ${ORG_ID} and c.merged_into_id is null and c.erased_at is null)`,
           // not computed at all for a viewer who may not see them
           purchaseCount: showTotals
             ? sql<number | null>`(select count(*)::int from purchases p where p.organisation_id = ${ORG_ID} and p.status <> 'cancelled')`
@@ -1267,7 +1268,9 @@ export type OrganisationPerson = {
 /**
  * The people linked to an organisation (live records) whom the viewer may open, highest LTV first. People they may
  * not open (a colleague's contacts) are only counted in `hidden`: no name, grade, stage or money, and they do not
- * take part in the ordering. Scoped in SQL.
+ * take part in the ordering. Scoped in SQL. Erased contacts keep their organisation link (src/lib/contacts/privacy.ts)
+ * but, as in every list (contactScope), are neither shown nor counted: there is nothing to open, and they cannot be
+ * unlinked (the erasure lock refuses every change to them).
  */
 export async function getOrganisationPeople(
   user: Viewer,
@@ -1275,7 +1278,7 @@ export async function getOrganisationPeople(
   tx: Tx = db,
 ): Promise<{ people: OrganisationPerson[]; hidden: number }> {
   if (!isUuid(orgId)) return { people: [], hidden: 0 };
-  const linked = and(isNull(contacts.mergedIntoId), eq(contacts.organisationId, orgId));
+  const linked = and(isNull(contacts.mergedIntoId), isNull(contacts.erasedAt), eq(contacts.organisationId, orgId));
   const visible = canViewContactSql(user);
   const people = await tx
     .select({

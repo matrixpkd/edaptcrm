@@ -19,12 +19,18 @@ import "server-only";
  * (money/internal.ts onVerifiedMoney) at the moment they happen; they are not repeated here. The money module
  * also closes instalment / unverified alerts when the money is verified, and abandoned-checkout alerts (marking
  * the enquiry "recovered") when the customer pays.
+ *
+ * Erased contacts (src/lib/contacts/privacy.ts) get no alert from any rule: every rule leaves out contacts.erased_at
+ * next to merged_into_id. The erasure deletes the contact's alerts, and their dedupe keys with them, so without that
+ * filter the next run would raise them again. A rule that read a contact just before its erasure committed closes
+ * what it raised for it (dropAlertsOfErased), and the cleanups below dismiss any task still open on an erased contact.
  */
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db, queryRows, type Tx } from "@/db";
 import { contacts, enquiries, notifications, payments, purchases, tasks, users, type PaymentMode, type Role } from "@/db/schema";
 import { releaseStaleLeads as releaseStaleLeadsService } from "@/lib/contacts/assignment";
+import { closeErasedContactAlerts } from "@/lib/contacts/privacy";
 import { checkoutResolution } from "@/lib/money/rules";
 import { getSetting, getSettings, type Settings } from "@/lib/settings";
 import { shortDate, validTimeZone } from "@/lib/today/time";
@@ -126,6 +132,24 @@ async function notifyNew(list: NewNotification[], tx: Tx): Promise<{ created: nu
   return { created, fresh };
 }
 
+/**
+ * A rule reads its contacts, then raises their alerts. When a contact's erasure commits in between, the rule read it
+ * before the erasure and its inserts waited for the erasure (a task or alert references the contact row the erasure
+ * holds locked), so they land on the erased contact, with the name the rule read. Run after raising: what was raised
+ * for a contact that turns out erased is closed the way the erasure closes it. (An erasure that starts after the
+ * inserts waits for this run's locks on the contact instead, then closes them itself.)
+ */
+async function dropAlertsOfErased(contactIds: (string | null | undefined)[], now: Date, t: Tx): Promise<void> {
+  const ids = unique(contactIds.filter((x): x is string => !!x));
+  for (let i = 0; i < ids.length; i += 1000) {
+    const erased = await t
+      .select({ id: contacts.id })
+      .from(contacts)
+      .where(and(inArray(contacts.id, ids.slice(i, i + 1000)), isNotNull(contacts.erasedAt)));
+    if (erased.length) await closeErasedContactAlerts(erased.map((r) => r.id), null, now, t);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Abandoned checkout
 // ---------------------------------------------------------------------------
@@ -182,6 +206,7 @@ export async function abandonedCheckouts(now: Date, tx: Tx = db): Promise<Abando
           lte(enquiries.receivedAt, cutoff),
           gt(enquiries.receivedAt, since),
           isNull(contacts.mergedIntoId),
+          isNull(contacts.erasedAt),
         ),
       )
       .orderBy(asc(enquiries.receivedAt), asc(enquiries.id))
@@ -284,6 +309,7 @@ export async function abandonedCheckouts(now: Date, tx: Tx = db): Promise<Abando
     }
     await t.update(enquiries).set({ status: "abandoned" }).where(inArray(enquiries.id, abandonedIds));
     result.abandoned = abandonedIds.length;
+    await dropAlertsOfErased([...abandonedByContact.keys()], now, t);
     return result;
   });
 }
@@ -354,6 +380,7 @@ export async function untouchedLeads(now: Date, tx: Tx = db): Promise<UntouchedL
       .where(
         and(
           isNull(contacts.mergedIntoId),
+          isNull(contacts.erasedAt),
           isNotNull(contacts.ownerAssignedAt),
           eq(contacts.purchaseCount, 0),
           ne(contacts.stage, "lost"),
@@ -427,11 +454,15 @@ export async function untouchedLeads(now: Date, tx: Tx = db): Promise<UntouchedL
       }
     }
     result.managerAlerts = (await notifyNew(managerAlerts, t)).created;
+    await dropAlertsOfErased(rows.map((r) => r.id), now, t);
     return result;
   });
 }
 
-/** Closes open untouched-lead tasks: "done" once the owner logged an interaction, "dismissed" when obsolete. */
+/**
+ * Closes open untouched-lead tasks: "done" once the owner logged an interaction, "dismissed" when obsolete (also once
+ * the contact is erased: a task raised while its erasure was committing must not stay on Today).
+ */
 async function closeUntouchedTasks(now: Date, t: Tx): Promise<number> {
   const answered = await t
     .update(tasks)
@@ -460,6 +491,7 @@ async function closeUntouchedTasks(now: Date, t: Tx): Promise<number> {
           select 1 from contacts c
           where c.id = ${tasks.contactId}
             and c.merged_into_id is null
+            and c.erased_at is null
             and c.owner_id is not null
             and c.owner_id = ${tasks.userId}
             and c.purchase_count = 0
@@ -511,7 +543,7 @@ export async function followUpsDue(now: Date, tx: Tx = db): Promise<{ notified: 
         eq(tasks.status, "open"),
         lte(tasks.dueAt, now),
         gt(tasks.dueAt, new Date(now.getTime() - FOLLOW_UP_PING_WINDOW_MS)),
-        or(isNull(tasks.contactId), isNull(contacts.mergedIntoId)),
+        or(isNull(tasks.contactId), and(isNull(contacts.mergedIntoId), isNull(contacts.erasedAt))),
         sql`not exists (
           select 1 from notifications n where n.dedupe_key = 'follow_up_due:' || ${tasks.id}::text || ':' || ${tasks.userId}::text
         )`,
@@ -531,6 +563,7 @@ export async function followUpsDue(now: Date, tx: Tx = db): Promise<{ notified: 
     })),
     tx,
   );
+  await dropAlertsOfErased(rows.map((r) => r.contactId), now, tx);
   return { notified };
 }
 
@@ -632,6 +665,7 @@ export async function dueForNextRung(now: Date, tx: Tx = db): Promise<{ created:
   const w = await wording(tx);
   const where = and(
     isNull(contacts.mergedIntoId),
+    isNull(contacts.erasedAt),
     gt(contacts.purchaseCount, 0),
     ne(contacts.stage, "lost"),
     eq(contacts.atRisk, false),
@@ -670,6 +704,7 @@ export async function dueForNextRung(now: Date, tx: Tx = db): Promise<{ created:
         };
       });
       created += (await createTasks(list, t)).length;
+      await dropAlertsOfErased(page.map((c) => c.id), now, t);
     }
     return { created };
   });
@@ -677,9 +712,9 @@ export async function dueForNextRung(now: Date, tx: Tx = db): Promise<{ created:
 
 /**
  * Repeat-purchase tasks that no longer fit the customer would otherwise sit on Today for months:
- * - an at-risk task once the customer has gone dormant, been marked lost or merged away (new ones are never raised
- *   for them either);
- * - a next-rung task once the customer is lost or merged away, or has slipped into at risk (the at-risk task
+ * - an at-risk task once the customer has gone dormant, been marked lost, merged away or erased (new ones are never
+ *   raised for them either);
+ * - a next-rung task once the customer is lost, merged away or erased, or has slipped into at risk (the at-risk task
  *   takes over, or none when they are dormant).
  * They are dismissed, not done: nobody acted on them.
  */
@@ -695,7 +730,7 @@ async function dismissStaleRepeatTasks(now: Date, t: Tx): Promise<number> {
           select 1 from contacts c
           where c.id = ${tasks.contactId}
             and (
-              c.stage = 'lost' or c.merged_into_id is not null
+              c.stage = 'lost' or c.merged_into_id is not null or c.erased_at is not null
               or (${tasks.type} = 'at_risk' and c.stage = 'dormant')
               or (${tasks.type} = 'next_rung' and c.at_risk)
             )
@@ -717,6 +752,7 @@ export async function atRisk(now: Date, tx: Tx = db): Promise<{ created: number 
   const month = monthKey(now, BUSINESS_TZ);
   const where = and(
     isNull(contacts.mergedIntoId),
+    isNull(contacts.erasedAt),
     gt(contacts.purchaseCount, 0),
     ne(contacts.stage, "lost"),
     // Dormant customers (no activity for thresholds.dormantDays) stay in the dashboard's at-risk pool but get no
@@ -751,6 +787,7 @@ export async function atRisk(now: Date, tx: Tx = db): Promise<{ created: number 
         };
       });
       created += (await createTasks(list, t)).length;
+      await dropAlertsOfErased(page.map((c) => c.id), now, t);
     }
     return { created };
   });
@@ -806,6 +843,7 @@ export async function instalmentsDue(now: Date, tx: Tx = db): Promise<Instalment
           lte(payments.dueAt, horizon),
           sql`${purchases.status} not in ('cancelled', 'refunded')`,
           isNull(contacts.mergedIntoId),
+          isNull(contacts.erasedAt),
           sql`not exists (
             select 1 from tasks t
             where t.dedupe_key = case when ${payments.dueAt} < ${nowIso}::timestamptz
@@ -869,6 +907,7 @@ export async function instalmentsDue(now: Date, tx: Tx = db): Promise<Instalment
       }
     }
     result.notified = (await notifyNew(alerts, t)).created;
+    await dropAlertsOfErased(rows.map((r) => r.contactId), now, t);
     return result;
   });
 }
@@ -914,6 +953,7 @@ export async function unverifiedPayments(now: Date, tx: Tx = db): Promise<{ paym
         sql`${since} <= ${cutoff.toISOString()}::timestamptz`,
         ne(purchases.status, "cancelled"),
         isNull(contacts.mergedIntoId),
+        isNull(contacts.erasedAt),
         // already alerted: skipped here so a backlog older than one batch cannot starve newer payments
         sql`not exists (
           select 1 from notifications n
@@ -948,6 +988,7 @@ export async function unverifiedPayments(now: Date, tx: Tx = db): Promise<{ paym
     }
   }
   const { created } = await notifyNew(alerts, tx);
+  await dropAlertsOfErased(rows.map((r) => r.contactId), now, tx);
   return { payments: rows.length, notified: created };
 }
 
@@ -984,6 +1025,7 @@ export async function vipGoneQuiet(now: Date, tx: Tx = db): Promise<{ contacts: 
     .where(
       and(
         isNull(contacts.mergedIntoId),
+        isNull(contacts.erasedAt),
         eq(contacts.grade, "A"),
         gt(contacts.purchaseCount, 0),
         ne(contacts.stage, "lost"),
@@ -1020,5 +1062,6 @@ export async function vipGoneQuiet(now: Date, tx: Tx = db): Promise<{ contacts: 
     }
   }
   const { created, fresh } = await notifyNew(alerts, tx);
+  await dropAlertsOfErased(rows.map((c) => c.id), now, tx);
   return { contacts: new Set(fresh.map((a) => a.contactId)).size, notified: created };
 }

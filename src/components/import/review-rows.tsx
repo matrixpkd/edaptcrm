@@ -109,7 +109,10 @@ function Outcome({ row, batchId, editable }: { row: ReviewRow; batchId: string; 
                     <span className="tabular text-muted">({formatPhone(c.phone)})</span>
                   </span>
                 ))
-              : `row ${m.conflictRow}`}
+              : m.conflictRow
+                ? `row ${m.conflictRow}`
+                : // its only candidate's data was erased (src/lib/import/erasure.ts)
+                  "a contact whose data was erased"}
             {!row.resolution && <span className="font-medium text-warning">: decide</span>}
           </p>
           {editable ? (

@@ -7,7 +7,6 @@ import {
   contacts,
   duplicateReviews,
   enquiries,
-  importRows,
   interactions,
   notifications,
   ownershipLog,
@@ -19,6 +18,7 @@ import {
 } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { can } from "@/lib/auth/permissions";
+import { scrubErasedPersonFromImports } from "@/lib/import/erasure";
 import { recomputeContact } from "@/lib/metrics/recompute";
 import { newAdvocateReason } from "@/lib/money/rules";
 import { PROOF_FOLDER, deleteStoredFilesOrLog, storedKeyFolder, storedKeyFromUrl } from "@/lib/storage";
@@ -36,18 +36,39 @@ import { referredAlertBody } from "./rules";
  *   - contact: name "Erased contact", phone replaced by a placeholder no real number can match, email, alternates,
  *     city/state, designation, company, sales notes, tags and consent cleared; erased_at / erased_by_id set;
  *   - every free text that can hold personal data: interaction summaries, enquiry notes and raw payloads, rating
- *     notes, import rows (with their issues and the before/after values an import undo would put back), webhook
- *     payloads, task reasons and payloads, the reasons typed for its owner changes and merges;
+ *     notes, webhook payloads, task reasons and payloads, the reasons typed for its owner changes and merges;
+ *   - its import rows (src/lib/import/erasure.ts): the rows that went to it, the rows that matched it and went
+ *     nowhere yet (a same-name conflict only when the admin chose it), and the rows linked to nobody that carry its
+ *     number or order id, or its email or other number when the import tied the row to no one else (a row skipped
+ *     because the order was already recorded on it, an invalid or failed row), are wiped (with their issues and the
+ *     before/after values an import undo would put back; the ids an undo needs stay);
  *   - money rows keep what the accounts need (reference = TagMango order id / UTR, amounts, currency, fx, dates,
  *     product, status, credited user) and lose their free text: purchase notes and raw payloads, payment and refund
  *     reasons (rejection notes), the same reasons in their audit trail, and their payment proofs (below);
  *   - old values in the audit log for this contact, and the "before" snapshots of its merges (so a merge involving
  *     it can no longer be undone);
- *   - its alerts in the bell are deleted; open tasks are closed; open duplicate reviews are dismissed;
- *   - what other contacts' rows quote of it: its referrer's "call to thank" task (kept, without its name) and the
- *     referrer's "New lead" alert ("Referred <name>", kept without that line).
+ *   - its alerts in the bell are deleted; open tasks are closed (closeErasedContactAlerts); open duplicate reviews
+ *     are dismissed;
+ *   - what other contacts' rows quote of it, which stay without the quote:
+ *     - its referrer's "call to thank" task (without its name) and the referrer's "New lead" alert ("Referred
+ *       <name>", without that line);
+ *     - other contacts' import rows (src/lib/import/erasure.ts), a same-name conflict imported as someone new or
+ *       still to decide among them: issues with its number or name ("<number> belongs to <name>, so it was not
+ *       added", "... already recorded on <name>"), its entry in a conflict's candidates (and its name as the first
+ *       one), and the referrer columns of a row that named it as the referrer; the rows stay, so their undo still
+ *       works and a file in review can still be imported;
+ *     - a merge into another contact that was undone: the merge entry in that contact's history ("Merged <name>
+ *       into this contact", with its number) keeps only its id, and that contact's history of numbers and emails
+ *       (audit values of phoneE164, email, altPhones, altEmails) written while the two were merged, which a touch or
+ *       an edit could fill with its numbers and emails, loses them. The other contact's history before and after the
+ *       merge stays, and so does a number or email it holds now (emails are shared, numbers change hands). Names stay
+ *       there: a mistaken merge is usually of namesakes, and the other contact's own name must stay. When it was the
+ *       winner of an undone merge, that merge's entry is in its own history, cleared with the rest.
+ *     Owner changes, referrer changes, transfer requests and duplicate reviews name no one: they hold ids or fixed
+ *     texts.
  * Contact rows merged INTO it are erased the same way. The erasure itself is audited (who, when, the reason) without
- * any personal data. Erased contacts leave every contacts list and search (contactScope).
+ * any personal data. Erased contacts leave every contacts list and search (contactScope), an organisation's people
+ * (getOrganisationPeople), and every alert rule, the Today queue and the digests (src/lib/alerts/rules.ts).
  *
  * Payment proofs (screenshots, PDFs): inside the erasure transaction no purchase or payment points at them any more,
  * so /api/files answers 404 for them at once (canReadStoredFile serves a proof only through a row that holds it).
@@ -103,6 +124,92 @@ function withoutFreeText(col: typeof auditLog.oldValue | typeof auditLog.newValu
 }
 
 /**
+ * Closes an erased contact's alerts: its tasks lose their reason and payload (free text), the open ones are
+ * dismissed, and its alerts in the bell are deleted. The erasure runs it, and so do the alert rules for what they
+ * raised while the contact's erasure was committing (src/lib/alerts/rules.ts). `closedById` is null for the rules.
+ */
+export async function closeErasedContactAlerts(ids: string[], closedById: string | null, now: Date, tx: Tx = db): Promise<void> {
+  if (!ids.length) return;
+  await tx.update(tasks).set({ reason: ERASED_NAME, payload: null }).where(inArray(tasks.contactId, ids));
+  await tx
+    .update(tasks)
+    .set({ status: "dismissed", completedAt: now, completedById: closedById })
+    .where(and(inArray(tasks.contactId, ids), eq(tasks.status, "open")));
+  await tx.delete(notifications).where(inArray(notifications.contactId, ids));
+}
+
+/** Audit fields that hold a contact's numbers and emails (the column names auditDiff writes). */
+const IDENTITY_FIELDS = ["phoneE164", "email", "altPhones", "altEmails"];
+
+/**
+ * Slack around a merge's dates (contact_merges.merged_at, undone_at) when looking for the other contact's history
+ * written while the merge was in place: a write that began just before the merge can land after it (it waits for the
+ * contact's lock), and those dates come from the app's clock while audit_log.changed_at comes from the database's.
+ */
+const MERGE_WINDOW_SLACK = sql`interval '5 minutes'`;
+
+/**
+ * Contacts the person was merged into by a merge since undone: another person now (a merge still in place made the
+ * winner part of the erasure). Their history quotes the person: the merge entry ("Merged <name> into this contact",
+ * with the number) keeps only the id, and their entries of numbers and emails written while the merge was in place
+ * (a touch through the person's number, or an edit, could record the person's there) lose the person's. Only those:
+ * numbers move between people and emails are shared (a family email), so the winner's own history before and after
+ * the merge stays, and so does any number or email the winner holds now. Names stay (see the file comment). Found
+ * through contact_merges and the audit log's (table, row) index.
+ */
+async function scrubMergeWinnersHistory(ids: string[], person: { phones: Set<string>; emails: Set<string> }, t: Tx): Promise<void> {
+  const merges = await t.selectDistinct({ winnerId: contactMerges.winnerId }).from(contactMerges).where(inArray(contactMerges.loserId, ids));
+  const winners = merges.map((m) => m.winnerId).filter((id) => !ids.includes(id));
+  if (!winners.length) return;
+  await t
+    .update(auditLog)
+    .set({ oldValue: sql`${auditLog.oldValue} - 'loserName' - 'loserPhone'` })
+    .where(
+      and(
+        eq(auditLog.tableName, "contacts"),
+        inArray(auditLog.rowId, winners),
+        eq(auditLog.action, "merge"),
+        inArray(sql`${auditLog.oldValue} ->> 'loserId'`, ids),
+      ),
+    );
+  if (!person.phones.size && !person.emails.size) return;
+  const rows = await t
+    .select({ id: auditLog.id, rowId: auditLog.rowId, oldValue: auditLog.oldValue, newValue: auditLog.newValue })
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.tableName, "contacts"),
+        inArray(auditLog.rowId, winners),
+        inArray(auditLog.field, IDENTITY_FIELDS),
+        sql`exists (
+          select 1 from ${contactMerges} m
+          where m.winner_id::text = ${auditLog.rowId} and ${inArray(sql`m.loser_id`, ids)}
+            and ${auditLog.changedAt} between m.merged_at - ${MERGE_WINDOW_SLACK} and coalesce(m.undone_at, now()) + ${MERGE_WINDOW_SLACK}
+        )`,
+      ),
+    );
+  if (!rows.length) return;
+  // what each winner holds now is its own, whoever else has it too
+  const held = new Map<string, Set<string>>();
+  for (const w of await t
+    .select({ id: contacts.id, phone: contacts.phoneE164, altPhones: contacts.altPhones, email: contacts.email, altEmails: contacts.altEmails })
+    .from(contacts)
+    .where(inArray(contacts.id, winners))) {
+    held.set(w.id, new Set([w.phone, ...(w.altPhones ?? []), ...[w.email, ...(w.altEmails ?? [])].filter((e): e is string => !!e).map((e) => e.toLowerCase())]));
+  }
+  for (const r of rows) {
+    const own = held.get(r.rowId ?? "") ?? new Set<string>();
+    const theirs = (v: unknown) =>
+      typeof v === "string" && (person.phones.has(v) || person.emails.has(v.toLowerCase())) && !own.has(v) && !own.has(v.toLowerCase());
+    const clean = (v: unknown): unknown => (theirs(v) ? null : Array.isArray(v) ? v.filter((x) => !theirs(x)) : v);
+    const oldValue = clean(r.oldValue);
+    const newValue = clean(r.newValue);
+    if (JSON.stringify([oldValue, newValue]) === JSON.stringify([r.oldValue, r.newValue])) continue;
+    await t.update(auditLog).set({ oldValue, newValue }).where(eq(auditLog.id, r.id));
+  }
+}
+
+/**
  * Erases the contact's personal data (see the file comment). Runs in one transaction; called with the default `tx`
  * it then deletes the payment proof files. Inside a caller's transaction the commit is the caller's, so the files
  * are left to them: call deleteErasedProofFiles(result.proofKeys, ...) once that transaction has committed.
@@ -151,6 +258,16 @@ export async function eraseContact(
       .from(auditLog)
       .where(and(eq(auditLog.tableName, "contacts"), inArray(auditLog.rowId, ids), eq(auditLog.field, "name")));
     for (const r of renames) for (const v of [r.oldValue, r.newValue]) if (typeof v === "string" && v) names.add(v);
+    // and its numbers and emails, for the rows that carry them without being linked to it (import rows)
+    const phones = new Set<string>();
+    const emails = new Set<string>();
+    for (const r of await t
+      .select({ phone: contacts.phoneE164, altPhones: contacts.altPhones, email: contacts.email, altEmails: contacts.altEmails })
+      .from(contacts)
+      .where(inArray(contacts.id, ids))) {
+      for (const p of [r.phone, ...(r.altPhones ?? [])]) if (p && !isErasedPhone(p)) phones.add(p);
+      for (const e of [r.email, ...(r.altEmails ?? [])]) if (e) emails.add(e.toLowerCase());
+    }
 
     for (const id of ids) {
       await t
@@ -182,12 +299,17 @@ export async function eraseContact(
     await t.update(ratings).set({ notes: null }).where(inArray(ratings.contactId, ids));
 
     // ---- money: kept for the accounts, without its free text and its proofs
-    const buys = await t.select({ id: purchases.id, proofUrl: purchases.proofUrl }).from(purchases).where(inArray(purchases.contactId, ids));
+    const buys = await t
+      .select({ id: purchases.id, proofUrl: purchases.proofUrl, reference: purchases.reference })
+      .from(purchases)
+      .where(inArray(purchases.contactId, ids));
     const buyIds = buys.map((b) => b.id);
     // a payment carries its contact too (kept in sync on merge): look both ways so none of these purchases' is missed
     const payWhere = buyIds.length ? or(inArray(payments.contactId, ids), inArray(payments.purchaseId, buyIds))! : inArray(payments.contactId, ids);
-    const pays = await t.select({ id: payments.id, proofUrl: payments.proofUrl }).from(payments).where(payWhere);
+    const pays = await t.select({ id: payments.id, proofUrl: payments.proofUrl, reference: payments.reference }).from(payments).where(payWhere);
     const payIds = pays.map((p) => p.id);
+    // the references stay (the accounts need them); they find the import rows of its orders that name no contact
+    const references = [...new Set([...buys, ...pays].map((r) => r.reference).filter((x): x is string => !!x))];
     const proofUrls = [...new Set([...buys, ...pays].map((r) => r.proofUrl).filter((u): u is string => !!u))];
     if (buyIds.length) {
       await t.update(purchases).set({ rawPayload: null, notes: null, proofUrl: null }).where(inArray(purchases.id, buyIds));
@@ -223,15 +345,7 @@ export async function eraseContact(
       .update(tasks)
       .set({ reason: newAdvocateReason(null), payload: sql`${tasks.payload} - 'referredName'` })
       .where(and(eq(tasks.type, "new_advocate"), inArray(sql`${tasks.payload} ->> 'referredContactId'`, ids)));
-    await t
-      .update(tasks)
-      .set({ reason: ERASED_NAME, payload: null })
-      .where(inArray(tasks.contactId, ids));
-    await t
-      .update(tasks)
-      .set({ status: "dismissed", completedAt: now, completedById: actor.id })
-      .where(and(inArray(tasks.contactId, ids), eq(tasks.status, "open")));
-    await t.delete(notifications).where(inArray(notifications.contactId, ids));
+    await closeErasedContactAlerts(ids, actor.id, now, t);
     // the "New lead" alert of a referrer this person brought in quotes them ("Referred <name>"): the line goes.
     // Matched on the text, so a namesake's identical line goes too, which only shortens that alert.
     await t
@@ -249,17 +363,7 @@ export async function eraseContact(
           notLike(ownershipLog.reason, `${IMPORT_REASON_PREFIX}%`),
         ),
       );
-    await t
-      .update(importRows)
-      .set({
-        raw: {},
-        mapped: null,
-        cleaned: null,
-        issues: [],
-        // what an import undo would put back on the contact (its old and new values); the row ids it needs stay
-        applied: sql`case when jsonb_typeof(${importRows.applied}) = 'object' then ${importRows.applied} - 'before' - 'after' else ${importRows.applied} end`,
-      })
-      .where(or(inArray(importRows.contactId, ids), inArray(importRows.matchContactId, ids)));
+    await scrubErasedPersonFromImports({ ids, names: [...names], phones: [...phones], emails: [...emails], references }, t);
     await t.update(webhookEvents).set({ payload: {} }).where(inArray(webhookEvents.contactId, ids));
     await t
       .update(auditLog)
@@ -269,6 +373,7 @@ export async function eraseContact(
       .update(contactMerges)
       .set({ winnerBefore: {}, reason: null })
       .where(or(inArray(contactMerges.winnerId, ids), inArray(contactMerges.loserId, ids)));
+    await scrubMergeWinnersHistory(ids, { phones, emails }, t);
     await t
       .update(duplicateReviews)
       .set({ status: "dismissed", resolvedAt: now, resolvedById: actor.id })

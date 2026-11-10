@@ -23,6 +23,7 @@ import {
   isUuid,
   laterOf,
   listKeyFor,
+  referredAlertBody,
   sanitizeRatings,
 } from "./rules";
 
@@ -632,7 +633,7 @@ async function resolveReferrer(
           userId: owner,
           type: "new_lead",
           title: `New lead: ${ref.name}`,
-          body: `Referred ${contact.name}`,
+          body: referredAlertBody(contact.name),
           contactId: ref.id,
           dedupeKey: `new_lead:${ref.id}:${owner}`,
         },

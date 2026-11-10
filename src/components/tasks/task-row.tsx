@@ -23,6 +23,8 @@ export type TaskRowView = {
   createdByOther: string | null;
   contact: { id: string; name: string; grade: "A" | "B" | "C" | "D" | null } | null;
   canChange: boolean;
+  /** false on an erased contact's task, which stays closed */
+  canReopen: boolean;
 };
 
 const btn =
@@ -130,7 +132,7 @@ export function TaskRowCard({
         </p>
       )}
 
-      {task.canChange && (
+      {task.canChange && (open || task.canReopen) && (
         <div className="mt-3 flex flex-wrap items-center gap-2 pl-10">
           {open ? (
             moving ? (

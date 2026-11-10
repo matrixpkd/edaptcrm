@@ -2,8 +2,8 @@ import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { and, eq, inArray } from "drizzle-orm";
-import { db } from "@/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { db, queryRows } from "@/db";
 import {
   appErrors,
   auditLog,
@@ -36,7 +36,7 @@ import { ERASED_NAME, ERASED_REASON, eraseContact, setConsent } from "@/lib/cont
 import { applyRating, updateContactProfile } from "@/lib/contacts/profile";
 import { listContacts, parseContactFilters } from "@/lib/contacts/queries";
 import { addPayment, adjustCredit, cancelPurchase, recordPurchase, recordRefund, rejectPayment, verifyPayment } from "@/lib/money";
-import { PROOF_FOLDER, canReadStoredFile, saveFile, storedKeyFromUrl } from "@/lib/storage";
+import { PROOF_FOLDER, canReadStoredFile, discardUnsavedProof, saveFile, storedKeyFromUrl } from "@/lib/storage";
 import { ingestWebhook } from "@/lib/webhooks/handlers";
 import { getBoard } from "@/lib/pipeline/board";
 import { globalSearch } from "@/lib/search/global";
@@ -69,6 +69,25 @@ async function proofFile(name: string): Promise<string> {
   return url;
 }
 const onDisk = (url: string) => existsSync(path.join(UPLOADS, storedKeyFromUrl(url)!));
+
+/** The error a promise rejects with, or null when it resolves (so a refusal can be checked after other awaits). */
+const settle = (p: Promise<unknown>): Promise<unknown> =>
+  p.then(
+    () => null,
+    (e: unknown) => e,
+  );
+
+/** Waits until `n` connections to the test database are waiting for a lock (the writes under test have queued). */
+async function waitForLockWaiters(n: number) {
+  for (let i = 0; i < 300; i++) {
+    const [r] = await queryRows<{ n: number }>(
+      sql`select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`,
+    );
+    if (r.n >= n) return;
+    await new Promise((res) => setTimeout(res, 10));
+  }
+  throw new Error(`fewer than ${n} connections ever waited for a lock`);
+}
 
 describe("tasks and reminders", () => {
   beforeEach(resetDb);
@@ -553,6 +572,167 @@ describe("data privacy", () => {
     const [again] = await db.select().from(contacts).where(eq(contacts.id, fresh.contactId!));
     expect(again).toMatchObject({ phoneE164: oldPhone, name: "Priya Nair", erasedAt: null, ltvInr: 499 });
     expect((await db.select().from(contacts).where(eq(contacts.id, c.id)))[0]).toMatchObject({ name: ERASED_NAME, email: null });
+  });
+
+  it("takes the person's name off what their referrer holds: the thank-you task and the new-lead alert", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const manager = await makeUser({ role: "manager" });
+    // the referrer's owner (auto-assigned: the only salesperson)
+    const sales = await makeUser({ role: "sales" });
+    // Priya names a referrer nobody had yet: a new contact, whose owner's "New lead" alert says who they referred
+    const cap = await captureEnquiry({
+      phone: phone(),
+      name: "Priya Nair",
+      channel: "phone_call",
+      referrer: { phone: phone(), name: "Ravi Kumar" },
+      skipAssignment: true,
+    });
+    const priya = cap.contact;
+    const ravi = cap.referrerId!;
+    expect(cap.referrerCreated).toBe(true);
+    const raviAlerts = () => db.select().from(notifications).where(eq(notifications.contactId, ravi));
+    expect((await raviAlerts()).map((n) => n.body)).toEqual(["Referred Priya Nair"]);
+    // renamed later: the thank-you task quotes the new name, the alert still the old one
+    await updateContactProfile(priya.id, { name: "Priya N" }, admin);
+    await recordPurchase(
+      { contactId: priya.id, productName: "AAM", family: "applied_ai_mastery", amount: 5000, currency: "INR", mode: "bank_transfer", source: "manual", reference: `UTR${seq++}`, verified: true, purchasedAt: new Date() },
+      admin,
+    );
+    const thank = async () => (await db.select().from(tasks).where(and(eq(tasks.contactId, ravi), eq(tasks.type, "new_advocate"))))[0];
+    expect((await thank()).reason).toBe("Their referral Priya N just paid — call to thank");
+    expect((await thank()).payload).toMatchObject({ referredName: "Priya N", referredContactId: priya.id });
+
+    await eraseContact(priya.id, admin, "Asked by email");
+
+    // the referrer keeps the task (still open, still on their owner's Today) and the alert, without her name
+    const t = await thank();
+    expect(t).toMatchObject({ reason: "Their referral just paid — call to thank", status: "open", userId: sales.id });
+    expect(t.payload).toMatchObject({ referredContactId: priya.id });
+    expect(t.payload).not.toHaveProperty("referredName");
+    const [alert] = await raviAlerts();
+    expect(alert).toMatchObject({ type: "new_lead", body: null });
+    expect(alert.title).toMatch(/^New lead: /);
+    const everything = JSON.stringify([await db.select().from(tasks), await db.select().from(notifications)]);
+    expect(everything).not.toMatch(/Priya/);
+    expect(JSON.stringify(await getTodayQueue(sales))).not.toMatch(/Priya/);
+
+    // verifying an erased contact's old money (allowed, for the accounts) starts no thank-you call about her
+    const asha = (await captureEnquiry({ phone: phone(), name: "Asha Menon", channel: "phone_call", referrer: { contactId: ravi }, skipAlerts: true, skipAssignment: true })).contact;
+    const claim = await recordPurchase(
+      { contactId: asha.id, productName: "AAM", family: "applied_ai_mastery", amount: 2000, currency: "INR", mode: "bank_transfer", source: "manual", reference: `UTR${seq++}`, purchasedAt: new Date() },
+      sales,
+    );
+    await rejectPayment(claim.paymentIds[0], manager, "Not in the account yet");
+    await eraseContact(asha.id, admin, "Asked by phone");
+    await verifyPayment(claim.paymentIds[0], manager);
+    expect(await db.select().from(tasks).where(eq(tasks.dedupeKey, `new_advocate:${asha.id}`))).toHaveLength(0);
+  });
+
+  it("an erased contact's tasks stay closed: no reopening or editing them; done and cancel still close one", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const sales = await makeUser({ role: "sales" });
+    const c = await lead(sales.id, "Priya Nair");
+    const taskId = await createManualTask({ title: "Call Priya", notes: "After 6 pm", dueAt: new Date(Date.now() + H), contactId: c.id }, sales);
+    await eraseContact(c.id, admin, "Asked by email");
+    const row = async (id: string) => (await db.select().from(tasks).where(eq(tasks.id, id)))[0];
+    const closed = await row(taskId);
+    expect(closed).toMatchObject({ status: "dismissed", reason: ERASED_NAME, payload: null });
+
+    // reopening it, or editing it (which needs it open), would put free text back on the erased contact
+    for (const who of [sales, admin]) {
+      await expect(setTaskStatus(taskId, "open", who)).rejects.toThrow(ERASED_MESSAGE);
+      await expect(updateTask(taskId, { title: "Call Priya Nair on 9847012345", notes: "She lives in Kochi" }, who)).rejects.toThrow(ERASED_MESSAGE);
+    }
+    await expect(updateTask(taskId, { dueAt: new Date(Date.now() + 2 * H) }, sales)).rejects.toBeInstanceOf(TaskError);
+    expect(await row(taskId)).toEqual(closed);
+    // and the task list offers no Reopen for it
+    const done = await listTasks(sales, "done");
+    expect(done.rows.find((r) => r.id === taskId)?.contact).toMatchObject({ id: c.id, erased: true });
+
+    // a task still open on it (a system alert raised after the erasure) can be finished or cancelled, not edited
+    const follow = (await createTask({ contactId: c.id, userId: sales.id, type: "follow_up", reason: "Follow-up due", dueAt: new Date() }))!;
+    const manual = (await createTask({ contactId: c.id, userId: sales.id, type: "task", reason: "Check in", dueAt: new Date() }))!;
+    await expect(updateTask(manual, { title: "Ask Priya about Kochi" }, sales)).rejects.toThrow(ERASED_MESSAGE);
+    await expect(updateTask(follow, { dueAt: new Date(Date.now() + 2 * H) }, sales)).rejects.toThrow(ERASED_MESSAGE);
+    expect(await setTaskStatus(follow, "done", sales)).toBe(true);
+    expect(await setTaskStatus(manual, "cancel", sales)).toBe(true);
+    expect((await row(follow)).status).toBe("done");
+    expect(await row(manual)).toMatchObject({ status: "dismissed", reason: "Check in" });
+    await expect(setTaskStatus(follow, "open", sales)).rejects.toThrow(ERASED_MESSAGE);
+  });
+
+  it("a purchase or task racing an erasure waits for it and is then refused: nothing lands on the erased contact", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const c = await lead(null, "Priya Nair");
+    // the erasure has locked the contact and cleared it, but not committed yet
+    let erased!: () => void;
+    const erasedP = new Promise<void>((r) => (erased = r));
+    let commit!: () => void;
+    const gate = new Promise<void>((r) => (commit = r));
+    const erasure = db.transaction(async (t) => {
+      await eraseContact(c.id, admin, "Asked by email", {}, t);
+      erased();
+      await gate;
+    });
+    await erasedP;
+    // a TagMango order (with the customer's details) and a task for the same contact arrive meanwhile
+    const order = `TM-${seq++}`;
+    const buy = settle(
+      recordPurchase(
+        { contactId: c.id, productName: "Workshop", family: "workshop", amount: 999, currency: "INR", mode: "tagmango", source: "tagmango", reference: order, rawPayload: { name: "Priya Nair", phone: c.phoneE164 }, notes: "Priya's second order", purchasedAt: new Date() },
+        null,
+      ),
+    );
+    const task = settle(createManualTask({ title: "Call Priya Nair", dueAt: new Date(Date.now() + H), contactId: c.id }, admin));
+    await waitForLockWaiters(2);
+    commit();
+    await erasure;
+
+    expect(await buy).toBeInstanceOf(ContactErasedError);
+    const taskError = await task;
+    expect(taskError).toBeInstanceOf(TaskError);
+    expect((taskError as Error).message).toBe(ERASED_MESSAGE);
+    expect(await db.select().from(purchases).where(eq(purchases.reference, order))).toHaveLength(0);
+    expect(await db.select().from(tasks).where(eq(tasks.contactId, c.id))).toHaveLength(0);
+    expect((await db.select().from(contacts).where(eq(contacts.id, c.id)))[0]).toMatchObject({ name: ERASED_NAME, ltvInr: 0 });
+  });
+
+  it("the proof of a payment that was not saved leaves file storage; a proof a payment holds stays", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const c = await lead(null, "Priya Nair");
+    const live = await lead(null, "Rahul Menon");
+    await eraseContact(c.id, admin, "Asked by email");
+    // stored with the form, then refused by the service (the contact was erased meanwhile): nothing points at it
+    const orphan = await proofFile("priya-nair-gpay.png");
+    await expect(
+      recordPurchase(
+        { contactId: c.id, productName: "AAM", family: "applied_ai_mastery", amount: 3000, currency: "INR", mode: "bank_transfer", source: "manual", reference: `UTR${seq++}`, proofUrl: orphan, purchasedAt: new Date() },
+        admin,
+      ),
+    ).rejects.toBeInstanceOf(ContactErasedError);
+    await discardUnsavedProof(orphan, { path: `/contacts/${c.id}/payment`, userId: admin.id });
+    expect(onDisk(orphan)).toBe(false);
+
+    // a proof a payment does hold is never deleted this way
+    const kept = await proofFile("rahul-receipt.png");
+    await recordPurchase(
+      { contactId: live.id, productName: "AAM", family: "applied_ai_mastery", amount: 3000, currency: "INR", mode: "bank_transfer", source: "manual", reference: `UTR${seq++}`, proofUrl: kept, verified: true, purchasedAt: new Date() },
+      admin,
+    );
+    await discardUnsavedProof(kept, { path: `/contacts/${live.id}/payment`, userId: admin.id });
+    expect(onDisk(kept)).toBe(true);
+
+    // one that cannot be deleted goes to the error log, named without its file name
+    const key = `${PROOF_FOLDER}/2026-11/5d1c7a52-8f0e-4c1b-9a63-2f4b7e9d0c18-priya-nair-upi.png`;
+    const where = path.join(UPLOADS, key);
+    await mkdir(where, { recursive: true });
+    leftovers.push(where);
+    await discardUnsavedProof(`/api/files/${key}`, { path: `/contacts/${c.id}/payment`, userId: admin.id });
+    const errors = await db.select().from(appErrors);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ kind: "server", source: "payments", path: `/contacts/${c.id}/payment`, userId: admin.id });
+    expect(errors[0].message).toContain(`${PROOF_FOLDER}/2026-11/5d1c7a52-8f0e-4c1b-9a63-2f4b7e9d0c18`);
+    expect(`${errors[0].message} ${errors[0].stack ?? ""}`).not.toContain("priya-nair");
   });
 });
 

@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { settings } from "@/db/schema";
+import { settings, tasks } from "@/db/schema";
 import { test, expect, db, getContact, makeContact, makeUser, uniqueWord } from "./support/fixtures";
 
 /**
@@ -85,6 +85,10 @@ test("consent in one tap, and an admin erases a person's data on request", async
   // only an admin may erase
   await expect(rp.getByRole("button", { name: "Erase personal data" })).toHaveCount(0);
 
+  // a task the admin set on the contact: the erasure closes it, takes its text and it cannot be reopened
+  const taskTitle = `Call back about the fees ${uniqueWord()}`;
+  await db.insert(tasks).values({ type: "task", reason: taskTitle, contactId: c.id, userId: admin.id, createdById: admin.id, dueAt: new Date() });
+
   const ap = await pageFor(admin);
   await ap.goto(`/contacts/${c.id}`);
   await ap.getByText("Privacy", { exact: true }).click();
@@ -112,4 +116,11 @@ test("consent in one tap, and an admin erases a person's data on request", async
     // (the shell's sign-out form sits outside <main>)
     await expect(ap.getByRole("main").locator("form")).toHaveCount(0);
   }
+
+  // the task is closed without its text, and offers no Reopen (the service refuses one too)
+  await ap.goto("/tasks?view=done");
+  await expect(ap.getByText(taskTitle)).toHaveCount(0);
+  const closed = ap.getByRole("listitem").filter({ hasText: "Erased contact" });
+  await expect(closed).toHaveCount(1);
+  await expect(closed.getByRole("button", { name: "Reopen" })).toHaveCount(0);
 });

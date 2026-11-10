@@ -13,13 +13,13 @@ import "server-only";
  * still unknown ("other"), see fillSelfReportedFirstDoor.
  */
 import { createHash } from "node:crypto";
-import { and, desc, eq, lte } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, lte } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { contacts, enquiries, interactions, payments, products, purchases, webhookEvents, type Role } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { can } from "@/lib/auth/permissions";
 import { captureEnquiry, type CaptureInput } from "@/lib/contacts/capture";
-import { ContactError, InvalidPhoneError } from "@/lib/contacts/errors";
+import { ContactErasedError, ContactError, InvalidPhoneError } from "@/lib/contacts/errors";
 import { findContactByEmail, lookupByPhone } from "@/lib/contacts/identity";
 import { logInteraction } from "@/lib/contacts/interactions";
 import { isContactErased } from "@/lib/contacts/privacy";
@@ -447,6 +447,11 @@ export async function fillSelfReportedFirstDoor(contactId: string, door: string,
 // TagMango
 // ---------------------------------------------------------------------------
 
+/** The enquiry key of one TagMango order event: the capture is idempotent on it. */
+function orderSourceRef(reference: string, checkout: string): string {
+  return `tagmango:order:${reference}:${checkout}`;
+}
+
 function affiliateReferrer(o: TagMangoOrder, defaultCountry: string): CaptureInput["referrer"] {
   const a = o.affiliate;
   if (!a) return null;
@@ -455,7 +460,8 @@ function affiliateReferrer(o: TagMangoOrder, defaultCountry: string): CaptureInp
   return { name: a.name, phone: np?.e164 ?? a.phone };
 }
 
-async function processTagMango(payload: unknown, ctx: IntegrationContext, receivedAt: Date): Promise<ProcessResult> {
+/** `attempt` 2 is the one rerun after the contact was erased mid-order (see the purchase below). */
+async function processTagMango(payload: unknown, ctx: IntegrationContext, receivedAt: Date, attempt = 1): Promise<ProcessResult> {
   const o = extractTagMango(payload, ctx.paths.tagmango, { timeZone: ctx.options.timeZone });
   const reference = normalizeReference(o.orderId, "tagmango");
   if (!reference) {
@@ -492,7 +498,7 @@ async function processTagMango(payload: unknown, ctx: IntegrationContext, receiv
         firstDoor: knownDoor(ctx, self.firstDoor),
         campaign: o.campaign,
         productInterest: o.productName,
-        sourceRef: `tagmango:order:${reference}:${o.checkout}`,
+        sourceRef: orderSourceRef(reference, o.checkout),
         rawPayload: payload,
         receivedAt,
         // a paid order needs no follow-up; a started or failed one waits for the abandoned-checkout rule
@@ -569,6 +575,26 @@ async function processTagMango(payload: unknown, ctx: IntegrationContext, receiv
     );
   } catch (e) {
     if (e instanceof DuplicateReferenceError) return { contactId, summary: `Order ${reference} was already recorded` };
+    // The contact was erased between this order's capture and its purchase (recordPurchase checks under the
+    // contact's lock). The order is new money from the person, so it goes where an order arriving just after the
+    // erasure goes: a new contact, since the erased one no longer has this number. The capture tied the order's
+    // enquiry (cleared by the erasure) to the erased contact; it gives up the order's key so the capture runs again.
+    if (e instanceof ContactErasedError) {
+      if (attempt === 1) {
+        await db
+          .update(enquiries)
+          .set({ sourceRef: null })
+          .where(
+            and(
+              eq(enquiries.sourceRef, orderSourceRef(reference, o.checkout)),
+              inArray(enquiries.contactId, db.select({ id: contacts.id }).from(contacts).where(isNotNull(contacts.erasedAt))),
+            ),
+          );
+        return processTagMango(payload, ctx, receivedAt, 2);
+      }
+      // not tied to the erased contact: the event keeps its payload for a reprocess
+      throw new WebhookError(`The contact was erased while order ${reference} came in. Reprocess this event.`);
+    }
     throw new WebhookError(errorText(e), contactId);
   }
   return { contactId, summary: `Recorded order ${reference}: ${formatMoney(o.amount, currency)} for ${productName}` };

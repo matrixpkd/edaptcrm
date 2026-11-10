@@ -248,7 +248,10 @@ async function recordPurchaseTx(input: RecordPurchaseInput, actor: Actor | null,
   const now = new Date();
   if (!PURCHASE_SOURCES.includes(input.source)) throw new ValidationError("Unknown purchase source.", "source");
   assertMode(input.mode);
-  const contact = await resolveContact(input.contactId, t);
+  // locked before the erasure check, so the check holds until this purchase commits: an erasure in progress
+  // (which locks the contact first, src/lib/contacts/privacy.ts) is waited for and then refuses the purchase, and an
+  // erasure that starts after this lock waits and then clears this purchase along with the rest
+  const contact = await resolveContact(input.contactId, t, { forUpdate: true });
   if (!contact) throw new NotFoundError("Contact");
   assertNotErased(contact);
 

@@ -16,6 +16,7 @@ import {
 } from "@/lib/money";
 import { BASE_CURRENCY, normalizeCurrency } from "@/lib/money/fx";
 import { getSetting } from "@/lib/settings";
+import { discardUnsavedProof } from "@/lib/storage";
 import { validTimeZone } from "@/lib/today/time";
 import { isUuid } from "@/lib/utils";
 import { referenceRequired } from "@/components/payments/rules";
@@ -115,14 +116,17 @@ export async function recordInstalmentAction(_prev: ActionResult, fd: FormData):
   const amount = num(fd, "amount");
   if (amount !== null && !(amount > 0)) r.errors.amount = "Enter the amount received.";
   if (Object.keys(r.errors).length) return failFields(r.errors);
+  let proofUrl: string | null = null;
   try {
-    const proofUrl = r.proof ? await storeProof(r.proof) : null;
+    proofUrl = r.proof ? await storeProof(r.proof) : null;
     await recordInstalmentPayment(
       paymentId,
       { mode: r.mode!, reference: r.reference, paidAt: r.paidAt!, proofUrl, verify: r.verify, ...(amount !== null ? { amount } : {}) },
       user,
     );
   } catch (e) {
+    // nothing was saved, so no row points at the proof just stored: it leaves file storage too
+    if (proofUrl) await discardUnsavedProof(proofUrl, { path: `/payments/${ctx.purchaseId}`, userId: user.id });
     return moneyFailureFor(user, e, RECEIPT_FIELDS);
   }
   revalidateMoney(ctx);
@@ -151,14 +155,17 @@ export async function addPaymentAction(_prev: ActionResult, fd: FormData): Promi
     if (!currencyOk) r.errors.currency = `${currency} is not switched on in Settings > Currency.`;
   }
   if (Object.keys(r.errors).length) return failFields(r.errors);
+  let proofUrl: string | null = null;
   try {
-    const proofUrl = r.proof ? await storeProof(r.proof) : null;
+    proofUrl = r.proof ? await storeProof(r.proof) : null;
     await addPayment(
       purchaseId,
       { amount: amount!, currency, mode: r.mode!, reference: r.reference, paidAt: r.paidAt!, proofUrl, verify: r.verify },
       user,
     );
   } catch (e) {
+    // nothing was saved, so no row points at the proof just stored: it leaves file storage too
+    if (proofUrl) await discardUnsavedProof(proofUrl, { path: `/payments/${purchaseId}`, userId: user.id });
     return moneyFailureFor(user, e, RECEIPT_FIELDS);
   }
   revalidateMoney(ctx);

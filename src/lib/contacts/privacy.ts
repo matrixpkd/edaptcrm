@@ -17,15 +17,16 @@ import {
   tasks,
   webhookEvents,
 } from "@/db/schema";
-import { recordAppError } from "@/lib/app-errors";
 import { audit } from "@/lib/audit";
 import { can } from "@/lib/auth/permissions";
 import { recomputeContact } from "@/lib/metrics/recompute";
-import { PROOF_FOLDER, deleteStoredFile, redactStoredKey, storedKeyFolder, storedKeyFromUrl } from "@/lib/storage";
+import { newAdvocateReason } from "@/lib/money/rules";
+import { PROOF_FOLDER, deleteStoredFilesOrLog, storedKeyFolder, storedKeyFromUrl } from "@/lib/storage";
 import { HANDOVER_REASON } from "./assignment";
 import { ContactForbiddenError, ContactValidationError, assertNotErased } from "./errors";
 import { getLiveContact, withTx, type Actor } from "./internal";
 import { updateContactProfile } from "./profile";
+import { referredAlertBody } from "./rules";
 
 /**
  * Data-privacy actions (DPDP in India, PDPL in the UAE; spec "Data hygiene"; docs/CRM_GAP_ANALYSIS.md).
@@ -42,7 +43,9 @@ import { updateContactProfile } from "./profile";
  *     reasons (rejection notes), the same reasons in their audit trail, and their payment proofs (below);
  *   - old values in the audit log for this contact, and the "before" snapshots of its merges (so a merge involving
  *     it can no longer be undone);
- *   - its alerts in the bell are deleted; open tasks are closed; open duplicate reviews are dismissed.
+ *   - its alerts in the bell are deleted; open tasks are closed; open duplicate reviews are dismissed;
+ *   - what other contacts' rows quote of it: its referrer's "call to thank" task (kept, without its name) and the
+ *     referrer's "New lead" alert ("Referred <name>", kept without that line).
  * Contact rows merged INTO it are erased the same way. The erasure itself is audited (who, when, the reason) without
  * any personal data. Erased contacts leave every contacts list and search (contactScope).
  *
@@ -141,6 +144,14 @@ export async function eraseContact(
       );
     }
 
+    // every name the person went by (now, and before each rename in the edit history), for the rows that quote it
+    const names = new Set((await t.select({ name: contacts.name }).from(contacts).where(inArray(contacts.id, ids))).map((r) => r.name));
+    const renames = await t
+      .select({ oldValue: auditLog.oldValue, newValue: auditLog.newValue })
+      .from(auditLog)
+      .where(and(eq(auditLog.tableName, "contacts"), inArray(auditLog.rowId, ids), eq(auditLog.field, "name")));
+    for (const r of renames) for (const v of [r.oldValue, r.newValue]) if (typeof v === "string" && v) names.add(v);
+
     for (const id of ids) {
       await t
         .update(contacts)
@@ -206,6 +217,12 @@ export async function eraseContact(
       .map((u) => storedKeyFromUrl(u))
       .filter((k): k is string => !!k && storedKeyFolder(k) === PROOF_FOLDER);
 
+    // the referrer's "call to thank" task names the person (src/lib/money/internal.ts onVerifiedMoney): it stays with
+    // the referrer, without the name. Done before the contact's own tasks, so a referrer erased too ends as those do.
+    await t
+      .update(tasks)
+      .set({ reason: newAdvocateReason(null), payload: sql`${tasks.payload} - 'referredName'` })
+      .where(and(eq(tasks.type, "new_advocate"), inArray(sql`${tasks.payload} ->> 'referredContactId'`, ids)));
     await t
       .update(tasks)
       .set({ reason: ERASED_NAME, payload: null })
@@ -215,6 +232,12 @@ export async function eraseContact(
       .set({ status: "dismissed", completedAt: now, completedById: actor.id })
       .where(and(inArray(tasks.contactId, ids), eq(tasks.status, "open")));
     await t.delete(notifications).where(inArray(notifications.contactId, ids));
+    // the "New lead" alert of a referrer this person brought in quotes them ("Referred <name>"): the line goes.
+    // Matched on the text, so a namesake's identical line goes too, which only shortens that alert.
+    await t
+      .update(notifications)
+      .set({ body: null })
+      .where(and(eq(notifications.type, "new_lead"), inArray(notifications.body, [...names].map(referredAlertBody))));
     // reasons typed for owner changes (shown on /activity); the two the dashboard tells apart are fixed texts and stay
     await t
       .update(ownershipLog)
@@ -283,27 +306,12 @@ export async function deleteErasedProofFiles(
   keys: string[],
   ctx: { contactId: string; userId: string | null },
 ): Promise<{ deleted: number; failed: number }> {
-  let deleted = 0;
-  let failed = 0;
-  for (const key of keys) {
-    try {
-      if (await deleteStoredFile(key)) deleted += 1;
-    } catch (e) {
-      failed += 1;
-      const shown = redactStoredKey(key);
-      const hide = (text: string | null | undefined) => (text ? text.split(key).join(shown) : null);
-      const err = e instanceof Error ? e : new Error(String(e));
-      await recordAppError({
-        kind: "server",
-        message: `Could not delete a payment proof of an erased contact (${shown}). Nobody can open it any more; delete it from file storage by hand. ${hide(err.message) ?? ""}`.trim(),
-        stack: hide(err.stack),
-        path: `/contacts/${ctx.contactId}`,
-        source: "erasure",
-        userId: ctx.userId,
-      });
-    }
-  }
-  return { deleted, failed };
+  return deleteStoredFilesOrLog(keys, {
+    what: "a payment proof of an erased contact",
+    path: `/contacts/${ctx.contactId}`,
+    source: "erasure",
+    userId: ctx.userId,
+  });
 }
 
 /**

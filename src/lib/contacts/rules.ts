@@ -324,3 +324,11 @@ export function autoAssignHint(
   const label = (k: string) => teams.find((t) => t.key === k)?.label ?? k;
   return `Auto-assign: GCC numbers go to the ${label(cfg.gccTeam)} team, the rest to ${label(cfg.defaultTeam)}, in turn. A known number stays with its owner.`;
 }
+
+/**
+ * The line under "New lead: <referrer>" when a contact names a referrer nobody had yet. It quotes the contact's
+ * name, so erasing that contact blanks it (src/lib/contacts/privacy.ts).
+ */
+export function referredAlertBody(referredName: string): string {
+  return `Referred ${referredName}`;
+}

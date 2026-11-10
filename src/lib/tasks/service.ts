@@ -40,17 +40,35 @@ export type TaskInput = {
 
 type ContactRef = { id: string; name: string; ownerId: string | null; mergedIntoId: string | null; erasedAt: Date | null };
 
+/**
+ * A task's contact must not have been erased (src/lib/contacts/privacy.ts): a task's title and notes are free text,
+ * so no task on an erased contact is created, reopened or edited (done and cancel still close one). The contact row
+ * is read with a share lock held until the commit, so the check cannot go stale: an erasure in progress (it locks
+ * the contact first) is waited for and then refuses the change, and one that starts later waits for this commit and
+ * then clears the task with the contact's other tasks.
+ */
+function erasedContactError(): TaskError {
+  return new TaskError("invalid", ERASED_MESSAGE, "contactId");
+}
+
 async function loadContact(contactId: string, tx: Tx): Promise<ContactRef> {
   if (!isUuid(contactId)) throw new TaskError("not_found", "That contact no longer exists", "contactId");
   const rows = await tx
     .select({ id: contacts.id, name: contacts.name, ownerId: contacts.ownerId, mergedIntoId: contacts.mergedIntoId, erasedAt: contacts.erasedAt })
     .from(contacts)
     .where(eq(contacts.id, contactId))
+    .for("share")
     .limit(1);
   const c = rows[0];
   if (!c || c.mergedIntoId) throw new TaskError("not_found", "That contact no longer exists", "contactId");
-  if (c.erasedAt) throw new TaskError("invalid", ERASED_MESSAGE, "contactId");
+  if (c.erasedAt) throw erasedContactError();
   return c;
+}
+
+/** Share-locks the contact (see erasedContactError) and says whether its personal data was erased. */
+async function contactErased(contactId: string, tx: Tx): Promise<boolean> {
+  const rows = await tx.select({ erasedAt: contacts.erasedAt }).from(contacts).where(eq(contacts.id, contactId)).for("share").limit(1);
+  return !!rows[0]?.erasedAt;
 }
 
 async function loadAssignee(userId: string, tx: Tx) {
@@ -157,6 +175,20 @@ type LockedTask = {
   payload: Record<string, unknown> | null;
 };
 
+/**
+ * Locks the task for a change, its contact first: the same order an erasure takes them in (it locks the contact,
+ * then rewrites the contact's tasks), so the two wait for each other instead of deadlocking. `contactErased` is read
+ * under that lock (see erasedContactError).
+ */
+async function lockTaskAndContact(taskId: string, actor: TaskActor, tx: Tx): Promise<{ task: LockedTask; contactErased: boolean }> {
+  const [seen] = isUuid(taskId) ? await tx.select({ contactId: tasks.contactId }).from(tasks).where(eq(tasks.id, taskId)).limit(1) : [];
+  let erased = seen?.contactId ? await contactErased(seen.contactId, tx) : false;
+  const task = await lockTask(taskId, actor, tx);
+  // moved to another contact in between (another edit committed): check that one too
+  if (task.contactId !== (seen?.contactId ?? null)) erased = task.contactId ? await contactErased(task.contactId, tx) : false;
+  return { task, contactErased: erased };
+}
+
 async function lockTask(taskId: string, actor: TaskActor, tx: Tx): Promise<LockedTask> {
   if (!isUuid(taskId)) throw new TaskError("not_found", "That task no longer exists");
   const rows = await tx
@@ -189,11 +221,13 @@ export type TaskPatch = Partial<TaskInput>;
 
 /**
  * Edits an open task. A manual task's title, notes, due time, assignee and contact can change; a follow-up can only
- * be rescheduled (its text is the logged touch). Returns true when something changed.
+ * be rescheduled (its text is the logged touch). Returns true when something changed. A task on an erased contact
+ * cannot be edited at all (it can still be done or cancelled).
  */
 export async function updateTask(taskId: string, patch: TaskPatch, actor: TaskActor, tx: Tx = db): Promise<boolean> {
   return (tx as Database).transaction(async (t) => {
-    const task = await lockTask(taskId, actor, t);
+    const { task, contactErased: erased } = await lockTaskAndContact(taskId, actor, t);
+    if (erased) throw erasedContactError();
     if (task.status !== "open") throw new TaskError("invalid", "Reopen the task before changing it");
     const set: Partial<typeof tasks.$inferInsert> = {};
     if (patch.dueAt !== undefined) {
@@ -252,7 +286,8 @@ export type TaskStatusChange = "done" | "open" | "cancel";
 
 /**
  * Done, reopen (a done or cancelled task becomes open again) or cancel. Cancel is for manual tasks only: a
- * follow-up is done or rescheduled, never dropped (the same rule as Dismiss on Today).
+ * follow-up is done or rescheduled, never dropped (the same rule as Dismiss on Today). A task on an erased contact
+ * is never reopened: the erasure closed it, and an open one could be edited again.
  */
 export async function setTaskStatus(
   taskId: string,
@@ -263,8 +298,9 @@ export async function setTaskStatus(
 ): Promise<boolean> {
   const now = opts.now ?? new Date();
   return (tx as Database).transaction(async (t) => {
-    const task = await lockTask(taskId, actor, t);
+    const { task, contactErased: erased } = await lockTaskAndContact(taskId, actor, t);
     if (change === "open") {
+      if (erased) throw erasedContactError();
       if (task.status === "open") return false;
       await t.update(tasks).set({ status: "open", completedAt: null, completedById: null }).where(eq(tasks.id, task.id));
       return true;
@@ -297,7 +333,8 @@ export type TaskRow = {
   createdById: string | null;
   createdByName: string | null;
   completedAt: Date | null;
-  contact: { id: string; name: string; phoneE164: string; grade: "A" | "B" | "C" | "D" | null } | null;
+  /** `erased`: the contact's personal data was erased, so the task cannot be reopened or edited */
+  contact: { id: string; name: string; phoneE164: string; grade: "A" | "B" | "C" | "D" | null; erased: boolean } | null;
 };
 
 const creator = alias(users, "task_creator");
@@ -320,6 +357,7 @@ function baseSelect(tx: Tx) {
       contactName: contacts.name,
       phoneE164: contacts.phoneE164,
       grade: contacts.grade,
+      erasedAt: contacts.erasedAt,
     })
     .from(tasks)
     .leftJoin(users, eq(users.id, tasks.userId))
@@ -345,7 +383,7 @@ function toRow(r: RawRow): TaskRow {
     completedAt: r.completedAt,
     contact:
       r.contactId && r.contactName !== null && r.phoneE164 !== null
-        ? { id: r.contactId, name: r.contactName, phoneE164: r.phoneE164, grade: r.grade }
+        ? { id: r.contactId, name: r.contactName, phoneE164: r.phoneE164, grade: r.grade, erased: !!r.erasedAt }
         : null,
   };
 }

@@ -30,7 +30,14 @@ succeed, and `/api/health?deep=1` (needs `Authorization: Bearer <CRON_SECRET>`) 
 deployed commit. On 30 Oct `/api/health` was ok on `b20b980` and the 15-minute pg_cron job had no failures.
 On 9 Nov `4f626e0` went live: `/api/health` ok, the sign-in page loads, signed-in pages redirect to it, and
 `app_errors` had no rows in the last 24 hours. On 10 Nov `3d4ce53` (Next 15.5.29 and the round-robin fix) went
-live and passed the same checks; the 15-minute pg_cron job had no failures in the 2 hours before.
+live and passed the same checks; the 15-minute pg_cron job had no failures in the 2 hours before. On 11 Nov
+`ccc97a2` (the access fixes) went live. First, through the Supabase connector in one transaction: the
+`edapt_take_rate_limit` function, migration 0003 and its `__drizzle_migrations` row, the temporary-password backfill
+(0 rows: one user, no admin-issued password) and the RLS step. Checked after: the column and table exist, every
+public table has RLS, only `postgres` may run the function and a test call works, and the Supabase security
+advisor lists only the intended "RLS enabled, no policy" notes. After the push: `/api/health` ok on `ccc97a2`, the
+sign-in page loads, signed-in pages (`/choose-password` and the Quick Add check included) redirect to it,
+`app_errors` empty for 24 hours, and the 07:00 UTC run of the 15-minute job on the new code returned ok.
 
 Locally (11 Nov, macOS, Next 15.5.29, after the access fixes): 1,120 unit/integration tests pass with no errors
 on Node 24 (what Vercel runs) and Node 22, 105 Playwright tests pass (1 phone run skipped by design), and the perf
@@ -57,6 +64,8 @@ the new one. Two ways to apply one:
   it turns on row level security for new tables, which shuts the Supabase Data API (anon key) out of them; nothing
   else does. Then check: `select tablename from pg_tables where schemaname = 'public' and not rowsecurity` must
   return no rows. Run any new or changed `drizzle/custom/*.sql` file in the same transaction (they are idempotent).
+Production has 0000–0003 and both custom files since 11 Nov (how it was done is described below, kept as the model
+for the next release).
 `drizzle/0003_access_controls.sql` (10 Nov) adds `users.password_temporary_until` and the table `rate_limit_hits`,
 and the code released with it calls the function `edapt_take_rate_limit` from `drizzle/custom/0001_take_rate_limit.sql`
 (11 Nov): without it every Quick Add duplicate check and Edit page number check fails. Before 0003's row, check the

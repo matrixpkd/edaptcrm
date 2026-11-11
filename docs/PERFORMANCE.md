@@ -209,7 +209,9 @@ only one). With 40 ms per round trip, a burst of 20 lookups from one person made
 1.5 s. So the lock, the count and the insert are one call to the SQL function `edapt_take_rate_limit`
 (drizzle/custom/0001_take_rate_limit.sql): the lock lasts only while the server runs it. The same burst then delays
 the other query by 0.2 s, as without any lock. On a 50,000-contact copy the duplicate check takes 1.9 / 1.8 ms
-(known / new number) in 3 / 2 statements, against 2.2 / 1.9 ms in 6 / 5 with the transaction.
+(known / new number) in 3 / 2 statements, against 2.2 / 1.9 ms in 6 / 5 with the transaction. A full bench run on
+`edapt_perf` on 11 Nov (all 82 scenarios within budget) measured 0.8 / 0.5 ms for it; the Today queue (busiest
+salesperson, with the erased-contact check added) took 56 ms and the weekly summary 112 ms.
 
 ## Over HTTP (dev server)
 

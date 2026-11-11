@@ -32,7 +32,7 @@ On 9 Nov `4f626e0` went live: `/api/health` ok, the sign-in page loads, signed-i
 `app_errors` had no rows in the last 24 hours. On 10 Nov `3d4ce53` (Next 15.5.29 and the round-robin fix) went
 live and passed the same checks; the 15-minute pg_cron job had no failures in the 2 hours before.
 
-Locally (11 Nov, macOS, Next 15.5.29, after the access fixes): 1,119 unit/integration tests pass with no errors
+Locally (11 Nov, macOS, Next 15.5.29, after the access fixes): 1,120 unit/integration tests pass with no errors
 on Node 24 (what Vercel runs) and Node 22, 105 Playwright tests pass (1 phone run skipped by design), and the perf
 bench's 82 scenarios are all within budget at 50,000 contacts. Check
 Vitest's summary for an "Errors" line too: an unhandled rejection fails the run even when every test passes.

@@ -298,7 +298,8 @@ export async function onVerifiedMoney(
       .limit(1);
     if (!earlier) {
       const referrer = await resolveContact(contact.referredById, t);
-      if (referrer && referrer.id !== contactId) {
+      // nor on an erased referrer: erased contacts get no alerts (src/lib/alerts/rules.ts)
+      if (referrer && referrer.id !== contactId && !referrer.erasedAt) {
         await createTask(
           {
             contactId: referrer.id,

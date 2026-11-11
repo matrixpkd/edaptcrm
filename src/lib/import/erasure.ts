@@ -10,9 +10,9 @@ import "server-only";
  *    - it went to no contact yet (pending, failed) and matched them (match_contact_id) by number or email, or as a
  *      same-name conflict the admin chose to merge into them. A same-name conflict not decided that way is about
  *      someone else with their name (match_contact_id is only its first candidate): see part 2;
- *    - it is linked to nobody (both null) and carries their main number or the order id of one of their purchases or
- *      payments; or their alternate number, email or alternate email, when the import did not tie the row to someone
- *      else: its main number is no other contact's, its order is not recorded on another contact (a skipped row), and
+ *    - it is linked to nobody (both null) and its own number is one of theirs (main or alternate: phone is identity),
+ *      or it carries the order id of one of their purchases or payments; or its alternate number, email or alternate
+ *      email is theirs, when the import did not tie the row to someone else: its main number is no other contact's, its order is not recorded on another contact (a skipped row), and
  *      it is not "the same person as row N" of its file (a merge row with no contact). Emails are not unique, so a
  *      shared email alone never makes another person's row theirs. These are rows skipped because the order was
  *      already recorded on them, invalid rows, new rows that failed, and rows of an import still in review.

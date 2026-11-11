@@ -844,6 +844,25 @@ describe("data privacy", () => {
     expect(await db.select().from(tasks).where(eq(tasks.dedupeKey, `new_advocate:${asha.id}`))).toHaveLength(0);
   });
 
+  it("an erased referrer gets no thank-you call when someone they referred pays", async () => {
+    const admin = await makeUser({ role: "admin" });
+    const sales = await makeUser({ role: "sales" });
+    const ravi = (await captureEnquiry({ phone: phone(), name: "Ravi Kumar", channel: "phone_call", skipAlerts: true, skipAssignment: true })).contact;
+    await setOwner(ravi.id, sales.id, { reason: "Their lead", changedById: admin.id });
+    const meera = (
+      await captureEnquiry({ phone: phone(), name: "Meera Das", channel: "phone_call", referrer: { contactId: ravi.id }, skipAlerts: true, skipAssignment: true })
+    ).contact;
+    await eraseContact(ravi.id, admin, "Asked by email");
+    // the referral link stays (an id), so Meera's first payment still looks for her referrer
+    expect((await db.select().from(contacts).where(eq(contacts.id, meera.id)))[0].referredById).toBe(ravi.id);
+    await recordPurchase(
+      { contactId: meera.id, productName: "AAM", family: "applied_ai_mastery", amount: 5000, currency: "INR", mode: "bank_transfer", source: "manual", reference: `UTR${seq++}`, verified: true, purchasedAt: new Date() },
+      admin,
+    );
+    expect(await db.select().from(tasks).where(and(eq(tasks.contactId, ravi.id), eq(tasks.type, "new_advocate")))).toEqual([]);
+    expect(await db.select().from(tasks).where(eq(tasks.dedupeKey, `new_advocate:${meera.id}`))).toHaveLength(0);
+  });
+
   it("an erased contact's tasks stay closed: no reopening or editing them; done and cancel still close one", async () => {
     const admin = await makeUser({ role: "admin" });
     const sales = await makeUser({ role: "sales" });

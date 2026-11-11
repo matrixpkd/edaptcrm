@@ -23,7 +23,8 @@ import "server-only";
  * Erased contacts (src/lib/contacts/privacy.ts) get no alert from any rule: every rule leaves out contacts.erased_at
  * next to merged_into_id. The erasure deletes the contact's alerts, and their dedupe keys with them, so without that
  * filter the next run would raise them again. A rule that read a contact just before its erasure committed closes
- * what it raised for it (dropAlertsOfErased), and the cleanups below dismiss any task still open on an erased contact.
+ * what it raised for it (dropAlertsOfErased), and the cleanups below dismiss an untouched-lead, at-risk or next-rung
+ * task still open on an erased contact. (Today and the digests leave out every task on an erased contact.)
  */
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -137,7 +138,9 @@ async function notifyNew(list: NewNotification[], tx: Tx): Promise<{ created: nu
  * before the erasure and its inserts waited for the erasure (a task or alert references the contact row the erasure
  * holds locked), so they land on the erased contact, with the name the rule read. Run after raising: what was raised
  * for a contact that turns out erased is closed the way the erasure closes it. (An erasure that starts after the
- * inserts waits for this run's locks on the contact instead, then closes them itself.)
+ * inserts waits for this run's locks on the contact instead, then closes them itself.) abandonedCheckouts is the
+ * exception: it already holds the checkout enquiry's lock, which the erasure also needs, so in that race Postgres
+ * cancels one of the two as a deadlock (within deadlock_timeout); the next run, or the admin's retry, finishes it.
  */
 async function dropAlertsOfErased(contactIds: (string | null | undefined)[], now: Date, t: Tx): Promise<void> {
   const ids = unique(contactIds.filter((x): x is string => !!x));
